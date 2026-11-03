@@ -1,0 +1,8 @@
+# 手元で使う秘密の名前の一覧 (値は書かない)。手元では、この名前で .dev.vars (コミットしない) に値を置く。
+# 本番 (自分の Cloudflare) では `wrangler secret put <名前>` で置く。型 (worker-configuration.d.ts) は、このファイルから作る。
+
+# 中継の資格情報 (アプリが 1 回だけ見せる tsr_ で始まる値)。
+RELAY_TOKEN=
+# 模擬の Webhook の署名の鍵 (32 文字以上の乱数)。ENABLE_MOCK_EVENTS を "true" にするときだけ要る。
+# 作り方: node -e 'console.log(crypto.randomBytes(32).toString("base64url"))'
+MOCK_WEBHOOK_SECRET=

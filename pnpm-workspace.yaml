@@ -1,0 +1,6 @@
+# 公開されたばかりの版は、乗っ取られた版だった場合に気づく間がないので、3 日待つ (Dependabot の cooldown とそろえる)。
+minimumReleaseAge: 4320
+# インストール時のスクリプトは動かさない。esbuild と workerd は、スクリプトなしでもビルドとテストが動く (notification-service で確かめた)。
+allowBuilds:
+  esbuild: false
+  workerd: false

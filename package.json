@@ -1,0 +1,27 @@
+{
+  "name": "notification-worker",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.28.10",
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "types": "wrangler types --config wrangler.example.jsonc --env-file .dev.vars.example --strict-vars=false",
+    "typecheck": "wrangler types --config wrangler.example.jsonc --env-file .dev.vars.example --strict-vars=false --check && tsc -p tsconfig.json && tsc -p test/tsconfig.json",
+    "test": "vitest run",
+    "build": "wrangler deploy --config wrangler.example.jsonc --dry-run --outdir dist"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.4",
+    "@cloudflare/vitest-plugin": "1.4.11",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5",
+    "wrangler": "4.156.0"
+  }
+}

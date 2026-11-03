@@ -1,0 +1,22 @@
+// 利用者の Worker の設定の例。`wrangler.jsonc` に写し、名前と RELAY_URL を自分のものに変えてから使う (README)。
+// 秘密 (RELAY_TOKEN、MOCK_WEBHOOK_SECRET) は、ここに書かず、`wrangler secret put` で置く。
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // 自分の Worker の名前 (自分の Cloudflare のアカウントの中で決める)。
+  "name": "notification-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-29",
+  // Wrangler の利用状況を Cloudflare に送らない。
+  "send_metrics": false,
+  "vars": {
+    // 運営の通知の中継 API の URL (https、パスなし)。アプリの設定の画面に出る URL を入れる。
+    "RELAY_URL": "https://relay.example.invalid",
+    // 模擬のイベントの入口 (POST /webhooks/mock)。試すときだけ "true" にし、MOCK_WEBHOOK_SECRET を置く。
+    "ENABLE_MOCK_EVENTS": "false",
+    // X の Webhook の入口 (POST /webhooks/x)。X の規約の判断 (LEGAL-001) と、X の連携 (X-001) ができるまで "false" のまま。
+    "ENABLE_X_ACTIVITY": "false"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

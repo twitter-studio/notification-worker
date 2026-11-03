@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    # 公開されたばかりの版は、乗っ取られた版だった場合に気づく間がないので、数日待つ。
+    cooldown:
+      default-days: 3
+    # wrangler と Cloudflare のテストのプラグインは、同じ頃の workerd を前提に版がそろっているので、1 つの PR で上げる。
+    groups:
+      cloudflare:
+        patterns:
+          - wrangler
+          - "@cloudflare/*"
