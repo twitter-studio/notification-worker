@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+coverage/
+*.log
+# wrangler は .dev.vars がないと .env 系を手元の秘密として読む。
+.env
+.env.*
+!.env.example
+# 利用者が wrangler.example.jsonc から作る、自分の設定 (自分の Worker の名前や URL を入れる)。
+wrangler.jsonc

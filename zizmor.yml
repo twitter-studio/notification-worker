@@ -1,0 +1,6 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # 外部の Action と Docker のイメージは、すべて完全な hash で固定する (タグやブランチは書き換えられるため)。
+        "*": hash-pin
