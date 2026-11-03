@@ -57,16 +57,16 @@ cp wrangler.example.jsonc wrangler.jsonc
 
 鍵は、コミットしない `.dev.vars` にだけ置きます。画面に出したり、命令の行 (`MOCK_WEBHOOK_SECRET=… node …` のような形も) に書いたりしません。シェルの履歴に残るためです。
 
-1. 署名の鍵を作り、画面に出さずに `.dev.vars` へ書き込みます。
+1. 署名の鍵を作り、画面に出さずに `.dev.vars` へ書き込みます (前の行があれば置き換え、ファイルは持ち主だけが読める権限にします)。
 
    ```sh
-   node -e 'require("node:fs").appendFileSync(".dev.vars", `MOCK_WEBHOOK_SECRET=${require("node:crypto").randomBytes(32).toString("base64url")}\n`, { mode: 0o600 })'
+   node scripts/new-mock-secret.mjs
    ```
 
-2. 同じ鍵を、自分の Worker の秘密として置きます (標準入力から渡します)。
+2. 同じ鍵を、自分の Worker の秘密として置きます (送るスクリプトと同じ読み方で読み、標準入力から渡します)。
 
    ```sh
-   grep '^MOCK_WEBHOOK_SECRET=' .dev.vars | cut -d= -f2- | pnpm wrangler secret put MOCK_WEBHOOK_SECRET --config wrangler.jsonc
+   node --env-file=.dev.vars -e 'process.stdout.write(process.env.MOCK_WEBHOOK_SECRET ?? "")' | pnpm wrangler secret put MOCK_WEBHOOK_SECRET --config wrangler.jsonc
    ```
 
 3. `wrangler.jsonc` の `ENABLE_MOCK_EVENTS` を `"true"` にして、デプロイし直します。
@@ -89,12 +89,13 @@ cp wrangler.example.jsonc wrangler.jsonc
 
 - **中継の資格情報**: アプリの設定の画面で入れ替えると、新しい値が 1 回だけ出て、前の値はすぐに使えなくなります。すぐに `pnpm wrangler secret put RELAY_TOKEN --config wrangler.jsonc` で新しい値を置きます (デプロイし直す必要はありません)。置くまでのあいだに届いたイベントは、中継の API が 401 で拒み、Worker は送り直しません (ログに `unauthorized` が出ます)。置いたら、模擬のイベントで確かめます。
 - **漏れたかもしれないとき**: アプリで中継の資格情報を取り消すか入れ替えます。取り消すと、入れ替えるまで通知は届きません。
-- **模擬の Webhook の鍵**: `.dev.vars` の `MOCK_WEBHOOK_SECRET` の行を消して、上の手順 1 と 2 で作り直します。
+- **模擬の Webhook の鍵**: 上の手順 1 と 2 をやり直します (手順 1 が `.dev.vars` の行を置き換えます)。
 
 ## やり直しの扱い
 
 - 中継の API が混んでいるとき (409、429、500、502、503、504) は、`Retry-After` が 5 秒までなら Worker の中で待って送り直します (今の中継の API は 30 秒以上を返すので、実際に Worker の中で送り直すのは、主につながらないときです)。長い待ちのときは、そこで送るのをやめ、Webhook を送ってきた側へ 503 と、中継の API が求めた `Retry-After` を返します。
-- 資格情報が使えない (401、403) ときと、中継の API がリダイレクトを返したとき (`RELAY_URL` の誤り) は、残りのイベントも送らずにやめ、ログに error を出します。
+- 資格情報が使えない (401、403) ときと、中継の API でない先の答え (リダイレクト、404、405。`RELAY_URL` の誤り) のときは、残りのイベントも送らずにやめ、ログに error を出します。
+- 1 回の要求で外へ送るのは 45 回までです (Workers の無料のプランの上限 50 回の内側)。届いたら、残りを送らずに 503 を返します。
 - 形が違う (422 など) イベントは送り直さず、次のイベントを送ります。
 - イベントの時刻から 1 日を過ぎたイベントは送りません (中継の API は、受け付けの記録を 7 日残し、古いイベントを拒みます)。
 - 署名した同じ要求が 5 分のうちに繰り返されたときは受けます。同じイベントは、中継の API が重複として除きます。

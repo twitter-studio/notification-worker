@@ -1,6 +1,6 @@
 import { ConfigError, isEnabled, relayConfig } from "./config";
 import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
-import { type RelayDeps, type RelayOutcome, sendToRelay } from "./relay";
+import { MAX_SUBREQUESTS, type RelayDeps, type RelayOutcome, sendToRelay } from "./relay";
 import { MIN_SECRET_LENGTH, verifyMockSignature } from "./verify";
 
 // 利用者の Worker の入口。Hono は使わない (入口が少なく、設計書 §6 のとおり、小さな処理で足りるため)。
@@ -50,7 +50,7 @@ async function readBody(request: Request): Promise<Uint8Array | undefined> {
 const STOP_KINDS: ReadonlySet<RelayOutcome["kind"]> = new Set([
   "retry_later",
   "unauthorized",
-  "redirected",
+  "misdirected",
 ]);
 
 async function handleMockWebhook(request: Request, env: Env, deps: RelayDeps): Promise<Response> {
@@ -92,9 +92,10 @@ async function handleMockWebhook(request: Request, env: Env, deps: RelayDeps): P
   const counts: Partial<Record<RelayOutcome["kind"] | "dropped" | "not_sent", number>> = {};
   if (dropped > 0) counts.dropped = dropped;
   let retryAfterSeconds = 0;
+  const budget = { remaining: MAX_SUBREQUESTS };
   // 1 つずつ送る (中継の API のアカウントごとの回数の制限に、まとめて当たらないように)。
   for (const [index, event] of events.entries()) {
-    const outcome = await sendToRelay(config, event, deps);
+    const outcome = await sendToRelay(config, event, deps, budget);
     counts[outcome.kind] = (counts[outcome.kind] ?? 0) + 1;
     if (outcome.kind === "retry_later")
       retryAfterSeconds = Math.max(retryAfterSeconds, outcome.retryAfterSeconds);
@@ -107,7 +108,7 @@ async function handleMockWebhook(request: Request, env: Env, deps: RelayDeps): P
   // 資格情報が使えない、設定の誤りは、利用者が直すまで続く。error で出して気づけるようにする。
   const needsAttention =
     counts.unauthorized !== undefined ||
-    counts.redirected !== undefined ||
+    counts.misdirected !== undefined ||
     counts.rejected !== undefined;
   log(needsAttention ? "error" : "log", "relayed", { counts });
   if (counts.retry_later !== undefined) {

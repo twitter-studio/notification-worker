@@ -280,12 +280,14 @@ describe("送るのをやめるとき", () => {
     expect(relay.sleeps).toEqual([0, 0]);
   });
 
-  it("資格情報が使えない (401、403) とき、リダイレクトのときは、残りを送らず、error のログに出す", async () => {
+  it("資格情報が使えない (401、403) とき、中継の API でない先の答え (リダイレクト、404、405) のときは、残りを送らず、error のログに出す", async () => {
     for (const [status, kind] of [
       [401, "unauthorized"],
       [403, "unauthorized"],
-      [302, "redirected"],
-      [308, "redirected"],
+      [302, "misdirected"],
+      [308, "misdirected"],
+      [404, "misdirected"],
+      [405, "misdirected"],
     ] as const) {
       const relay = fakeRelay([
         new Response(null, { status, headers: { Location: "https://elsewhere.test/" } }),
@@ -302,6 +304,38 @@ describe("送るのをやめるとき", () => {
       expect(JSON.stringify(errors.mock.calls)).toContain(kind);
       errors.mockRestore();
     }
+  });
+
+  it("1 回の要求で外へ送るのは 45 回までで、尽きたら残りを送らずに 503", async () => {
+    // どのイベントも 2 回つながらず、3 回目に送れる (20 件なら 60 回になる)。
+    const relay = fakeRelay([]);
+    let calls = 0;
+    const deps = {
+      ...relay.deps,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls++;
+        if (calls % 3 !== 0) throw new Error("down");
+        return relay.deps.fetch(input, init);
+      }) as typeof fetch,
+    };
+
+    const response = await postMock(
+      { events: Array.from({ length: 20 }, () => mockEvent()) },
+      { deps },
+    );
+
+    await expectProblem(response, 503);
+    expect(calls).toBe(45);
+  });
+
+  it("中継の API が求めた Retry-After は、1 日までにして返す", async () => {
+    const relay = fakeRelay([
+      new Response(null, { status: 503, headers: { "Retry-After": "999999" } }),
+    ]);
+
+    const response = await postMock({ events: [mockEvent()] }, { deps: relay.deps });
+
+    expect(response.headers.get("Retry-After")).toBe("86400");
   });
 
   it("502 と 504 は、短い Retry-After なら送り直す", async () => {

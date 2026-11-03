@@ -20,8 +20,8 @@ export const MAX_EVENT_AGE_MS = 24 * 60 * 60 * 1000;
 export const CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 /**
- * 1 回の Webhook で受けるイベントの数の上限。1 回の要求で外へ送れる回数 (Workers の無料のプランで 50 回) の内側に収める
- * (送れたイベントは 1 回、送れなかったイベントで送るのをやめるまでの最大 3 回)。
+ * 1 回の Webhook で受けるイベントの数の上限。送り直しを含めて外へ送る回数は、別に数えて上限で止める (relay.ts の
+ * MAX_SUBREQUESTS)。つながらないときにどのイベントも送り直すと、20 件で最大 60 回になるため。
  */
 export const MAX_EVENTS_PER_WEBHOOK = 20;
 

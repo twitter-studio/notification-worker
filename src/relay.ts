@@ -12,13 +12,27 @@ export type RelayOutcome =
   | { kind: "unauthorized" }
   /** 中継の API が受けない (413、415、422 など)。やり直さない。 */
   | { kind: "rejected" }
-  /** 中継の API がリダイレクトを返した (RELAY_URL の誤り)。資格情報とイベントを、ほかの先へ送らないため、従わない。 */
-  | { kind: "redirected" };
+  /**
+   * 中継の API でない先の答え (リダイレクト、404、405)。RELAY_URL の誤り。リダイレクトには、資格情報とイベントをほかの先へ
+   * 送らないため、従わない。
+   */
+  | { kind: "misdirected" };
 
 export type RelayDeps = {
   fetch: typeof fetch;
   sleep: (ms: number) => Promise<void>;
 };
+
+/**
+ * 1 回の要求で外へ送れる回数。Workers の無料のプランの上限 (50 回) の内側に収める。尽きたら送らずに `retry_later` を返し、
+ * Webhook を送ってきた側にやり直してもらう。
+ */
+export const MAX_SUBREQUESTS = 45;
+
+export type SubrequestBudget = { remaining: number };
+
+/** Retry-After の上限 (1 日)。イベントの時刻から 1 日を過ぎたものは送らないので、それより長く待たせても意味がない。 */
+export const MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60;
 
 /** 1 つのイベントを送る回数の上限 (1 回の要求の中で)。 */
 export const MAX_ATTEMPTS = 3;
@@ -32,19 +46,23 @@ export const REQUEST_TIMEOUT_MS = 70 * 1000;
 
 const RETRYABLE = new Set([409, 429, 500, 502, 503, 504]);
 
-/** Retry-After の秒数。ないとき、読めないときは `fallback`。 */
+/** Retry-After の秒数 (1 日まで)。ないとき、読めないときは `fallback`。 */
 function retryAfterOf(response: Response, fallback: number): number {
   const value = response.headers.get("Retry-After");
-  return value !== null && /^[0-9]{1,6}$/.test(value) ? Number(value) : fallback;
+  const seconds = value !== null && /^[0-9]{1,6}$/.test(value) ? Number(value) : fallback;
+  return Math.min(seconds, MAX_RETRY_AFTER_SECONDS);
 }
 
 export async function sendToRelay(
   config: RelayConfig,
   event: RelayEvent,
   deps: RelayDeps,
+  budget: SubrequestBudget,
 ): Promise<RelayOutcome> {
   let retryAfterSeconds = 1;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (budget.remaining <= 0) break;
+    budget.remaining--;
     let response: Response;
     try {
       response = await deps.fetch(config.endpoint, {
@@ -73,7 +91,12 @@ export async function sendToRelay(
     // 本文は読まずに捨てる (中継の API のエラーの文を、ログに写さない)。
     await response.body?.cancel();
     if (response.status === 401 || response.status === 403) return { kind: "unauthorized" };
-    if (response.status >= 300 && response.status < 400) return { kind: "redirected" };
+    if (
+      (response.status >= 300 && response.status < 400) ||
+      response.status === 404 ||
+      response.status === 405
+    )
+      return { kind: "misdirected" };
     if (!RETRYABLE.has(response.status)) return { kind: "rejected" };
     retryAfterSeconds = retryAfterOf(response, 60);
     if (retryAfterSeconds > MAX_INLINE_WAIT_SECONDS || attempt === MAX_ATTEMPTS) break;
