@@ -27,7 +27,15 @@ describe("入口", () => {
     await expectProblem(await request("/webhooks/mock", "GET"), 405);
   });
 
-  it("模擬の入口は、ENABLE_MOCK_EVENTS が true のときだけ受ける", async () => {
+  it("模擬の入口は、ENABLE_MOCK_EVENTS が true のときだけ受け、無効なら、どのメソッドでも 404", async () => {
+    await expectProblem(
+      await handle(
+        new Request("https://worker.test/webhooks/mock"),
+        testEnv({ ENABLE_MOCK_EVENTS: "false" }),
+        fakeRelay().deps,
+      ),
+      404,
+    );
     for (const value of ["false", "", "TRUE", "1"]) {
       await expectProblem(
         await postMock({ events: [mockEvent()] }, { env: testEnv({ ENABLE_MOCK_EVENTS: value }) }),
@@ -112,6 +120,7 @@ describe("中継の API へ送る", () => {
       {
         url: "https://relay.test/v1/notifications",
         authorization: `Bearer ${testEnv().RELAY_TOKEN}`,
+        redirect: "manual",
         body: {
           event_id: `mock:${event.id}`,
           type: "mention",
@@ -230,5 +239,175 @@ describe("設定", () => {
       expect(relay.sent).toEqual([]);
     }
     errors.mockRestore();
+  });
+});
+
+describe("送るのをやめるとき", () => {
+  it("長い Retry-After の 429 では、残りを送らず、中継の API が求めた秒数を縮めずに返す", async () => {
+    const relay = fakeRelay([
+      new Response(null, { status: 429, headers: { "Retry-After": "86400" } }),
+    ]);
+
+    const response = await postMock(
+      { events: [mockEvent(), mockEvent(), mockEvent()] },
+      { deps: relay.deps },
+    );
+
+    expect(response.headers.get("Retry-After")).toBe("86400");
+    await expectProblem(response, 503);
+    expect(relay.sent).toHaveLength(1);
+  });
+
+  it("409 の Retry-After (中継の API は 30 秒) は待たずに、503 と同じ秒数を返す", async () => {
+    const relay = fakeRelay([
+      new Response(null, { status: 409, headers: { "Retry-After": "30" } }),
+    ]);
+
+    const response = await postMock({ events: [mockEvent()] }, { deps: relay.deps });
+
+    expect(response.headers.get("Retry-After")).toBe("30");
+    await expectProblem(response, 503);
+    expect(relay.sleeps).toEqual([]);
+  });
+
+  it("Retry-After が 0 なら待たずに送り直し、それでも送れなければ、返す秒数は 1 にする", async () => {
+    const zero = () => new Response(null, { status: 503, headers: { "Retry-After": "0" } });
+    const relay = fakeRelay([zero(), zero(), zero()]);
+
+    const response = await postMock({ events: [mockEvent()] }, { deps: relay.deps });
+
+    expect(response.headers.get("Retry-After")).toBe("1");
+    expect(relay.sleeps).toEqual([0, 0]);
+  });
+
+  it("資格情報が使えない (401、403) とき、リダイレクトのときは、残りを送らず、error のログに出す", async () => {
+    for (const [status, kind] of [
+      [401, "unauthorized"],
+      [403, "unauthorized"],
+      [302, "redirected"],
+      [308, "redirected"],
+    ] as const) {
+      const relay = fakeRelay([
+        new Response(null, { status, headers: { Location: "https://elsewhere.test/" } }),
+      ]);
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const response = await postMock(
+        { events: [mockEvent(), mockEvent(), mockEvent()] },
+        { deps: relay.deps },
+      );
+
+      expect(await response.json(), String(status)).toEqual({ counts: { [kind]: 1, not_sent: 2 } });
+      expect(relay.sent).toHaveLength(1);
+      expect(JSON.stringify(errors.mock.calls)).toContain(kind);
+      errors.mockRestore();
+    }
+  });
+
+  it("502 と 504 は、短い Retry-After なら送り直す", async () => {
+    const relay = fakeRelay([
+      new Response(null, { status: 502, headers: { "Retry-After": "1" } }),
+      new Response(null, { status: 504, headers: { "Retry-After": "1" } }),
+    ]);
+
+    const response = await postMock({ events: [mockEvent()] }, { deps: relay.deps });
+
+    expect(await response.json()).toEqual({ counts: { accepted: 1 } });
+  });
+});
+
+describe("模擬の Webhook の境目", () => {
+  it("署名の時刻は、5 分ちょうどまで受け、それより離れたら拒む", async () => {
+    const body = JSON.stringify({ events: [mockEvent()] });
+    const now = Math.floor(Date.now() / 1000);
+    vi.useFakeTimers({ now: now * 1000, toFake: ["Date"] });
+
+    const edge = await postMock(undefined, {
+      rawBody: body,
+      headers: await signedHeaders(body, { timestamp: now - 300 }),
+    });
+    const outside = await postMock(undefined, {
+      rawBody: body,
+      headers: await signedHeaders(body, { timestamp: now - 301 }),
+    });
+
+    vi.useRealTimers();
+    expect(edge.status).toBe(200);
+    expect(outside.status).toBe(401);
+  });
+
+  it("5 分のうちに同じ要求が繰り返されたら受け、同じ event_id で送る (中継の API が重複として除く)", async () => {
+    const relay = fakeRelay([
+      Response.json({ status: "accepted" }, { status: 202 }),
+      Response.json({ status: "duplicate" }, { status: 202 }),
+    ]);
+    const body = JSON.stringify({ events: [mockEvent()] });
+    const headers = await signedHeaders(body);
+
+    await postMock(undefined, { rawBody: body, headers, deps: relay.deps });
+    const again = await postMock(undefined, { rawBody: body, headers, deps: relay.deps });
+
+    expect(await again.json()).toEqual({ counts: { duplicate: 1 } });
+    const eventIds = relay.sent.map((item) => (item.body as { event_id: string }).event_id);
+    expect(eventIds).toHaveLength(2);
+    expect(new Set(eventIds).size).toBe(1);
+  });
+
+  it("UTF-8 として読めない本文は 400", async () => {
+    const body = new Uint8Array([0x7b, 0xff, 0x7d]);
+
+    await expectProblem(
+      await postMock(undefined, { rawBody: body, headers: await signedHeaders(body) }),
+      400,
+    );
+  });
+
+  it("Content-Length のない分割の本文でも、上限を越えたら 413", async () => {
+    const chunk = new Uint8Array(4096).fill(0x20);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let index = 0; index < 5; index++) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+
+    const response = await handle(
+      new Request("https://worker.test/webhooks/mock", {
+        method: "POST",
+        headers: await signedHeaders(""),
+        body: stream,
+      }),
+      testEnv(),
+      fakeRelay().deps,
+    );
+
+    await expectProblem(response, 413);
+  });
+
+  it("署名のない要求には、中継の API の設定が誤っていても 401 を返し、設定のログを出さない", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await postMock(undefined, {
+      rawBody: JSON.stringify({ events: [mockEvent()] }),
+      headers: { "Content-Type": "application/json" },
+      env: testEnv({ RELAY_URL: "http://relay.test" }),
+    });
+
+    await expectProblem(response, 401);
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it("送ったときのログには、イベントの中身を出さない", async () => {
+    const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+    const event = mockEvent({ post_id: "9876543210987654321" });
+
+    await postMock({ events: [event] });
+
+    const logged = JSON.stringify(logs.mock.calls);
+    expect(logged).toContain("relayed");
+    expect(logged).not.toContain(event.id);
+    expect(logged).not.toContain("9876543210987654321");
+    logs.mockRestore();
   });
 });

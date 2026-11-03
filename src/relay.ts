@@ -11,7 +11,9 @@ export type RelayOutcome =
   /** 資格情報が使えない (401、403)。やり直さず、利用者が RELAY_TOKEN を入れ替える。 */
   | { kind: "unauthorized" }
   /** 中継の API が受けない (413、415、422 など)。やり直さない。 */
-  | { kind: "rejected" };
+  | { kind: "rejected" }
+  /** 中継の API がリダイレクトを返した (RELAY_URL の誤り)。資格情報とイベントを、ほかの先へ送らないため、従わない。 */
+  | { kind: "redirected" };
 
 export type RelayDeps = {
   fetch: typeof fetch;
@@ -22,8 +24,11 @@ export type RelayDeps = {
 export const MAX_ATTEMPTS = 3;
 /** 1 回の要求の中で待つのは、この秒数までの Retry-After だけ。長いものは、Webhook を送ってきた側のやり直しに任せる。 */
 export const MAX_INLINE_WAIT_SECONDS = 5;
-/** 1 回の送信の時間の上限。 */
-export const REQUEST_TIMEOUT_MS = 10 * 1000;
+/**
+ * 1 回の送信の時間の上限。中継の API が端末へ送る時間の上限 (60 秒、notification-service の ADR-0009) より長くする。
+ * 先に切ると、中継の API が送っている途中のまま、やり直しが 409 になる。
+ */
+export const REQUEST_TIMEOUT_MS = 70 * 1000;
 
 const RETRYABLE = new Set([409, 429, 500, 502, 503, 504]);
 
@@ -49,6 +54,8 @@ export async function sendToRelay(
           "Content-Type": "application/json",
         },
         body: JSON.stringify(event),
+        // リダイレクトに従わない (設定の誤りで、イベントをほかの先へ送らない。従った回数も、外へ送る回数に数えられる)。
+        redirect: "manual",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch {
@@ -66,6 +73,7 @@ export async function sendToRelay(
     // 本文は読まずに捨てる (中継の API のエラーの文を、ログに写さない)。
     await response.body?.cancel();
     if (response.status === 401 || response.status === 403) return { kind: "unauthorized" };
+    if (response.status >= 300 && response.status < 400) return { kind: "redirected" };
     if (!RETRYABLE.has(response.status)) return { kind: "rejected" };
     retryAfterSeconds = retryAfterOf(response, 60);
     if (retryAfterSeconds > MAX_INLINE_WAIT_SECONDS || attempt === MAX_ATTEMPTS) break;

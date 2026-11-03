@@ -8,7 +8,7 @@ export function testEnv(overrides: Partial<Env> = {}): Env {
 
 /** 模擬の Webhook の署名のヘッダー。 */
 export async function signedHeaders(
-  body: string,
+  body: string | Uint8Array,
   options: { secret?: string; timestamp?: number } = {},
 ): Promise<Record<string, string>> {
   const timestamp = String(options.timestamp ?? Math.floor(Date.now() / 1000));
@@ -19,9 +19,12 @@ export async function signedHeaders(
     false,
     ["sign"],
   );
-  const mac = new Uint8Array(
-    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${timestamp}.${body}`)),
-  );
+  const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
+  const prefix = new TextEncoder().encode(`${timestamp}.`);
+  const signed = new Uint8Array(prefix.length + bytes.length);
+  signed.set(prefix);
+  signed.set(bytes, prefix.length);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, signed));
   const hex = Array.from(mac, (byte) => byte.toString(16).padStart(2, "0")).join("");
   return {
     "Content-Type": "application/json",
@@ -30,7 +33,12 @@ export async function signedHeaders(
   };
 }
 
-type Sent = { url: string; authorization: string | null; body: unknown };
+type Sent = {
+  url: string;
+  authorization: string | null;
+  redirect: RequestInit["redirect"];
+  body: unknown;
+};
 
 /**
  * 中継の API の代わり。送られた要求を記録し、`responses` を順に返す (足りなければ 202 の accepted)。
@@ -45,6 +53,7 @@ export function fakeRelay(responses: (Response | Error)[] = []) {
       sent.push({
         url: request.url,
         authorization: request.headers.get("Authorization"),
+        redirect: init?.redirect ?? "follow",
         body: await request.json(),
       });
       const next = responses.shift();
@@ -75,7 +84,7 @@ export async function postMock(
     env?: Env;
     deps?: ReturnType<typeof fakeRelay>["deps"];
     headers?: Record<string, string>;
-    rawBody?: string;
+    rawBody?: string | Uint8Array;
   } = {},
 ) {
   const body = options.rawBody ?? JSON.stringify(payload);

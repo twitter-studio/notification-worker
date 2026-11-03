@@ -55,34 +55,55 @@ cp wrangler.example.jsonc wrangler.jsonc
 
 ## 模擬のイベントで試す
 
-1. 署名の鍵を作り、秘密として置きます。
+鍵は、コミットしない `.dev.vars` にだけ置きます。画面に出したり、命令の行 (`MOCK_WEBHOOK_SECRET=… node …` のような形も) に書いたりしません。シェルの履歴に残るためです。
+
+1. 署名の鍵を作り、画面に出さずに `.dev.vars` へ書き込みます。
 
    ```sh
-   node -e 'console.log(crypto.randomBytes(32).toString("base64url"))'
-   pnpm wrangler secret put MOCK_WEBHOOK_SECRET --config wrangler.jsonc
+   node -e 'require("node:fs").appendFileSync(".dev.vars", `MOCK_WEBHOOK_SECRET=${require("node:crypto").randomBytes(32).toString("base64url")}\n`, { mode: 0o600 })'
    ```
 
-2. `wrangler.jsonc` の `ENABLE_MOCK_EVENTS` を `"true"` にして、デプロイし直します。
-3. 模擬のイベントを送ります (鍵は環境の変数で渡します)。
+2. 同じ鍵を、自分の Worker の秘密として置きます (標準入力から渡します)。
 
    ```sh
-   MOCK_WEBHOOK_SECRET=<鍵> node scripts/send-mock-event.mjs https://<Worker の URL> mention
+   grep '^MOCK_WEBHOOK_SECRET=' .dev.vars | cut -d= -f2- | pnpm wrangler secret put MOCK_WEBHOOK_SECRET --config wrangler.jsonc
+   ```
+
+3. `wrangler.jsonc` の `ENABLE_MOCK_EVENTS` を `"true"` にして、デプロイし直します。
+4. 模擬のイベントを送ります (鍵は `.dev.vars` から読みます)。
+
+   ```sh
+   node --env-file=.dev.vars scripts/send-mock-event.mjs https://<Worker の URL> mention
    ```
 
    `200 {"counts":{"accepted":1}}` が返り、アプリに通知が届きます (端末の登録と確かめが済んでいるとき)。
-4. 試し終えたら、`ENABLE_MOCK_EVENTS` を `"false"` に戻してデプロイし直します。
+5. 試し終えたら、`ENABLE_MOCK_EVENTS` を `"false"` に戻してデプロイし直し、秘密も消します。
+
+   ```sh
+   pnpm wrangler secret delete MOCK_WEBHOOK_SECRET --config wrangler.jsonc
+   ```
+
+   `wrangler.example.jsonc` は版ごとの URL (`preview_urls`) を作らない設定です。模擬の入口を有効にした版が、版の URL で開いたまま残りません。
 
 ## 秘密の入れ替え
 
 - **中継の資格情報**: アプリの設定の画面で入れ替えると、新しい値が 1 回だけ出て、前の値はすぐに使えなくなります。すぐに `pnpm wrangler secret put RELAY_TOKEN --config wrangler.jsonc` で新しい値を置きます (デプロイし直す必要はありません)。置くまでのあいだに届いたイベントは、中継の API が 401 で拒み、Worker は送り直しません (ログに `unauthorized` が出ます)。置いたら、模擬のイベントで確かめます。
 - **漏れたかもしれないとき**: アプリで中継の資格情報を取り消すか入れ替えます。取り消すと、入れ替えるまで通知は届きません。
-- **模擬の Webhook の鍵**: 新しい鍵を `pnpm wrangler secret put MOCK_WEBHOOK_SECRET --config wrangler.jsonc` で置き、送る側の鍵も変えます。
+- **模擬の Webhook の鍵**: `.dev.vars` の `MOCK_WEBHOOK_SECRET` の行を消して、上の手順 1 と 2 で作り直します。
 
 ## やり直しの扱い
 
-- 中継の API が混んでいるとき (409、429、5xx) は、5 秒までの待ちなら Worker の中で送り直します。長い待ちのときは、Webhook を送ってきた側へ 503 と `Retry-After` を返します。
+- 中継の API が混んでいるとき (409、429、500、502、503、504) は、`Retry-After` が 5 秒までなら Worker の中で待って送り直します (今の中継の API は 30 秒以上を返すので、実際に Worker の中で送り直すのは、主につながらないときです)。長い待ちのときは、そこで送るのをやめ、Webhook を送ってきた側へ 503 と、中継の API が求めた `Retry-After` を返します。
+- 資格情報が使えない (401、403) ときと、中継の API がリダイレクトを返したとき (`RELAY_URL` の誤り) は、残りのイベントも送らずにやめ、ログに error を出します。
+- 形が違う (422 など) イベントは送り直さず、次のイベントを送ります。
 - イベントの時刻から 1 日を過ぎたイベントは送りません (中継の API は、受け付けの記録を 7 日残し、古いイベントを拒みます)。
-- 資格情報が使えない (401、403) ときと、形が違う (422 など) ときは、送り直しません。
+- 署名した同じ要求が 5 分のうちに繰り返されたときは受けます。同じイベントは、中継の API が重複として除きます。
+
+## 気をつけること
+
+- Worker の URL は公開です。誰でも `GET /health` などを呼べ、自分の Workers の無料の枠 (1 日の要求の数、ログの数) を使えます。
+- `RELAY_URL` は、アプリに出た URL を写します。ほかの URL を入れると、中継の資格情報がそこへ送られます。
+- `wrangler login` は、手元に広い範囲の権限を残します。デプロイし終えたら `pnpm wrangler logout` するか、範囲を絞った API トークンを使います。
 
 ## 開発
 

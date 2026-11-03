@@ -4,5 +4,5 @@
 # 中継の資格情報 (アプリが 1 回だけ見せる tsr_ で始まる値)。
 RELAY_TOKEN=
 # 模擬の Webhook の署名の鍵 (32 文字以上の乱数)。ENABLE_MOCK_EVENTS を "true" にするときだけ要る。
-# 作り方: node -e 'console.log(crypto.randomBytes(32).toString("base64url"))'
+# 作り方は README の「模擬のイベントで試す」(画面に出さずに .dev.vars へ書く)。
 MOCK_WEBHOOK_SECRET=

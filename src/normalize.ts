@@ -19,7 +19,10 @@ export const MAX_EVENT_AGE_MS = 24 * 60 * 60 * 1000;
 /** 送り手とイベントの時計のずれとして許す幅 (中継の API と同じ)。 */
 export const CLOCK_SKEW_MS = 5 * 60 * 1000;
 
-/** 1 回の Webhook で受けるイベントの数の上限 (1 回の要求で送り終える量に抑える)。 */
+/**
+ * 1 回の Webhook で受けるイベントの数の上限。1 回の要求で外へ送れる回数 (Workers の無料のプランで 50 回) の内側に収める
+ * (送れたイベントは 1 回、送れなかったイベントで送るのをやめるまでの最大 3 回)。
+ */
 export const MAX_EVENTS_PER_WEBHOOK = 20;
 
 const MockEventSchema = z.strictObject({

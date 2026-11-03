@@ -1,13 +1,14 @@
 // 模擬のイベントを、自分の Worker の POST /webhooks/mock へ、署名して送る (README の「模擬のイベントで試す」)。
-// 使い方: MOCK_WEBHOOK_SECRET=<鍵> node scripts/send-mock-event.mjs https://<自分の Worker>.workers.dev [種類] [post_id]
-// 鍵は環境の変数で渡す (コマンドの引数に書くと、シェルの履歴に残るため)。
+// 使い方: node --env-file=.dev.vars scripts/send-mock-event.mjs https://<自分の Worker>.workers.dev [種類] [post_id]
+// 鍵は、コミットしない .dev.vars から読む。コマンドの引数にも、`MOCK_WEBHOOK_SECRET=… node …` のような命令の行にも書かない
+// (どちらも、シェルの履歴に鍵が残るため)。
 import { createHmac, randomUUID } from "node:crypto";
 
 const [workerUrl, kind = "mention", postId = "1234567890123456789"] = process.argv.slice(2);
 const secret = process.env.MOCK_WEBHOOK_SECRET;
 if (workerUrl === undefined || secret === undefined || secret.length < 32) {
   console.error(
-    "usage: MOCK_WEBHOOK_SECRET=<32 文字以上> node scripts/send-mock-event.mjs <Worker の URL> [種類] [post_id]",
+    "usage: node --env-file=.dev.vars scripts/send-mock-event.mjs <Worker の URL> [種類] [post_id] (.dev.vars に 32 文字以上の MOCK_WEBHOOK_SECRET を置く)",
   );
   process.exit(2);
 }
