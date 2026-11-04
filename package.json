@@ -11,7 +11,7 @@
     "format": "biome format --write .",
     "types": "wrangler types --config wrangler.example.jsonc --env-file .dev.vars.example --strict-vars=false",
     "typecheck": "wrangler types --config wrangler.example.jsonc --env-file .dev.vars.example --strict-vars=false --check && tsc -p tsconfig.json && tsc -p test/tsconfig.json",
-    "test": "vitest run",
+    "test": "vitest run && node --test test/scripts/*.test.mjs",
     "build": "wrangler deploy --config wrangler.example.jsonc --dry-run --outdir dist"
   },
   "dependencies": {
