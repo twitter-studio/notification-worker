@@ -43,7 +43,7 @@ export function recordObservation(observation: Observation): void {
     case "queue_state":
       counts.heartbeat_count = 1;
       counts.attention_count = Number(
-        observation.backlog > 0 &&
+        (observation.backlog > 0 || observation.bytes > 0) &&
           (observation.unknownAge || observation.oldestAge >= BACKLOG_ALERT_SECONDS),
       );
       break;
@@ -101,7 +101,9 @@ export async function recordQueueState(
       backlog: metrics.backlogCount,
       bytes: metrics.backlogBytes,
       oldestAge: oldest === undefined ? 0 : Math.max(0, Math.floor((now - oldest) / 1000)),
-      unknownAge: metrics.backlogCount > 0 && (oldest === undefined || oldest <= 0 || oldest > now),
+      unknownAge:
+        (metrics.backlogCount > 0 || metrics.backlogBytes > 0) &&
+        (oldest === undefined || oldest <= 0 || oldest > now),
     });
   } catch {
     // SDK例外には構成や応答が含まれうるため、固定の分類だけを記録する。

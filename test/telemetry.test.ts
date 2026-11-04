@@ -61,6 +61,28 @@ describe("利用者Workerの個人情報を含まない監視", () => {
       );
     },
   );
+  it.each([undefined, new Date(Date.now() - BACKLOG_ALERT_SECONDS * 1000)])(
+    "概数の件数が0でもbytesが残る滞留を検知する",
+    async (oldestMessageTimestamp) => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      await recordQueueState({
+        metrics: async () => ({
+          backlogCount: 0,
+          backlogBytes: 40,
+          ...(oldestMessageTimestamp === undefined ? {} : { oldestMessageTimestamp }),
+        }),
+      });
+      expect(error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: "queue_state",
+          heartbeat_count: 1,
+          attention_count: 1,
+          backlog_count: 0,
+          backlog_bytes: 40,
+        }),
+      );
+    },
+  );
   it("取得例外や不正な数値は入力値を出さず監視失敗にする", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     await recordQueueState({
