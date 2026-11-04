@@ -119,7 +119,9 @@ test("state不一致・Unicode・重複・別path・POSTは交換せず、その
       return success();
     },
     onReady: async (ready) => {
-      for (const state of ["wrong", "あ".repeat(43)])
+      const actualState = new URL(ready.authorizeURL).searchParams.get("state");
+      const otherState = (actualState[0] === "A" ? "B" : "A") + actualState.slice(1);
+      for (const state of ["wrong", "あ".repeat(43), otherState])
         assert.equal((await fetch(callback(ready, { state }))).status, 400);
       const duplicate = callback(ready);
       duplicate.searchParams.append("state", "second");
