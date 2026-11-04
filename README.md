@@ -132,3 +132,24 @@ pnpm typecheck
 pnpm test
 pnpm build   # デプロイはしない (--dry-run)
 ```
+
+## 本人のOAuth認可をローカルで保存する
+
+`scripts/x-oauth.mjs`は、XアプリのConfidential client用の認可を受けます。Xユーザーの認可、token交換、ローカル保存だけを行い、本人情報の取得・購読・課金・配置は行いません。
+
+1. 自分だけが読めるディレクトリ（0700）へ、`client-id.txt`と`client-secret.txt`（各0600）を置きます。ファイルには値だけを保存し、コマンドの引数や環境変数に資格情報を書きません。
+2. XアプリのCallback URIを`http://127.0.0.1:8788/callback`にします。OAuth 2.0の有効化と秘密の発行は、実行する前に承認を確認します。
+3. ディレクトリのパスだけを渡して起動します。
+
+   ```sh
+   mise exec -- node scripts/x-oauth.mjs '<保護ディレクトリの絶対パス>'
+   ```
+
+4. 出力されたローカルHTMLファイルをブラウザで開き、リンクからXの認可画面へ進みます。アカウントと`tweet.read users.read`を確認し、承認します。`offline.access`・DM・書き込みの権限は求めません。PKCEはS256、stateとverifierは起動ごとに作ります。
+5. 承認するとClient Secret・認可コード・verifierを`https://api.x.com/2/oauth2/token`へ送り、得たtokenを同じディレクトリの`user-token.json`へ0600で保存します。callbackページ・標準出力・エラーには値を出しません。既存のtokenファイルは上書きしません。期限切れのファイルを残す場合は、保護ディレクトリ内で別名へ移してからやり直します。
+
+待機は5分、token交換は10秒までです。拒否・timeout・SIGINT/SIGTERMでは、一時HTMLと予約した空ファイルを片付けます。強制終了や電源断では残る場合があります。再実行前に、前回プロセスの終了と空ファイルであることを確認します。通常の資格情報ファイルは削除しません。
+
+認可後のAPI利用・購読・Cloudflareへの資格情報保存は別の実行範囲です。利用者のMacだけにtokenを置き、運営へ渡しません。実行環境が異なるため、OAuth CLIはNodeのテスト、Workerはworkerdのテストで検証します。
+
+公式手順（2026-11-04確認）: [X OAuth 2.0 PKCE](https://docs.x.com/fundamentals/authentication/oauth-2-0/user-access-token)、[アプリ種別とloopback Callback](https://docs.x.com/fundamentals/developer-apps#callback-urls)。
