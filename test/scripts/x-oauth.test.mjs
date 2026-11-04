@@ -354,3 +354,18 @@ test("token交換が5秒を超えてもcallbackへ成功とURL消去を返す", 
     tokenValue,
   );
 });
+test("CLIと同じくonReadyがすぐ戻る場合も成功ページを最後まで届ける", async (t) => {
+  const directory = fixture(t);
+  const ready = Promise.withResolvers();
+  const pending = runOAuth({
+    directory,
+    port: 0,
+    fetchImpl: async () => success(),
+    onReady: (value) => ready.resolve(value),
+  });
+  const response = await fetch(callback(await ready.promise));
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /Authorization saved/);
+  const saved = await pending;
+  assert.ok(existsSync(saved.tokenPath));
+});
