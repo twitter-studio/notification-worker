@@ -134,7 +134,14 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
   if (request.method === "GET") {
     const tokens = new URL(request.url).searchParams.getAll("crc_token");
     const token = tokens[0];
-    if (tokens.length !== 1 || token === undefined || token.length === 0 || token.length > 1024)
+    // 同じHMACをPOST署名へ転用する攻撃を防ぐため、JSON構造文字を含むchallengeを署名しない (ADR-0002)。
+    if (
+      tokens.length !== 1 ||
+      token === undefined ||
+      token.length === 0 ||
+      token.length > 1024 ||
+      /[^A-Za-z0-9_+/=-]/.test(token)
+    )
       return problem(400, "Bad Request");
     return Response.json(
       { response_token: await xCRC(secret, token) },

@@ -11,7 +11,7 @@ XAAの署名とCRCは模擬Webhookの独自形式と異なる。XはWebhookに10
 ## 決定
 
 - `GET /webhooks/x`でCRC、`POST /webhooks/x`でXAAの1イベントを受ける。`ENABLE_X_ACTIVITY`が厳密に`"true"`のときだけ有効。既定はfalse、無効時は全メソッドで404。
-- OAuth 2.0 client secretの公式ヘッダーだけをHMAC-SHA256で検証する。鍵は`X_OAUTH2_CLIENT_SECRET`。legacyヘッダーやbearerへのfallbackを設けない。正規Base64のMACを、生の本文に対してWebCryptoで検証してからUTF-8・JSONを解析する。本文は16 KiBまで。CRCは1つの非空`crc_token`を1024文字まで受け、HMACとno-storeを返す。秘密は32文字以上を必要とする。
+- OAuth 2.0 client secretの公式ヘッダーだけをHMAC-SHA256で検証する。鍵は`X_OAUTH2_CLIENT_SECRET`。legacyヘッダーやbearerへのfallbackを設けない。正規Base64のMACを、生の本文に対してWebCryptoで検証してからUTF-8・JSONを解析する。本文は16 KiBまで。CRCは1つの非空`crc_token`を1024文字まで受け、HMACとno-storeを返す。サービスの入力制約としてASCII英数字と`_+/=-`だけを許可し、JSONの構造文字や空白を拒む。同じ鍵とHMAC形式を使うCRCが任意のJSON本文へPOST署名を発行することを防ぐため。公式文書はtokenの文字種を明示しておらず、これはサービス側の制約で、実際のXのchallengeとの互換性は実接続ゲートで確認する。秘密は32文字以上を必要とする。
 - `data.event_type`が`post.mention.create`または`post.reply.create`のときだけ送る。設定`X_USER_ID`と`data.filter.user_id`が一致し、投稿者が本人以外で、mentionの宛先かreplyの`in_reply_to_user_id`が本人と一致することを必要とする。必要なフィールドが欠けたら422。知らない種類、別人宛て、自己発信は200で数えるだけにする。
 - 時刻は署名対象内の`data.created_at`を使う。1日より古い、5分より先のイベントは送らない。Xに独自の時刻署名ヘッダーを要求しない。
 - 重複除去IDは独立した`X_EVENT_ID_SECRET`によるHMACを正規Base64URLにした`x1_…`。入力に用途・本人・種類・ツイートIDを結び付け、配信UUIDと時刻は使わない。同じ投稿作成の再送でもIDを変えない。中継のアカウント単位の重複除去と7日の保持期間に対して、送り手の再送期限は1日とする。署名鍵の入れ替えで重複除去IDを変えないため、2つの秘密は共用しない。

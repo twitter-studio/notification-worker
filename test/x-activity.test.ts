@@ -83,14 +83,53 @@ describe("XAAのCRCと入口", () => {
   it("CRCはURL復号したchallengeのHMACを返しキャッシュしない", async () => {
     const relay = fakeRelay();
     const response = await handle(
-      new Request("https://worker.test/webhooks/x?crc_token=a%2Bb%26c"),
+      new Request("https://worker.test/webhooks/x?crc_token=a%2Bb%2Fc_-%3D9"),
       env(),
       relay.deps,
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ response_token: await mac("a+b&c") });
+    expect(await response.json()).toEqual({ response_token: await mac("a+b/c_-=9") });
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(relay.sent).toEqual([]);
+  });
+  it("CRCへJSON本文を署名させてPOSTを偽造できない", async () => {
+    const payload = event();
+    const body = JSON.stringify(payload);
+    expect(body.length).toBeLessThan(1024);
+    const relay = fakeRelay();
+    const response = await handle(
+      new Request(`https://worker.test/webhooks/x?crc_token=${encodeURIComponent(body)}`),
+      env(),
+      relay.deps,
+    );
+    expect(response.status).toBe(400);
+    expect(relay.queued).toEqual([]);
+    for (const token of ["{", "}", '"', "a:b", "a,b", "a b", "a\n", "a\u0000"]) {
+      expect(
+        (
+          await handle(
+            new Request(`https://worker.test/webhooks/x?crc_token=${encodeURIComponent(token)}`),
+            env(),
+            relay.deps,
+          )
+        ).status,
+      ).toBe(400);
+    }
+    const accepted = await handle(
+      new Request("https://worker.test/webhooks/x?crc_token=syntheticChallenge_123"),
+      env(),
+      relay.deps,
+    );
+    const proof = await accepted.json<{ response_token: string }>();
+    expect(
+      (
+        await post(payload, {
+          headers: { "X-Twitter-Webhooks-Signature-OAuth2": proof.response_token },
+          relay,
+        })
+      ).status,
+    ).toBe(401);
+    expect(relay.queued).toEqual([]);
   });
   it.each(["", "?crc_token=", "?crc_token=a&crc_token=b", `?crc_token=${"a".repeat(1025)}`])(
     "不正なCRC %sを拒む",
