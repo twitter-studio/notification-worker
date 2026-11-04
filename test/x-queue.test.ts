@@ -16,7 +16,7 @@ async function job() {
       occurred_at: new Date().toISOString(),
       event_id: await xEventID(enabled().X_EVENT_ID_SECRET, enabled().X_USER_ID, event),
     },
-    relay_binding: await relayBinding(relayConfig(enabled())),
+    relay_binding: await relayBinding(relayConfig(enabled()), enabled().X_USER_ID),
   });
 }
 function message(body: unknown, attempts = 1) {
@@ -74,6 +74,7 @@ describe("Xイベントの永続Queueからの配信", () => {
       [old, enabled()],
       [future, enabled()],
       [input, testEnv({ ENABLE_X_ACTIVITY: "true", RELAY_TOKEN: `tsr_${"B".repeat(43)}` })],
+      [input, testEnv({ ENABLE_X_ACTIVITY: "true", X_USER_ID: "999" })],
     ] as const) {
       const item = message(body);
       await handleXQueue([item], environment, relay.deps);

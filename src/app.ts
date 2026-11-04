@@ -185,7 +185,7 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
   }
   const job: XJob = {
     event: { ...event, event_id: await xEventID(idSecret, recipient.data, event) },
-    relay_binding: await relayBinding(config),
+    relay_binding: await relayBinding(config, recipient.data),
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

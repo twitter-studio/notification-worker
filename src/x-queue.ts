@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isEnabled, type RelayConfig, relayConfig } from "./config";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
 import { type RelayDeps, sendToRelay } from "./relay";
+import { XUserID } from "./x-activity";
 
 const Encoded = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const XJobSchema = z.strictObject({
@@ -31,12 +32,12 @@ export async function xEventID(secret: string, recipient: string, event: XEvent)
   );
   return `x1_${encode(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`twitter-studio/x-event/v1\n${recipient}\n${event.type}\n${event.post_id}`)))}`;
 }
-export async function relayBinding(config: RelayConfig): Promise<string> {
+export async function relayBinding(config: RelayConfig, recipient: string): Promise<string> {
   return encode(
     await crypto.subtle.digest(
       "SHA-256",
       new TextEncoder().encode(
-        `twitter-studio/x-relay/v1\n${config.endpoint.href}\n${config.token}`,
+        `twitter-studio/x-relay/v1\n${recipient}\n${config.endpoint.href}\n${config.token}`,
       ),
     ),
   );
@@ -66,7 +67,9 @@ export async function handleXQueue(
     try {
       const config = relayConfig(env);
       // 別アカウントの資格情報へ変更した後に、保存済みイベントをそのアカウントへ送らない (ADR-0002)。
-      if ((await relayBinding(config)) !== parsed.data.relay_binding) {
+      if (
+        (await relayBinding(config, XUserID.parse(env.X_USER_ID))) !== parsed.data.relay_binding
+      ) {
         console.info({ event: "x_queue_discarded", reason: "relay_changed" });
         message.ack();
         continue;
