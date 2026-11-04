@@ -334,3 +334,23 @@ test("CLIは資格情報の内容をstdout・stderrへ出さない", async (t) =
   assert.equal(result.stdout, "");
   assert.equal(result.stderr.includes("Error:"), false);
 });
+test("token交換が5秒を超えてもcallbackへ成功とURL消去を返す", { timeout: 15000 }, async (t) => {
+  const directory = fixture(t);
+  await runOAuth({
+    directory,
+    port: 0,
+    fetchImpl: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5200));
+      return success();
+    },
+    onReady: async (ready) => {
+      const response = await fetch(callback(ready));
+      assert.equal(response.status, 200);
+      assert.match(await response.text(), /history.replaceState/);
+    },
+  });
+  assert.equal(
+    JSON.parse(readFileSync(join(directory, "user-token.json"), "utf8")).access_token,
+    tokenValue,
+  );
+});

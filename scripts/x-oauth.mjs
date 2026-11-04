@@ -113,7 +113,8 @@ export async function runOAuth({
   const server = createServer();
   server.headersTimeout = 5000;
   server.requestTimeout = 5000;
-  server.setTimeout(5000);
+  // token交換は10秒まで待つため、先にcallbackのsocketを切らない。
+  server.setTimeout(15000);
   let timer;
   let cancel;
   try {
