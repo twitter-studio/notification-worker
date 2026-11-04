@@ -16,8 +16,22 @@
     "RELAY_URL": "https://relay.example.invalid",
     // 模擬のイベントの入口 (POST /webhooks/mock)。試すときだけ "true" にし、MOCK_WEBHOOK_SECRET を置く。
     "ENABLE_MOCK_EVENTS": "false",
-    // X の Webhook の入口 (POST /webhooks/x)。X の規約の判断 (LEGAL-001) と、X の連携 (X-001) ができるまで "false" のまま。
-    "ENABLE_X_ACTIVITY": "false"
+    // X の Webhook の入口 (POST /webhooks/x)。実際の接続と費用の承認を得て設定するまで "false" のまま。
+    "ENABLE_X_ACTIVITY": "false",
+    // OAuth認可した本人のXユーザーID。有効化する前に自分のIDを設定。
+    "X_USER_ID": ""
+  },
+  "queues": {
+    "producers": [{ "binding": "X_EVENTS", "queue": "notification-x-events" }],
+    "consumers": [
+      {
+        "queue": "notification-x-events",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 1
+      }
+    ]
   },
   "observability": {
     "enabled": true

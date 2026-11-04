@@ -44,7 +44,7 @@ describe("入口", () => {
     }
   });
 
-  it("X の入口は、既定 (ENABLE_X_ACTIVITY=false) では 404。有効にしても、まだ受けない (501)", async () => {
+  it("X の入口は、既定 (ENABLE_X_ACTIVITY=false) では 404。有効でも署名がなければ拒む (401)", async () => {
     const { deps } = fakeRelay();
     const post = (value: string) =>
       handle(
@@ -54,7 +54,7 @@ describe("入口", () => {
       );
 
     await expectProblem(await post("false"), 404);
-    await expectProblem(await post("true"), 501);
+    await expectProblem(await post("true"), 401);
   });
 });
 
