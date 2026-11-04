@@ -52,7 +52,14 @@ describe("Xイベントの永続Queueからの配信", () => {
       await handleXQueue([item], enabled(), relay.deps);
       expect(item.ack).toHaveBeenCalledOnce();
       expect(item.retry).not.toHaveBeenCalled();
-      expect(errors).toHaveBeenCalledWith({ event: "x_queue_discarded", reason: "attempt_limit" });
+      expect(errors).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "x_worker_observation",
+          stage: "discarded",
+          reason: "attempt_limit",
+          attention_count: 1,
+        }),
+      );
     } finally {
       errors.mockRestore();
     }

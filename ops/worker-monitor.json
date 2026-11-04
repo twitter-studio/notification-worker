@@ -1,0 +1,25 @@
+{
+  "name": "Notification user worker critical",
+  "description": "Queue heartbeat, backlog and relay failures; counts only",
+  "alert_type": "custom_analytics",
+  "enabled": false,
+  "mechanisms": {
+    "email": [
+      {
+        "id": "ALERT_EMAIL"
+      }
+    ]
+  },
+  "alert_interval": "1h",
+  "filters": {
+    "source": ["sql_api"],
+    "selectors": [
+      "SELECT if(COUNT(*) = 0 OR SUM(attributes['heartbeat_count']) < 1 OR SUM(attributes['attention_count']) >= 1, 1, 0) AS value FROM logs.workersLogs WHERE accountTag = 'ACCOUNT_ID' AND scriptName = 'WORKER_NAME' AND timestamp >= NOW() - INTERVAL '10' MINUTE AND attributes['event'] = 'x_worker_observation'"
+    ],
+    "alert_trigger_preferences": ["threshold"],
+    "alert_trigger_preferences_short_window": ["10m"],
+    "alert_trigger_preferences_operator": [">="],
+    "alert_trigger_preferences_value": ["1"],
+    "execution_interval": ["5m"]
+  }
+}

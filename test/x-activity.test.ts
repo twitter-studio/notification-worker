@@ -193,6 +193,7 @@ describe("XAAの署名と本文", () => {
   it("設定のエラー・成功・拒否でも本文と資格情報をログへ出さない", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+    const infos = vi.spyOn(console, "info").mockImplementation(() => {});
     expect(
       (
         await post(event(), {
@@ -215,7 +216,7 @@ describe("XAAの署名と本文", () => {
       ).status,
     ).toBe(500);
     expect((await post(event())).status).toBe(200);
-    const logged = JSON.stringify([errors.mock.calls, logs.mock.calls]);
+    const logged = JSON.stringify([errors.mock.calls, logs.mock.calls, infos.mock.calls]);
     for (const value of [canary, secret, recipient, env().RELAY_TOKEN, "2222222222222222222"])
       expect(logged).not.toContain(value);
   });
@@ -304,6 +305,27 @@ describe("許可イベントの正規化と再送", () => {
     await handleXQueue(messages, env(), relay.deps);
     expect(relay.sent[0]?.body).toEqual(relay.sent[1]?.body);
     expect(messages.every((message) => message.ack.mock.calls.length === 1)).toBe(true);
+  });
+  it("同じ投稿のmentionとreplyは別の種類として数え、同一種類の再送は同じIDを使う", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const relay = fakeRelay();
+    for (const kind of ["post.mention.create", "post.reply.create", "post.mention.create"])
+      expect((await post(event(kind), { relay })).status).toBe(200);
+    const jobs = relay.queued.map((value) => XJobSchema.parse(value));
+    expect(jobs[0]?.event.post_id).toBe(jobs[1]?.event.post_id);
+    expect(jobs[0]?.event.event_id).not.toBe(jobs[1]?.event.event_id);
+    expect(jobs[0]?.event.event_id).toBe(jobs[2]?.event.event_id);
+    expect(info.mock.calls.map(([entry]) => entry)).toEqual([
+      expect.objectContaining({ stage: "enqueued", mention_count: 1, reply_count: 0 }),
+      expect.objectContaining({ stage: "enqueued", mention_count: 0, reply_count: 1 }),
+      expect.objectContaining({ stage: "enqueued", mention_count: 1, reply_count: 0 }),
+    ]);
+    const logged = JSON.stringify(info.mock.calls);
+    for (const input of jobs) {
+      expect(logged).not.toContain(input.event.event_id);
+      expect(logged).not.toContain(input.event.post_id);
+      expect(logged).not.toContain(input.relay_binding);
+    }
   });
   it("Queue保存が8秒で終わらなければ503で応答し、後から保存されても同じIDを使う", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
