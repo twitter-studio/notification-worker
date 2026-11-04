@@ -1,6 +1,7 @@
 import { ConfigError, isEnabled, relayConfig } from "./config";
 import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
 import { MAX_SUBREQUESTS, type RelayDeps, type RelayOutcome, sendToRelay } from "./relay";
+import { recordObservation } from "./telemetry";
 import { MIN_SECRET_LENGTH, verifyMockSignature } from "./verify";
 import { normalizeXEvent, verifyXSignature, XUserID, xCRC } from "./x-activity";
 import { relayBinding, type XJob, xEventID } from "./x-queue";
@@ -204,10 +205,12 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
     ]);
   } catch {
     log("error", "x_enqueue_failed");
+    recordObservation({ kind: "enqueue_failed" });
     return problem(503, "Service Unavailable", { "Retry-After": "60" });
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+  recordObservation({ kind: "enqueued", type: event.type });
   return Response.json({ counts: { queued: 1 } });
 }
 

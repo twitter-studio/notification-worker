@@ -34,7 +34,12 @@
       }
     ]
   },
+  "triggers": { "crons": ["*/5 * * * *"] },
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "redact_query_string": true,
+    "logs": { "enabled": true, "invocation_logs": false },
+    "traces": { "enabled": false }
   }
 }

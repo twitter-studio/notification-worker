@@ -1,4 +1,5 @@
 import { handle } from "./app";
+import { recordQueueState } from "./telemetry";
 import { handleXQueue } from "./x-queue";
 
 // 名前付きの export は置かない。Workers では、名前付きの export が別の入口 (entrypoint) として呼べてしまうため。
@@ -11,6 +12,9 @@ export default {
       },
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     });
+  },
+  scheduled(_controller, env) {
+    return recordQueueState(env.X_EVENTS);
   },
   queue(batch, env) {
     return handleXQueue(batch.messages, env, {

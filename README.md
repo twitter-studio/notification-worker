@@ -153,3 +153,7 @@ pnpm build   # デプロイはしない (--dry-run)
 認可後のAPI利用・購読・Cloudflareへの資格情報保存は別の実行範囲です。利用者のMacだけにtokenを置き、運営へ渡しません。実行環境が異なるため、OAuth CLIはNodeのテスト、Workerはworkerdのテストで検証します。
 
 公式手順（2026-11-04確認）: [X OAuth 2.0 PKCE](https://docs.x.com/fundamentals/authentication/oauth-2-0/user-access-token)、[アプリ種別とloopback Callback](https://docs.x.com/fundamentals/developer-apps#callback-urls)。
+
+## 利用者Workerの監視
+
+[Queue滞留・中継失敗の監視手順](ops/README.md) を参照。5分のCronと個人情報を含まない種類別集計を用意している。配置と警報の有効化・通知先の設定は別途必要。

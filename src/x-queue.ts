@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isEnabled, type RelayConfig, relayConfig } from "./config";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
 import { type RelayDeps, sendToRelay } from "./relay";
+import { recordObservation } from "./telemetry";
 import { XUserID } from "./x-activity";
 
 const Encoded = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
@@ -59,7 +60,7 @@ export async function handleXQueue(
       eventTime < now - MAX_EVENT_AGE_MS ||
       eventTime > now + CLOCK_SKEW_MS
     ) {
-      console.info({ event: "x_queue_discarded", reason: "inactive_invalid_or_expired" });
+      recordObservation({ kind: "discarded", reason: "inactive_invalid_or_expired" });
       message.ack();
       continue;
     }
@@ -70,22 +71,26 @@ export async function handleXQueue(
       if (
         (await relayBinding(config, XUserID.parse(env.X_USER_ID))) !== parsed.data.relay_binding
       ) {
-        console.info({ event: "x_queue_discarded", reason: "relay_changed" });
+        recordObservation({ kind: "discarded", reason: "relay_changed" });
         message.ack();
         continue;
       }
       const outcome = await sendToRelay(config, parsed.data.event, deps, { remaining: 3 });
-      console.info({ event: "x_queue_delivery", outcome: outcome.kind });
+      recordObservation({ kind: "delivery", type: parsed.data.event.type, outcome: outcome.kind });
       if (outcome.kind === "accepted" || outcome.kind === "duplicate") {
         message.ack();
         continue;
       }
       if (outcome.kind === "retry_later") delay = Math.max(1, outcome.retryAfterSeconds);
     } catch {
-      console.error({ event: "x_queue_delivery", outcome: "configuration_or_transport_error" });
+      recordObservation({
+        kind: "delivery",
+        type: parsed.data.event.type,
+        outcome: "configuration_or_transport_error",
+      });
     }
     if (message.attempts >= 6) {
-      console.error({ event: "x_queue_discarded", reason: "attempt_limit" });
+      recordObservation({ kind: "discarded", reason: "attempt_limit" });
       message.ack();
     } else message.retry({ delaySeconds: delay });
   }
