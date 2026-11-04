@@ -2,6 +2,10 @@ import { ConfigError, isEnabled, relayConfig } from "./config";
 import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
 import { MAX_SUBREQUESTS, type RelayDeps, type RelayOutcome, sendToRelay } from "./relay";
 import { MIN_SECRET_LENGTH, verifyMockSignature } from "./verify";
+import { normalizeXEvent, verifyXSignature, XUserID, xCRC } from "./x-activity";
+import { relayBinding, type XJob, xEventID } from "./x-queue";
+
+export type AppDeps = RelayDeps & { enqueueX: (job: XJob) => Promise<void> };
 
 // 利用者の Worker の入口。Hono は使わない (入口が少なく、設計書 §6 のとおり、小さな処理で足りるため)。
 
@@ -121,7 +125,86 @@ async function handleMockWebhook(request: Request, env: Env, deps: RelayDeps): P
   return Response.json({ counts });
 }
 
-export async function handle(request: Request, env: Env, deps: RelayDeps): Promise<Response> {
+async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promise<Response> {
+  const secret = env.X_OAUTH2_CLIENT_SECRET ?? "";
+  if (secret.length < MIN_SECRET_LENGTH) {
+    log("error", "invalid_configuration", { setting: "X_OAUTH2_CLIENT_SECRET" });
+    return problem(500, "Internal Server Error");
+  }
+  if (request.method === "GET") {
+    const tokens = new URL(request.url).searchParams.getAll("crc_token");
+    const token = tokens[0];
+    if (tokens.length !== 1 || token === undefined || token.length === 0 || token.length > 1024)
+      return problem(400, "Bad Request");
+    return Response.json(
+      { response_token: await xCRC(secret, token) },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  const body = await readBody(request);
+  if (body === undefined) return problem(413, "Content Too Large");
+  // OAuth 1.0へのfallbackは設けず、OAuth 2.0の公式ヘッダーだけを検証する (ADR-0002)。
+  if (
+    !(await verifyXSignature(
+      secret,
+      request.headers.get("X-Twitter-Webhooks-Signature-OAuth2"),
+      body,
+    ))
+  )
+    return problem(401, "Unauthorized");
+  const recipient = XUserID.safeParse(env.X_USER_ID);
+  if (!recipient.success) {
+    log("error", "invalid_configuration", { setting: "X_USER_ID" });
+    return problem(500, "Internal Server Error");
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body));
+  } catch {
+    return problem(400, "Bad Request");
+  }
+  let event: ReturnType<typeof normalizeXEvent>;
+  try {
+    event = normalizeXEvent(json, recipient.data, new Date());
+  } catch {
+    return problem(422, "Unprocessable Content");
+  }
+  if (event === undefined) return Response.json({ counts: { dropped: 1 } });
+  let config: ReturnType<typeof relayConfig>;
+  try {
+    config = relayConfig(env);
+  } catch (error) {
+    if (!(error instanceof ConfigError)) throw error;
+    log("error", "invalid_configuration", { setting: error.setting });
+    return problem(500, "Internal Server Error");
+  }
+  const idSecret = env.X_EVENT_ID_SECRET ?? "";
+  if (idSecret.length < MIN_SECRET_LENGTH) {
+    log("error", "invalid_configuration", { setting: "X_EVENT_ID_SECRET" });
+    return problem(500, "Internal Server Error");
+  }
+  const job: XJob = {
+    event: { ...event, event_id: await xEventID(idSecret, recipient.data, event) },
+    relay_binding: await relayBinding(config),
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      deps.enqueueX(job),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("enqueue_timeout")), 8000);
+      }),
+    ]);
+  } catch {
+    log("error", "x_enqueue_failed");
+    return problem(503, "Service Unavailable", { "Retry-After": "60" });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  return Response.json({ counts: { queued: 1 } });
+}
+
+export async function handle(request: Request, env: Env, deps: AppDeps): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (pathname === "/health") {
     if (request.method !== "GET") return problem(405, "Method Not Allowed", { Allow: "GET" });
@@ -135,9 +218,10 @@ export async function handle(request: Request, env: Env, deps: RelayDeps): Promi
     return handleMockWebhook(request, env, deps);
   }
   if (pathname === "/webhooks/x") {
-    // X の連携 (X-001) は、X の規約の判断 (LEGAL-001) が通るまで作らない。有効にしても、まだ受けない。
     if (!isEnabled(env.ENABLE_X_ACTIVITY)) return problem(404, "Not Found");
-    return problem(501, "Not Implemented");
+    if (request.method !== "GET" && request.method !== "POST")
+      return problem(405, "Method Not Allowed", { Allow: "GET, POST" });
+    return handleXWebhook(request, env, deps);
   }
   return problem(404, "Not Found");
 }

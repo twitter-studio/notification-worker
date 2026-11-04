@@ -6,3 +6,9 @@ RELAY_TOKEN=
 # 模擬の Webhook の署名の鍵 (32 文字以上の乱数)。ENABLE_MOCK_EVENTS を "true" にするときだけ要る。
 # 作り方は README の「模擬のイベントで試す」(画面に出さずに .dev.vars へ書く)。
 MOCK_WEBHOOK_SECRET=
+
+# XAAのOAuth 2.0 client secret。bearerやユーザーのアクセストークンではない。無効フラグの間は不要。
+X_OAUTH2_CLIENT_SECRET=
+
+# 重複除去IDを作る独立した32文字以上の乱数。Xの署名秘密と共用しない。
+X_EVENT_ID_SECRET=

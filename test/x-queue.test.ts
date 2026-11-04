@@ -1,0 +1,119 @@
+import { describe, expect, it, vi } from "vitest";
+import { relayConfig } from "../src/config";
+import { handleXQueue, relayBinding, XJobSchema, xEventID } from "../src/x-queue";
+import { fakeRelay, testEnv } from "./helpers";
+
+const event = {
+  type: "mention",
+  post_id: "2222222222222222222",
+  occurred_at: new Date().toISOString(),
+} as const;
+const enabled = () => testEnv({ ENABLE_X_ACTIVITY: "true" });
+async function job() {
+  return XJobSchema.parse({
+    event: {
+      ...event,
+      occurred_at: new Date().toISOString(),
+      event_id: await xEventID(enabled().X_EVENT_ID_SECRET, enabled().X_USER_ID, event),
+    },
+    relay_binding: await relayBinding(relayConfig(enabled())),
+  });
+}
+function message(body: unknown, attempts = 1) {
+  return { body, attempts, ack: vi.fn(), retry: vi.fn() };
+}
+
+describe("Xイベントの永続Queueからの配信", () => {
+  it.each(["accepted", "duplicate"])("中継の%sを受けた後だけackする", async (status) => {
+    const relay = fakeRelay([Response.json({ status }, { status: 202 })]);
+    const input = await job();
+    const item = message(input);
+    await handleXQueue([item], enabled(), relay.deps);
+    expect(item.ack).toHaveBeenCalledOnce();
+    expect(item.retry).not.toHaveBeenCalled();
+    expect(relay.sent[0]?.body).toEqual(input.event);
+  });
+  it("長い待機は縮めず、資格情報や送り先の誤りも成功としてackしない", async () => {
+    for (const status of [401, 403, 302, 404, 422, 429, 503]) {
+      const relay = fakeRelay([new Response(null, { status, headers: { "Retry-After": "3600" } })]);
+      const item = message(await job());
+      await handleXQueue([item], enabled(), relay.deps);
+      expect(item.ack, String(status)).not.toHaveBeenCalled();
+      expect(item.retry).toHaveBeenCalledWith({
+        delaySeconds: status === 429 || status === 503 ? 3600 : 60,
+      });
+    }
+  });
+  it("上限で破棄し、無限に再送しない", async () => {
+    const relay = fakeRelay([new Response(null, { status: 401 })]);
+    const item = message(await job(), 6);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await handleXQueue([item], enabled(), relay.deps);
+      expect(item.ack).toHaveBeenCalledOnce();
+      expect(item.retry).not.toHaveBeenCalled();
+      expect(errors).toHaveBeenCalledWith({ event: "x_queue_discarded", reason: "attempt_limit" });
+    } finally {
+      errors.mockRestore();
+    }
+  });
+  it("無効・不正・古い・未来・別アカウントへの変更後のjobは送らない", async () => {
+    const input = await job();
+    const old = {
+      ...input,
+      event: { ...input.event, occurred_at: new Date(Date.now() - 86400001).toISOString() },
+    };
+    const future = {
+      ...input,
+      event: { ...input.event, occurred_at: new Date(Date.now() + 600000).toISOString() },
+    };
+    const relay = fakeRelay();
+    for (const [body, environment] of [
+      [input, testEnv({ ENABLE_X_ACTIVITY: "false" })],
+      [{ ...input, extra: "private" }, enabled()],
+      [old, enabled()],
+      [future, enabled()],
+      [input, testEnv({ ENABLE_X_ACTIVITY: "true", RELAY_TOKEN: `tsr_${"B".repeat(43)}` })],
+    ] as const) {
+      const item = message(body);
+      await handleXQueue([item], environment, relay.deps);
+      expect(item.ack).toHaveBeenCalledOnce();
+      expect(item.retry).not.toHaveBeenCalled();
+    }
+    expect(relay.sent).toEqual([]);
+  });
+  it("イベントIDは時刻や配信IDに依存せず、鍵と本人と種類とツイートで変わる", async () => {
+    const first = await xEventID(enabled().X_EVENT_ID_SECRET, "111", event);
+    expect(
+      await xEventID(enabled().X_EVENT_ID_SECRET, "111", {
+        ...event,
+        occurred_at: new Date(0).toISOString(),
+      }),
+    ).toBe(first);
+    for (const id of [
+      await xEventID("different-secret", "111", event),
+      await xEventID(enabled().X_EVENT_ID_SECRET, "333", event),
+      await xEventID(enabled().X_EVENT_ID_SECRET, "111", { ...event, type: "reply" }),
+      await xEventID(enabled().X_EVENT_ID_SECRET, "111", { ...event, post_id: "444" }),
+    ])
+      expect(id).not.toBe(first);
+    expect(first).toMatch(/^x1_[A-Za-z0-9_-]{43}$/);
+  });
+  it("誤設定は入力値を出さず、成功にせず再送する", async () => {
+    const relay = fakeRelay();
+    const item = message(await job());
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await handleXQueue(
+        [item],
+        testEnv({ ENABLE_X_ACTIVITY: "true", RELAY_URL: "private-canary" }),
+        relay.deps,
+      );
+      expect(item.retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+      expect(JSON.stringify(errors.mock.calls)).not.toContain("private-canary");
+      expect(relay.sent).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});

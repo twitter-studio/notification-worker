@@ -47,7 +47,11 @@ type Sent = {
 export function fakeRelay(responses: (Response | Error)[] = []) {
   const sent: Sent[] = [];
   const sleeps: number[] = [];
+  const queued: unknown[] = [];
   const deps = {
+    enqueueX: async (job: unknown) => {
+      queued.push(job);
+    },
     fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       sent.push({
@@ -64,7 +68,7 @@ export function fakeRelay(responses: (Response | Error)[] = []) {
       sleeps.push(ms);
     },
   };
-  return { deps, sent, sleeps };
+  return { deps, sent, sleeps, queued };
 }
 
 export function mockEvent(overrides: Record<string, unknown> = {}) {
