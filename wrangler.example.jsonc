@@ -6,6 +6,7 @@
   "name": "notification-worker",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-29",
+  "compatibility_flags": ["global_fetch_strictly_public"],
   // Wrangler の利用状況を Cloudflare に送らない。
   "send_metrics": false,
   // 版ごとの URL (Version URL) を作らない。試すために模擬の入口を有効にした版が、版の URL で開いたまま残らないように。

@@ -19,6 +19,7 @@ XAAの署名とCRCは模擬Webhookの独自形式と異なる。XはWebhookに10
 - Queueの保存成功後だけHTTP 200を返す。保存が失敗するか8秒で終わらなければ503。タイムアウト後に保存が完了する場合も、同じIDで重複を除く。中継へのfetchやsleepをHTTP処理中に行わない。
 - Queue consumerは1件・並列1で処理し、中継のaccepted/duplicateでackする。待機要求にはRetry-Afterを縮めず最大1日まで反映し、設定・認証の失敗にも再試行する。最大6回の処理で破棄し、固定の理由だけをログに残す。無効化・不正job・期限切れはackして停止する。本人ID・中継資格情報・送り先のいずれかを変更したjobは別アカウントへ送らず破棄する。
 - Queue保持は配置時に1日へ設定する。無料プランは1日固定。consumerにもイベント時刻の期限を置く。DLQは作らず、期限切れ・上限の破棄を記録する。無損失配送を保証する構成ではない。
+- 中継へのglobal `fetch`は`global_fetch_strictly_public`を指定し、公開Internetと同じ経路で送る。同じアカウントのWorkerへ送る場合も、URLに対応するWorkerとCloudflareのセキュリティ設定を通す。送り先は引き続き`RELAY_URL`から決め、リダイレクトは追わない。利用者と運営が別アカウントになる構成を保つため、運営WorkerへのService bindingは要求しない。
 - 型はWranglerで再生成する。新規Queueと秘密の発行・実配置は、この実装の検証には含めない。
 
 ## 採らなかった案
@@ -43,3 +44,5 @@ XAAの署名とCRCは模擬Webhookの独自形式と異なる。XはWebhookに10
 - [Cloudflare Queuesの設定](https://developers.cloudflare.com/queues/configuration/configure-queues/)
 - [Queueのack・retry](https://developers.cloudflare.com/queues/configuration/javascript-apis/)
 - [Queueの期限と遅延上限](https://developers.cloudflare.com/queues/platform/limits/)
+- [Worker間のfetch](https://developers.cloudflare.com/workers/runtime-apis/fetch/)
+- [公開経路でのglobal fetch](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public)
