@@ -115,4 +115,4 @@ mise exec -- node scripts/x-activity-session.mjs recover '<保護ディレクト
 
 ## 検証範囲
 
-CLIはNodeの合成HTTP応答と保護ファイルで、正常終了、作成応答の喪失、期限・権限・本人・既存購読の拒否、回復・要求上限を検証する。Workerの署名・重複・Queueはworkerdで検証する。このCLIそのものの実X接続、別アカウントでの初回配置、一般公開までの操作は未検証。過去のQA-002成功を新CLIの実接続成功として扱わない。
+CLIはNodeの合成HTTP応答と保護ファイルで、正常終了、作成応答の喪失、期限・権限・本人・既存購読の拒否、回復・要求上限を検証する。Workerの署名・重複・Queueはworkerdで検証する。新CLIの実X接続・SIGINTによる早期解除・停止確認は [USER-003の記録](../docs/verification/2026-11-05-user-setup-cli.md) を参照。別アカウントでの初回配置・一般公開、実障害からのrecoverは未検証。過去のQA-002成功を新CLIの実接続成功として扱わない。
