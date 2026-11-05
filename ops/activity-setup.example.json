@@ -1,0 +1,6 @@
+{
+  "user_id": "123",
+  "username": "your_account",
+  "webhook_id": "456",
+  "webhook_url": "https://your-worker.your-subdomain.workers.dev/webhooks/x"
+}

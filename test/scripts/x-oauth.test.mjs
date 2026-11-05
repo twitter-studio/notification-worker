@@ -98,6 +98,7 @@ test("S256・最小scope・固定endpointで交換し、tokenだけを0600で保
   assert.equal(calls, 1);
   const saved = JSON.parse(readFileSync(result.tokenPath, "utf8"));
   assert.equal(saved.access_token, tokenValue);
+  assert.equal(saved.client_id, clientID);
   assert.equal(saved.scope, "tweet.read users.read");
   assert.equal(saved.refresh_token, undefined);
   assert.equal(saved.client_secret, undefined);

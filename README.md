@@ -23,36 +23,7 @@
 
 ## デプロイの手順
 
-```sh
-mise install
-pnpm install --frozen-lockfile
-cp wrangler.example.jsonc wrangler.jsonc
-```
-
-1. `wrangler.jsonc` の `name` を自分の Worker の名前に、`RELAY_URL` をアプリに出た中継の API の URL (https、パスなし) に変えます。
-2. Cloudflare にログインします。
-
-   ```sh
-   pnpm wrangler login
-   ```
-
-3. 中継の資格情報を、秘密として置きます (値は聞かれたときに貼ります。ファイルやコマンドの引数に書きません)。
-
-   ```sh
-   pnpm wrangler secret put RELAY_TOKEN --config wrangler.jsonc
-   ```
-
-4. デプロイします。
-
-   ```sh
-   pnpm wrangler deploy --config wrangler.jsonc
-   ```
-
-5. 動いているかを確かめます。
-
-   ```sh
-   curl https://<Worker の名前>.<アカウントのサブドメイン>.workers.dev/health
-   ```
+[初回セットアップと回復の手順](ops/setup.md) に、Queue作成、無効配置、秘密保存、監視、OAuth、Webhook/CRC、30分の試験購読、解除、停止・削除をまとめています。配置は保護したGitHub Environmentで行います。現時点では配置workflow未実装のため、OPS-003の完了または所有者による対象を限定したCLI例外の承認が必要です。
 
 ## 模擬のイベントで試す
 
@@ -88,7 +59,7 @@ cp wrangler.example.jsonc wrangler.jsonc
 
 ## XAAの有効化前に確認すること
 
-[ADR-0002](docs/adr/0002-x-activity-webhook.md)に署名・本人の確認・再送・破棄の条件を記録しています。LEGAL-001はオーナー判断で完了しました。実API接続や課金を伴う操作、配置は別途承認を得てから行います。この実装の検証では実アカウント・X APIを使っていません。
+[ADR-0002](docs/adr/0002-x-activity-webhook.md)に署名・本人の確認・再送・破棄の条件を記録しています。LEGAL-001はオーナー判断で完了しました。実API接続や課金を伴う操作、配置は別途承認を得てから行います。実接続の結果は[QA-002の記録](docs/verification/2026-11-05-qa002.md)を参照してください。補助CLIの実接続検証は別のゲートです。
 
 有効化には次の構成が必要です。
 
@@ -105,11 +76,11 @@ cp wrangler.example.jsonc wrangler.jsonc
 
 ## 秘密の入れ替え
 
-- **中継の資格情報**: アプリの設定の画面で入れ替えると、新しい値が 1 回だけ出て、前の値はすぐに使えなくなります。すぐに `pnpm wrangler secret put RELAY_TOKEN --config wrangler.jsonc` で新しい値を置きます (デプロイし直す必要はありません)。置くまでのあいだに届いたイベントは、中継の API が 401 で拒み、Worker は送り直しません (ログに `unauthorized` が出ます)。置いたら、模擬のイベントで確かめます。
+- **中継の資格情報**: アプリの設定の画面で入れ替えると、新しい値が 1 回だけ出て、前の値はすぐに使えなくなります。承認した配置経路でWorker secretを更新します。計画的な更新では先に購読を解除しQueueを空にします。XのQueue jobは資格情報変更後に破棄されるため、[更新と停止の手順](ops/setup.md)に従います。模擬イベントの401は送り直しません。
 - **漏れたかもしれないとき**: アプリで中継の資格情報を取り消すか入れ替えます。取り消すと、入れ替えるまで通知は届きません。
 - **模擬の Webhook の鍵**: 上の手順 1 と 2 をやり直します (手順 1 が `.dev.vars` の行を置き換えます)。
 
-## やり直しの扱い
+## 模擬イベントのやり直しの扱い
 
 - 中継の API が混んでいるとき (409、429、500、502、503、504) は、`Retry-After` が 5 秒までなら Worker の中で待って送り直します (今の中継の API は 30 秒以上を返すので、実際に Worker の中で送り直すのは、主につながらないときです)。長い待ちのときは、そこで送るのをやめ、Webhook を送ってきた側へ 503 と、中継の API が求めた `Retry-After` を返します。
 - 資格情報が使えない (401、403) ときと、中継の API でない先の答え (リダイレクト、404、405。`RELAY_URL` の誤り) のときは、残りのイベントも送らずにやめ、ログに error を出します。
@@ -146,7 +117,7 @@ pnpm build   # デプロイはしない (--dry-run)
    ```
 
 4. 出力されたローカルHTMLファイルをブラウザで開き、リンクからXの認可画面へ進みます。アカウントと`tweet.read users.read`を確認し、承認します。`offline.access`・DM・書き込みの権限は求めません。PKCEはS256、stateとverifierは起動ごとに作ります。
-5. 承認するとClient Secret・認可コード・verifierを`https://api.x.com/2/oauth2/token`へ送り、得たtokenを同じディレクトリの`user-token.json`へ0600で保存します。callbackページ・標準出力・エラーには値を出しません。既存のtokenファイルは上書きしません。期限切れのファイルを残す場合は、保護ディレクトリ内で別名へ移してからやり直します。
+5. 承認するとClient Secret・認可コード・verifierを`https://api.x.com/2/oauth2/token`へ送り、得たtokenと認可に使ったClient IDを同じディレクトリの`user-token.json`へ0600で保存します。callbackページ・標準出力・エラーには値を出しません。既存のtokenファイルは上書きしません。期限切れのファイルを残す場合は、保護ディレクトリ内で別名へ移してからやり直します。
 
 待機は5分、token交換は10秒までです。拒否・timeout・SIGINT/SIGTERMでは、一時HTMLと予約した空ファイルを片付けます。強制終了や電源断では残る場合があります。再実行前に、前回プロセスの終了と空ファイルであることを確認します。通常の資格情報ファイルは削除しません。
 
