@@ -1,0 +1,8 @@
+{
+  "live_x_api": false,
+  "dedicated_app": false,
+  "expires_at": "2026-11-05T00:00:00Z",
+  "billing_checked_at": "2026-11-05T00:00:00Z",
+  "cycle_cap_usd": 1,
+  "auto_recharge": false
+}

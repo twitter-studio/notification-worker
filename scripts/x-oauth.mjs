@@ -228,7 +228,7 @@ export async function runOAuth({
         if (finished) return;
         writeFileSync(
           output,
-          `${JSON.stringify({ access_token: token.access_token, token_type: token.token_type, scope: scopes.join(" "), expires_at: Date.now() + token.expires_in * 1000 })}\n`,
+          `${JSON.stringify({ access_token: token.access_token, client_id: clientID, token_type: token.token_type, scope: scopes.join(" "), expires_at: Date.now() + token.expires_in * 1000 })}\n`,
         );
         fsyncSync(output);
         succeeded = true;
