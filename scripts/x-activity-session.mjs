@@ -16,8 +16,8 @@ import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 
 const MINUTE = 60_000;
-const ID = z.string().regex(/^[1-9][0-9]{0,18}$/);
-const Kinds = z.enum(["post.mention.create", "post.reply.create"]);
+export const ID = z.string().regex(/^[1-9][0-9]{0,18}$/);
+export const Kinds = z.enum(["post.mention.create", "post.reply.create"]);
 const webhookURL = z.url().refine((value) => {
   const url = new URL(value);
   return (
@@ -33,7 +33,7 @@ const webhookURL = z.url().refine((value) => {
     )
   );
 });
-const Config = z.strictObject({
+export const Config = z.strictObject({
   user_id: ID,
   username: z.string().regex(/^[A-Za-z0-9_]{1,15}$/),
   webhook_id: ID,
@@ -47,7 +47,7 @@ const Approval = z.strictObject({
   cycle_cap_usd: z.number().positive().max(1),
   auto_recharge: z.literal(false),
 });
-const Token = z.object({
+export const Token = z.object({
   access_token: z
     .string()
     .min(1)
@@ -69,7 +69,7 @@ const State = z.strictObject({
   cleaned: z.boolean(),
   subscriptions: z.array(z.strictObject({ id: ID, type: Kinds, deleted: z.boolean() })).max(2),
 });
-const Row = z.object({
+export const Row = z.object({
   subscription_id: ID,
   event_type: z.string(),
   filter: z.object({ user_id: ID.optional() }),
@@ -83,7 +83,7 @@ export class ActivityFailure extends Error {
     super("activity_session_failed");
   }
 }
-function directoryInfo(directory) {
+export function directoryInfo(directory) {
   const stat = lstatSync(directory);
   if (
     !isAbsolute(directory) ||
@@ -104,16 +104,16 @@ function privateText(directory, name, limit = 65536) {
     closeSync(fd);
   }
 }
-function privateJSON(directory, name) {
+export function privateJSON(directory, name) {
   return JSON.parse(privateText(directory, name));
 }
-function credential(directory, name) {
+export function credential(directory, name) {
   const value = privateText(directory, name, 8192).trim();
   if (!/^[\x21-\x7e]{1,8192}$/.test(value)) throw new ActivityFailure();
   return value;
 }
-function store(directory, state) {
-  const path = join(directory, "activity-session.json");
+export function store(directory, state, filename = "activity-session.json") {
+  const path = join(directory, filename);
   const temporary = join(directory, `.activity-${randomUUID()}.tmp`);
   let fd;
   try {
@@ -128,7 +128,7 @@ function store(directory, state) {
     if (existsSync(temporary)) unlinkSync(temporary);
   }
 }
-function lock(directory) {
+export function lock(directory) {
   const path = join(directory, "activity-session.lock");
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
   const identity = fstatSync(fd);
@@ -169,7 +169,7 @@ function remember(state, row) {
     });
   }
 }
-async function responseJSON(response) {
+export async function responseJSON(response) {
   if (!response.body) throw new ActivityFailure();
   const reader = response.body.getReader();
   const chunks = [];

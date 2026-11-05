@@ -116,3 +116,19 @@ mise exec -- node scripts/x-activity-session.mjs recover '<保護ディレクト
 ## 検証範囲
 
 CLIはNodeの合成HTTP応答と保護ファイルで、正常終了、作成応答の喪失、期限・権限・本人・既存購読の拒否、回復・要求上限を検証する。Workerの署名・重複・Queueはworkerdで検証する。新CLIの実X接続・SIGINTによる早期解除・停止確認は [USER-003の記録](../docs/verification/2026-11-05-user-setup-cli.md) を参照。別アカウントでの初回配置・一般公開、実障害からのrecoverは未検証。過去のQA-002成功を新CLIの実接続成功として扱わない。
+
+## 継続する購読の作成・延長・解除
+
+自分の専用Xアプリ、本人認可、Webhookを用意し、上の手順と同じ保護ディレクトリに `activity-setup.json`、`client-id.txt`、`app-bearer-token.txt`、`user-token.json` を置く。先に利用するイベント、Xの従量料金、Cloudflareの利用量、Workerと中継先を確認する。購読の管理操作は同じXアプリに対して一度に1つずつ実行する。[Xのイベント料金](https://docs.x.com/x-api/activity/event-pricing)
+
+```sh
+mise exec -- node scripts/x-activity-subscriptions.mjs start '<保護ディレクトリの絶対パス>' --confirm '<UTCの期限>'
+mise exec -- node scripts/x-activity-subscriptions.mjs status '<保護ディレクトリの絶対パス>'
+mise exec -- node scripts/x-activity-subscriptions.mjs renew '<保護ディレクトリの絶対パス>' --confirm '<現在より後のUTCの期限>'
+mise exec -- node scripts/x-activity-subscriptions.mjs stop '<保護ディレクトリの絶対パス>' --confirm
+```
+
+- 期限は `2026-12-01T00:00:00Z` の形式で指定する。期限を設けず開始する場合は、`start` の最後の引数を `--no-expiry` にする。
+- `start` と `renew` は本人認可を使う。認可が切れたら同じアプリ・同じ本人で再認可する。延長は購読が有効なうちに実行する。[Xの購読期限と更新](https://docs.x.com/x-api/activity/introduction#subscription-expiration)
+- 応答が失われたら、`status` で件数を確認し、同じ操作と期限で再実行する。途中でやめる場合は `stop` を実行する。作成・更新結果を一覧で確認できない場合、CLIは操作を保留する。期限付きなら期限到達後に停止を再確認する。無期限の場合は同じXアプリで購読が一覧に現れたかを確認する。`activity-subscriptions.json` は作成前の記録と購読IDを保存するので、完了まで保持する。プロセスが強制終了してロックが残った場合は、同じディレクトリで実行中のプロセスがないことを確認してから `activity-session.lock` を取り除く。
+- `stop` が `subscriptions: 0` を返したら、記録した購読の不在を確認できた。続けてWorkerのX入口を無効にし、Queueの状態とXの利用量を確認する。Webhookを外す操作は購読解除の後に行う。すでに外した場合でも、同じApp-only Bearerで解除を続けられる。Bearerも変更済みの場合は、同じXアプリのコンソールで購読の残りを確認する。
