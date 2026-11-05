@@ -52,6 +52,8 @@ function fixture(t) {
     rejectReply: false,
     loseReply: false,
     delayed: null,
+    now: instant,
+    expireOnList: false,
   };
   const fetchImpl = async (url, init) => {
     const path = new URL(url);
@@ -68,6 +70,7 @@ function fixture(t) {
     if (init.method === "GET") {
       assert.equal(path.pathname, endpoint);
       assert.equal(path.searchParams.get("user_id"), "123");
+      if (controls.expireOnList) controls.now = token.expires_at;
       const cursor = path.searchParams.get("pagination_token");
       if (controls.hide) return Response.json({ data: [], meta: { result_count: 0 } });
       const page =
@@ -129,7 +132,7 @@ function fixture(t) {
         expiresAt,
         confirmed,
         fetchImpl,
-        now: () => instant,
+        now: () => controls.now,
       }),
   };
 }
@@ -242,4 +245,12 @@ test("作成が明示的に拒否されたときは、既存分の解除を完�
   await assert.rejects(f.run("start", null));
   assert.deepEqual(await f.run("stop"), { status: "stopped", subscriptions: 0 });
   assert.deepEqual(f.mutations, ["POST", "POST", "DELETE"]);
+});
+
+test("一覧取得中に本人認可が期限切れになっても未送信の購読を保留しない", async (t) => {
+  const f = fixture(t);
+  f.controls.expireOnList = true;
+  await assert.rejects(f.run("start", null));
+  assert.deepEqual(f.mutations, []);
+  assert.deepEqual(await f.run("stop"), { status: "stopped", subscriptions: 0 });
 });

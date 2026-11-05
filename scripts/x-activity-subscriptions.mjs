@@ -64,12 +64,15 @@ function ownedRows(rows, state) {
   return owned;
 }
 
-class SubscriptionRejected extends ActivityFailure {}
+class SubscriptionUnchanged extends ActivityFailure {}
 
 function client(fetchImpl, app, token, now) {
   return async (method, path, body, signal) => {
     const userContext = method === "POST" || path === "/2/users/me";
-    if (userContext && (!token || token.expires_at <= now())) throw new ActivityFailure();
+    if (signal?.aborted || (userContext && (!token || token.expires_at <= now()))) {
+      if (method === "POST") throw new SubscriptionUnchanged();
+      throw new ActivityFailure();
+    }
     const timeout = AbortSignal.timeout(15000);
     const response = await fetchImpl(`https://api.x.com${path}`, {
       method,
@@ -84,7 +87,7 @@ function client(fetchImpl, app, token, now) {
     if (response.status !== 200) {
       await response.body?.cancel();
       if (method === "POST" && [400, 401, 403, 404, 422, 429].includes(response.status))
-        throw new SubscriptionRejected();
+        throw new SubscriptionUnchanged();
       throw new ActivityFailure();
     }
     const data = await responseJSON(response);
@@ -295,7 +298,7 @@ export async function manageSubscriptions({
           signal,
         );
       } catch (error) {
-        if (error instanceof SubscriptionRejected) {
+        if (error instanceof SubscriptionUnchanged) {
           if (state.ids[kind] === null) delete state.ids[kind];
           state.pending = null;
           save();
