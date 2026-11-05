@@ -90,7 +90,7 @@ describe("Xイベントの永続Queueからの配信", () => {
     }
     expect(relay.sent).toEqual([]);
   });
-  it("イベントIDは時刻や配信IDに依存せず、鍵と本人と種類とツイートで変わる", async () => {
+  it("イベントIDは種類や時刻に依存せず、鍵と本人とツイートで変わる", async () => {
     const first = await xEventID(enabled().X_EVENT_ID_SECRET, "111", event);
     expect(
       await xEventID(enabled().X_EVENT_ID_SECRET, "111", {
@@ -98,14 +98,25 @@ describe("Xイベントの永続Queueからの配信", () => {
         occurred_at: new Date(0).toISOString(),
       }),
     ).toBe(first);
+    expect(await xEventID(enabled().X_EVENT_ID_SECRET, "111", { ...event, type: "reply" })).toBe(
+      first,
+    );
     for (const id of [
       await xEventID("different-secret", "111", event),
       await xEventID(enabled().X_EVENT_ID_SECRET, "333", event),
-      await xEventID(enabled().X_EVENT_ID_SECRET, "111", { ...event, type: "reply" }),
       await xEventID(enabled().X_EVENT_ID_SECRET, "111", { ...event, post_id: "444" }),
     ])
       expect(id).not.toBe(first);
-    expect(first).toMatch(/^x1_[A-Za-z0-9_-]{43}$/);
+    expect(first).toMatch(/^x2_[A-Za-z0-9_-]{43}$/);
+  });
+  it("切り替え前のjobを新しい通知として送り直さない", async () => {
+    const input = await job();
+    const relay = fakeRelay();
+    const item = message({ ...input, event: { ...input.event, event_id: `x1_${"A".repeat(43)}` } });
+    await handleXQueue([item], enabled(), relay.deps);
+    expect(item.ack).toHaveBeenCalledOnce();
+    expect(item.retry).not.toHaveBeenCalled();
+    expect(relay.sent).toEqual([]);
   });
   it("誤設定は入力値を出さず、成功にせず再送する", async () => {
     const relay = fakeRelay();

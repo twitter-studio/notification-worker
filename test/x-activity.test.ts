@@ -233,7 +233,7 @@ describe("許可イベントの正規化と再送", () => {
     expect(relay.queued).toHaveLength(1);
     const job = XJobSchema.parse(relay.queued[0]);
     expect(job.event).toEqual({
-      event_id: expect.stringMatching(/^x1_[A-Za-z0-9_-]{43}$/),
+      event_id: expect.stringMatching(/^x2_[A-Za-z0-9_-]{43}$/),
       type,
       post_id: "2222222222222222222",
       occurred_at: payload.data.created_at,
@@ -306,26 +306,54 @@ describe("許可イベントの正規化と再送", () => {
     expect(relay.sent[0]?.body).toEqual(relay.sent[1]?.body);
     expect(messages.every((message) => message.ack.mock.calls.length === 1)).toBe(true);
   });
-  it("同じ投稿のmentionとreplyは別の種類として数え、同一種類の再送は同じIDを使う", async () => {
+  it.each([
+    ["post.mention.create", "post.reply.create"],
+    ["post.reply.create", "post.mention.create"],
+  ])("%sから%sへ到着しても同じ通知IDで1件にまとめる", async (first, second) => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const relay = fakeRelay();
-    for (const kind of ["post.mention.create", "post.reply.create", "post.mention.create"])
+    for (const kind of [first, second, first])
       expect((await post(event(kind), { relay })).status).toBe(200);
     const jobs = relay.queued.map((value) => XJobSchema.parse(value));
     expect(jobs[0]?.event.post_id).toBe(jobs[1]?.event.post_id);
-    expect(jobs[0]?.event.event_id).not.toBe(jobs[1]?.event.event_id);
+    expect(jobs[0]?.event.event_id).toBe(jobs[1]?.event.event_id);
     expect(jobs[0]?.event.event_id).toBe(jobs[2]?.event.event_id);
-    expect(info.mock.calls.map(([entry]) => entry)).toEqual([
-      expect.objectContaining({ stage: "enqueued", mention_count: 1, reply_count: 0 }),
-      expect.objectContaining({ stage: "enqueued", mention_count: 0, reply_count: 1 }),
-      expect.objectContaining({ stage: "enqueued", mention_count: 1, reply_count: 0 }),
-    ]);
+    expect(info.mock.calls.map(([entry]) => entry)).toEqual(
+      [first, second, first].map((kind) =>
+        expect.objectContaining({
+          stage: "enqueued",
+          mention_count: Number(kind === "post.mention.create"),
+          reply_count: Number(kind === "post.reply.create"),
+        }),
+      ),
+    );
     const logged = JSON.stringify(info.mock.calls);
     for (const input of jobs) {
       expect(logged).not.toContain(input.event.event_id);
       expect(logged).not.toContain(input.event.post_id);
       expect(logged).not.toContain(input.relay_binding);
     }
+    const consumer = fakeRelay([
+      Response.json({ status: "accepted" }, { status: 202 }),
+      Response.json({ status: "duplicate" }, { status: 202 }),
+      Response.json({ status: "duplicate" }, { status: 202 }),
+    ]);
+    const messages = jobs.map((body) => ({ body, attempts: 1, ack: vi.fn(), retry: vi.fn() }));
+    await handleXQueue(messages, env(), consumer.deps);
+    expect(consumer.sent.map((sent) => XJobSchema.shape.event.parse(sent.body).event_id)).toEqual(
+      jobs.map((input) => input.event.event_id),
+    );
+    expect(
+      messages.every(
+        (message) => message.ack.mock.calls.length === 1 && message.retry.mock.calls.length === 0,
+      ),
+    ).toBe(true);
+    expect(
+      info.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => entry.stage === "delivery")
+        .map((entry) => entry.outcome),
+    ).toEqual(["accepted", "duplicate", "duplicate"]);
   });
   it("Queue保存が8秒で終わらなければ503で応答し、後から保存されても同じIDを使う", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
