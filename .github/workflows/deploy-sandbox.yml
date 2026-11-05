@@ -8,11 +8,15 @@ on:
         required: true
         type: string
       confirmation:
-        description: deploy:SHA（migrationではmigrate:SHA）
+        description: 停止構成は deploy:SHA、X入口の有効化は deploy-x:SHA
         required: true
         type: string
+      x_activity_enabled:
+        description: X入口とXイベント処理を有効化する
+        type: boolean
+        default: false
       maintenance_confirmed:
-        description: 購読停止・Queue空・保守範囲の承認を確認した
+        description: 購読とQueueの状態・保守範囲の承認を確認した
         required: true
         default: false
         type: boolean
@@ -27,6 +31,7 @@ concurrency:
 
 env:
   DEPLOY_OPERATION: deploy
+  DEPLOY_X_ACTIVITY: ${{ inputs.x_activity_enabled }}
   DEPLOY_SHA: ${{ inputs.target_sha }}
   DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
   MAINTENANCE_CONFIRMED: ${{ inputs.maintenance_confirmed }}

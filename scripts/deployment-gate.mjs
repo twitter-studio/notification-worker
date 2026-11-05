@@ -5,6 +5,8 @@ export class DeploymentFailure extends Error {
 }
 export function deploymentRequest(env, allowMigration = false) {
   const operation = env.DEPLOY_OPERATION;
+  const xActivityEnabled = env.DEPLOY_X_ACTIVITY ?? "false";
+  const confirmation = xActivityEnabled === "true" ? "deploy-x" : operation;
   if (
     env.GITHUB_ACTIONS !== "true" ||
     env.GITHUB_RUN_ATTEMPT !== "1" ||
@@ -17,7 +19,9 @@ export function deploymentRequest(env, allowMigration = false) {
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(env.GITHUB_REPOSITORY ?? "") ||
     !/^[A-Za-z0-9-]{1,39}$/.test(env.DEPLOY_REVIEWER ?? "") ||
     !["deploy", ...(allowMigration ? ["migrate"] : [])].includes(operation) ||
-    env.DEPLOY_CONFIRMATION !== `${operation}:${env.GITHUB_SHA}` ||
+    !["true", "false"].includes(xActivityEnabled) ||
+    (xActivityEnabled === "true" && (allowMigration || operation !== "deploy")) ||
+    env.DEPLOY_CONFIRMATION !== `${confirmation}:${env.GITHUB_SHA}` ||
     env.MAINTENANCE_CONFIRMED !== "true" ||
     (operation === "migrate" ? env.BACKUP_CONFIRMED !== "true" : env.SCHEMA_CONFIRMED !== "true")
   )

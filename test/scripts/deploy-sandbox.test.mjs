@@ -31,7 +31,14 @@ const env = {
   X_USER_ID: "123",
   RELAY_URL: "https://relay.example.invalid",
 };
-function fixture({ mutate = () => {}, versionID = version, dirty = false, migrate = false } = {}) {
+function fixture({
+  mutate = () => {},
+  versionID = version,
+  dirty = false,
+  migrate = false,
+  enableX = false,
+  initialX = false,
+} = {}) {
   const selectedEnv = migrate
     ? {
         ...env,
@@ -40,7 +47,9 @@ function fixture({ mutate = () => {}, versionID = version, dirty = false, migrat
         BACKUP_CONFIRMED: "true",
         SCHEMA_CONFIRMED: "false",
       }
-    : env;
+    : enableX
+      ? { ...env, DEPLOY_X_ACTIVITY: "true", DEPLOY_CONFIRMATION: `deploy-x:${sha}` }
+      : env;
   const { config } = deploymentConfig(env);
   const secrets =
     kind === "worker"
@@ -117,8 +126,11 @@ function fixture({ mutate = () => {}, versionID = version, dirty = false, migrat
         let result;
         if (u.pathname.includes("/d1/database/"))
           result = { uuid: env.D1_DATABASE_ID, name: "notification-service" };
-        else if (u.pathname.endsWith("/settings")) result = structuredClone(snapshot);
-        else if (u.pathname.endsWith("/metrics")) result = { backlog_count: 0, backlog_bytes: 0 };
+        else if (u.pathname.endsWith("/settings")) {
+          result = structuredClone(snapshot);
+          const x = result.bindings.find(({ name }) => name === "ENABLE_X_ACTIVITY");
+          x.text = String(mutations === 0 ? initialX : enableX);
+        } else if (u.pathname.endsWith("/metrics")) result = { backlog_count: 0, backlog_bytes: 0 };
         else if (u.pathname.endsWith("/deployments"))
           result = { deployments: [{ versions: [{ version_id: versionID, percentage: 100 }] }] };
         else if (u.pathname.endsWith("/schedules"))
@@ -129,7 +141,15 @@ function fixture({ mutate = () => {}, versionID = version, dirty = false, migrat
       }
       assert.equal(options.headers, undefined);
       assert.equal(u.origin, `https://${env.WORKER_NAME}.synthetic.workers.dev`);
-      return new Response(null, { status: u.pathname === "/health" ? 200 : 404 });
+      const status =
+        u.pathname === "/health"
+          ? 200
+          : enableX && u.pathname === "/webhooks/x"
+            ? options.method === "GET"
+              ? 400
+              : 401
+            : 404;
+      return new Response(null, { status });
     },
     runCommand: (command, args, options) => {
       if (command === "git")
@@ -138,6 +158,8 @@ function fixture({ mutate = () => {}, versionID = version, dirty = false, migrat
       mutations++;
       const written = JSON.parse(readFileSync(args.at(-1), "utf8"));
       assert.equal(written.preview_urls, false);
+      assert.equal(written.vars.ENABLE_X_ACTIVITY, String(enableX));
+      assert.equal(written.vars.ENABLE_MOCK_EVENTS, "false");
       assert.equal(JSON.stringify(written).includes("secret"), false);
       assert.equal(options.env.CLOUDFLARE_ACCOUNT_ID, env.CLOUDFLARE_ACCOUNT_ID);
       assert.equal(options.env.GH_TOKEN, undefined);
@@ -210,3 +232,27 @@ for (const [key, value] of Object.entries({
   test(`${key}の不正値を設定へ入れない`, () => {
     assert.throws(() => deploymentConfig({ ...env, [key]: value }));
   });
+
+test("承認されたX入口の有効化と、停止構成への切り替えができる", async () => {
+  for (const f of [fixture({ enableX: true }), fixture({ initialX: true })]) {
+    assert.equal((await executeDeployment(f.env, f)).status, "sandbox_deployed");
+    assert.equal(f.count(), 1);
+  }
+});
+
+test("停止用の確認文字列ではX入口を有効化できない", async () => {
+  const f = fixture({ enableX: true });
+  await assert.rejects(executeDeployment({ ...f.env, DEPLOY_CONFIRMATION: `deploy:${sha}` }, f));
+  assert.equal(f.count(), 0);
+});
+
+test("X入口の停止はQueueに滞留があっても反映する", async () => {
+  const f = fixture({
+    initialX: true,
+    mutate: (url, data) => {
+      if (url.pathname.endsWith("/metrics")) data.backlog_count = 1;
+    },
+  });
+  assert.equal((await executeDeployment(f.env, f)).status, "sandbox_deployed");
+  assert.equal(f.count(), 1);
+});
