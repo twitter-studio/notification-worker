@@ -64,6 +64,8 @@ function ownedRows(rows, state) {
   return owned;
 }
 
+class SubscriptionRejected extends ActivityFailure {}
+
 function client(fetchImpl, app, token, now) {
   return async (method, path, body, signal) => {
     const userContext = method === "POST" || path === "/2/users/me";
@@ -81,6 +83,8 @@ function client(fetchImpl, app, token, now) {
     });
     if (response.status !== 200) {
       await response.body?.cancel();
+      if (method === "POST" && [400, 401, 403, 404, 422, 429].includes(response.status))
+        throw new SubscriptionRejected();
       throw new ActivityFailure();
     }
     const data = await responseJSON(response);
@@ -209,19 +213,22 @@ export async function manageSubscriptions({
       const row = owned.get(state.pending);
       if (row && expirationMatches(row, state.expires_at)) {
         state.ids[state.pending] = row.subscription_id;
-      } else if (state.expires_at === null || Date.parse(state.expires_at) > now()) {
+        state.pending = null;
+      } else if (state.expires_at !== null && Date.parse(state.expires_at) <= now()) {
+        state.pending = null;
+      } else if (command !== "stop") {
         throw new ActivityFailure();
       }
-      state.pending = null;
       save();
     }
     if (command === "stop") {
       save();
-      for (const row of owned.values()) {
-        await request("DELETE", `${endpoint}/${row.subscription_id}`, undefined, signal);
+      for (const [kind, row] of owned) {
+        if (kind !== state.pending)
+          await request("DELETE", `${endpoint}/${row.subscription_id}`, undefined, signal);
       }
-      if (ownedRows(await list(request, config.user_id, signal), state).size)
-        throw new ActivityFailure();
+      const remaining = ownedRows(await list(request, config.user_id, signal), state);
+      if (state.pending !== null || remaining.size) throw new ActivityFailure();
       state.phase = "stopped";
       save();
       return { status: "stopped", subscriptions: 0 };
@@ -273,23 +280,30 @@ export async function manageSubscriptions({
       state.ids[kind] = row?.subscription_id ?? null;
       state.pending = kind;
       save();
+      let reply;
+      try {
+        reply = await request(
+          "POST",
+          endpoint,
+          {
+            event_type: kind,
+            filter: { user_id: config.user_id },
+            webhook_id: config.webhook_id,
+            tag: state.tag,
+            ...(expiresAt === null ? {} : { expires_at: expiresAt }),
+          },
+          signal,
+        );
+      } catch (error) {
+        if (error instanceof SubscriptionRejected) {
+          if (state.ids[kind] === null) delete state.ids[kind];
+          state.pending = null;
+          save();
+        }
+        throw error;
+      }
       const created = Row.parse(
-        z.object({ subscription: z.unknown() }).parse(
-          (
-            await request(
-              "POST",
-              endpoint,
-              {
-                event_type: kind,
-                filter: { user_id: config.user_id },
-                webhook_id: config.webhook_id,
-                tag: state.tag,
-                ...(expiresAt === null ? {} : { expires_at: expiresAt }),
-              },
-              signal,
-            )
-          ).data,
-        ).subscription,
+        z.object({ subscription: z.unknown() }).parse(reply.data).subscription,
       );
       const createdRows = ownedRows([created], state);
       if (!createdRows.has(kind) || !expirationMatches(created, expiresAt))

@@ -49,6 +49,9 @@ function fixture(t) {
     loop: false,
     hide: false,
     missingHook: false,
+    rejectReply: false,
+    loseReply: false,
+    delayed: null,
   };
   const fetchImpl = async (url, init) => {
     const path = new URL(url);
@@ -85,6 +88,12 @@ function fixture(t) {
     if (init.method === "POST") {
       assert.equal(path.pathname, endpoint);
       const body = JSON.parse(init.body);
+      if (body.event_type === "post.reply.create" && controls.rejectReply)
+        return Response.json({}, { status: 403 });
+      if (body.event_type === "post.reply.create" && controls.loseReply) {
+        controls.delayed = { subscription_id: String(++id), ...body };
+        throw new Error("request outcome pending");
+      }
       const row = subscriptions.find((row) => row.event_type === body.event_type);
       const result = { subscription_id: row?.subscription_id ?? String(++id), ...body };
       if (row) Object.assign(row, result);
@@ -214,4 +223,23 @@ test("応答不明の無期限購読が一覧へ現れるまで停止済みに�
   f.controls.missingHook = true;
   assert.deepEqual(await f.run("stop"), { status: "stopped", subscriptions: 0 });
   assert.deepEqual(f.mutations, ["POST", "DELETE"]);
+});
+
+test("片方の応答が不明でも、照合済みの別の購読を解除する", async (t) => {
+  const f = fixture(t);
+  f.controls.loseReply = true;
+  await assert.rejects(f.run("start", null));
+  await assert.rejects(f.run("stop"));
+  assert.equal(f.subscriptions.length, 0);
+  f.subscriptions.push(f.controls.delayed);
+  assert.deepEqual(await f.run("stop"), { status: "stopped", subscriptions: 0 });
+  assert.deepEqual(f.mutations, ["POST", "POST", "DELETE", "DELETE"]);
+});
+
+test("作成が明示的に拒否されたときは、既存分の解除を完了できる", async (t) => {
+  const f = fixture(t);
+  f.controls.rejectReply = true;
+  await assert.rejects(f.run("start", null));
+  assert.deepEqual(await f.run("stop"), { status: "stopped", subscriptions: 0 });
+  assert.deepEqual(f.mutations, ["POST", "POST", "DELETE"]);
 });
