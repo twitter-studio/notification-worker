@@ -9,7 +9,7 @@ const Encoded = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const XJobSchema = z.strictObject({
   relay_binding: Encoded,
   event: z.strictObject({
-    event_id: z.string().regex(/^x1_[A-Za-z0-9_-]{43}$/),
+    event_id: z.string().regex(/^x2_[A-Za-z0-9_-]{43}$/),
     type: z.enum(["mention", "reply"]),
     post_id: z.string().regex(/^[1-9][0-9]{0,18}$/),
     occurred_at: z.iso.datetime(),
@@ -31,7 +31,7 @@ export async function xEventID(secret: string, recipient: string, event: XEvent)
     false,
     ["sign"],
   );
-  return `x1_${encode(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`twitter-studio/x-event/v1\n${recipient}\n${event.type}\n${event.post_id}`)))}`;
+  return `x2_${encode(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`twitter-studio/x-post/v2\n${recipient}\n${event.post_id}`)))}`;
 }
 export async function relayBinding(config: RelayConfig, recipient: string): Promise<string> {
   return encode(

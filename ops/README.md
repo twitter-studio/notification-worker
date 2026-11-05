@@ -46,7 +46,7 @@ LIMIT 30
 
 受信保存は `enqueued`、中継結果は `delivery` と分けて読む。種類のカウントは各stageの処理回数で、受信の再送やQueue再試行でも増える。stageを合算して通知数と扱わない。SQL APIはadaptive samplingの重みをCOUNT/SUMへ適用するため、これも厳密な配送台帳ではない。再送上限の破棄は `discarded` の理由を集計する。
 
-同じ投稿がmentionとreplyの両イベントになれば、現在の重複除去キーは種類を含むため別イベントになる。同じ種類・同じ投稿の再送は同じキーになる。この振る舞いは合成テストで確認する。最小限の集計には投稿の相関情報を残さないため、同じ投稿の重なりをログだけで証明できない。
+同じ本人・同じ投稿のmention/replyは同じ通知IDを使い、先に中継が受け付けた後はduplicateで止める。種類別の受信・処理回数は引き続き数えるため、両種類の受信があっても通知は1件になる。到着順が逆の場合と同一種類の再送を合成テストで確認する。最小限の集計には投稿の相関情報を残さないため、同じ投稿の重なりをログだけで証明できない。
 
 元の実機試験の未特定の1件は、[QA-002 #11](https://github.com/twitter-studio/notification-worker/issues/11) で追跡する。今回の集計を過去の通知へ遡って適用することはできず、重複・いいね等とは断定しない。新しい実X試験は、API・配信イベント数・費用・購読期限・解除・本人の投稿とタップを別途承認してから行う。
 
@@ -59,3 +59,5 @@ LIMIT 30
 - [Queueのmetricsと概数の制約](https://developers.cloudflare.com/queues/observability/metrics/)
 - [Queue bindingのJavaScript API](https://developers.cloudflare.com/queues/configuration/javascript-apis/)
 - [Cloudflare MonitorsのSQLとsampling](https://developers.cloudflare.com/notifications/monitors/)
+
+旧 `x1_` からの切り替えは、購読解除と不在確認・X入口無効・Queue件数とbytesが0の状態で行う。旧jobの読み替えはしない。既存履歴を引き継ぐ移行ではないため、過去イベントをreplayしない。詳細は [ADR-0004](../docs/adr/0004-post-notification-dedup.md) と [QA-002の実接続記録](../docs/verification/2026-11-05-qa002.md) を参照。
