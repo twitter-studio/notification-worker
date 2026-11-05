@@ -52,7 +52,7 @@ export function deploymentConfig(env) {
   if (KIND === "worker") {
     config.vars = {
       ...config.vars,
-      ENABLE_X_ACTIVITY: "false",
+      ENABLE_X_ACTIVITY: env.DEPLOY_X_ACTIVITY === "true" ? "true" : "false",
       ENABLE_MOCK_EVENTS: "false",
       X_USER_ID: input.X_USER_ID,
       RELAY_URL: input.RELAY_URL,
@@ -178,14 +178,24 @@ export async function executeDeployment(
   }
   const worker = `workers/scripts/${config.name}`;
   const queue = `queues/${input.CF_QUEUE_ID}`;
+  let stoppingX = false;
   if (request.operation === "deploy") {
-    checkSnapshot(await api(`${worker}/settings`), config);
+    const current = await api(`${worker}/settings`);
+    const currentConfig = structuredClone(config);
+    if (KIND === "worker") {
+      const xActivity = current.bindings?.find(
+        (binding) => binding.name === "ENABLE_X_ACTIVITY" && binding.type === "plain_text",
+      )?.text;
+      if (xActivity !== "false" && xActivity !== "true") throw new DeploymentFailure();
+      currentConfig.vars.ENABLE_X_ACTIVITY = xActivity;
+      stoppingX = xActivity === "true" && config.vars.ENABLE_X_ACTIVITY === "false";
+    }
+    checkSnapshot(current, currentConfig);
     const details = await api(queue);
     const metrics = await api(`${queue}/metrics`);
     if (
       details.queue_name !== config.queues.producers[0].queue ||
-      metrics.backlog_count !== 0 ||
-      metrics.backlog_bytes !== 0
+      (!stoppingX && (metrics.backlog_count !== 0 || metrics.backlog_bytes !== 0))
     )
       throw new DeploymentFailure();
   } else {
@@ -233,7 +243,8 @@ export async function executeDeployment(
     if (active?.length !== 1 || active[0].version_id !== version || active[0].percentage !== 100)
       throw new DeploymentFailure();
     const metrics = await api(`${queue}/metrics`);
-    if (metrics.backlog_count !== 0 || metrics.backlog_bytes !== 0) throw new DeploymentFailure();
+    if (!stoppingX && (metrics.backlog_count !== 0 || metrics.backlog_bytes !== 0))
+      throw new DeploymentFailure();
     const schedules = await api(`${worker}/schedules`);
     if (
       !config.triggers.crons.every((cron) =>
@@ -241,12 +252,13 @@ export async function executeDeployment(
       )
     )
       throw new DeploymentFailure();
+    const xActivityEnabled = config.vars.ENABLE_X_ACTIVITY === "true";
     const checks =
       KIND === "worker"
         ? [
             ["/health", "GET", 200],
-            ["/webhooks/x", "GET", 404],
-            ["/webhooks/x", "POST", 404],
+            ["/webhooks/x", "GET", xActivityEnabled ? 400 : 404],
+            ["/webhooks/x", "POST", xActivityEnabled ? 401 : 404],
             ["/webhooks/mock", "POST", 404],
           ]
         : [["/health", "GET", 200]];

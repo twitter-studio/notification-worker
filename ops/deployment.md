@@ -1,6 +1,6 @@
 # 利用者sandboxを承認付きで更新する
 
-対象は停止中の既存sandbox。`.github/workflows/deploy-sandbox.yml` はmainの手動実行専用で、リソース作成・secret登録・X API操作・productionへの切替は行わない。
+対象は既存sandbox。`.github/workflows/deploy-sandbox.yml` はmainの手動実行専用で、リソース作成・secret登録・X API操作・productionへの切替は行わない。
 
 ## 有効化前の設定
 
@@ -30,9 +30,13 @@ Cloudflare tokenだけを `CLOUDFLARE_API_TOKEN` というEnvironment secretに�
 
 mainの対象SHAのpush CI成功を待ち、購読解除・送信停止・Queue件数とbytesが0を確認する。purgeで空にしない。mainから手動実行し、`target_sha` に完全SHA、`confirmation` に `deploy:完全SHA` を指定し、保守確認にチェックする。本人が対象SHAと設定・停止範囲を確認してEnvironmentを承認する。
 
-成功時は `sandbox_deployed` と稼働版が出る。Workflowはvars・secret名・binding、稼働版100%、Queue空、Cron、healthを確認する。XのGET/POSTとmockのPOSTは404も確認する。再有効化・購読は別承認の手順で行う。別途、heartbeatと警報の保持を確認する。healthを通知到達の証明にしない。
+成功時は `sandbox_deployed` と稼働版が出る。Workflowはvars・secret名・binding、稼働版100%、Queue空、Cron、healthを確認する。停止構成ではXのGETとPOST、mockのPOSTが404を返すことも確認する。別途、heartbeatと警報の保持を確認する。healthを通知到達の証明にしない。
 
 失敗runのRe-run jobsは拒否する。実際の稼働版・設定・Queueを確認し、新しい手動runと承認で行う。失敗しても未配置とは限らない。自動rollbackはしない。
+
+## X入口を有効化する
+
+本人の承認後、同じWorkflowで `x_activity_enabled` を選び、`confirmation` に `deploy-x:完全SHA` を入力する。配置後にX入口のGETがCRCパラメータなしで400、署名なしのPOSTが401、mock入口が404を返すことを確認する。X側のCRC再検証と購読操作は別に記録する。停止するときは `x_activity_enabled` をオフにし、通常更新と同じ確認文字列を使う。有効から停止へ切り替える場合はQueueに滞留があっても配置できる。停止後のconsumerは待機イベントを破棄する。配置後にQueueが空になることを確認する。
 
 ## 追加の運用資料
 
