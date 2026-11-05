@@ -47,7 +47,7 @@ URLはこのCLIでは `https://<Worker名>.<サブドメイン>.workers.dev/webh
 mise exec -- pnpm exec wrangler queues create notification-x-events --message-retention-period-secs 86400
 ```
 
-配置は保護したGitHub Environmentと対象アカウントに限定したCloudflare資格情報で行う。現時点のリポジトリには配置workflowがないため、[OPS-003](https://github.com/twitter-studio/notification-docs/issues/11)が完了するまではここがゲートになる。CLI例外を使うなら、その回のQueue作成・秘密保存・初回無効配置・一時有効化・無効への復帰を所有者が明示承認する必要がある。
+配置は保護したGitHub Environmentと対象アカウントに限定したCloudflare資格情報で行う。保護を検査する[配置workflow](deployment.md)はあるが、実Environmentと資格情報は未設定のため、[OPS-003](https://github.com/twitter-studio/notification-docs/issues/11)が完了するまではここがゲートになる。CLI例外を使うなら、その回のQueue作成・秘密保存・初回無効配置・一時有効化・無効への復帰を所有者が明示承認する必要がある。
 
 承認した配置経路で `RELAY_TOKEN`、`X_OAUTH2_CLIENT_SECRET`、`X_EVENT_ID_SECRET` をsecretとして保存する。各保護ファイルを標準入力から送る。Client ID、本人token、App-only Bearer TokenはWorkerへ保存しない。ログ取り込みや配置の戻り値に秘密を含めない。
 
