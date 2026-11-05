@@ -54,6 +54,12 @@ LIMIT 30
 
 実装時の警報SQLは、対象アカウント・Workerに限定した実SQL APIでHTTP 200、value=1（新しいheartbeatなし）を確認した。承認後の配置・Cron起動・正常判定・警報有効化・テスト送信は [実環境の検証記録](../docs/verification/2026-11-05-user-worker-monitoring.md) を参照。メール受信や実障害時の警報は個別に確認する。運営側の既存監視の成功を、利用者側の監視成功として扱わない。
 
+## 停止と復帰を確認する
+
+試験を終了したら、X/mockの無効設定を配置し、稼働版・管理APIの設定・公開入口を確認する。`/health` は200、`/webhooks/x` と `/webhooks/mock` は404、Queueの件数とbytesは0を確認する。Cronと警報の保持も確かめる。
+
+QA-002では、無効版へrollbackした後も管理APIのsettingsに有効設定が残る一方、公開入口は404だった。原因は未確定。無効構成を明示して再配置し、管理APIの設定と実際の入口を揃えて終了した。rollback成功だけを停止の証明にしない。詳細は [検証記録](../docs/verification/2026-11-05-qa002.md) を参照。
+
 ## 公式資料（2026-11-04確認）
 
 - [Queueのmetricsと概数の制約](https://developers.cloudflare.com/queues/observability/metrics/)
