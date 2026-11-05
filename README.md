@@ -23,7 +23,7 @@
 
 ## デプロイの手順
 
-[初回セットアップと回復の手順](ops/setup.md) に、Queue作成、無効配置、秘密保存、監視、OAuth、Webhook/CRC、30分の試験購読、解除、停止・削除をまとめています。配置は保護したGitHub Environmentで行います。現時点では配置workflow未実装のため、OPS-003の完了または所有者による対象を限定したCLI例外の承認が必要です。
+[初回セットアップと回復の手順](ops/setup.md) に、Queue作成、無効配置、秘密保存、監視、OAuth、Webhook/CRC、30分の試験購読、解除、停止・削除をまとめています。配置は保護したGitHub Environmentで行います。[配置workflow](ops/deployment.md)の実Environmentと資格情報は未設定のため、OPS-003の完了または所有者による対象を限定したCLI例外の承認が必要です。
 
 ## 模擬のイベントで試す
 
