@@ -4,6 +4,7 @@ import {
   publicRelayTrialExpired,
   type RelayConfig,
   RelayRouteID,
+  type XRelayTarget,
   xRelayTargets,
 } from "./config";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
@@ -51,6 +52,21 @@ export async function relayBinding(
 }
 
 type QueueMessage = Pick<Message, "body" | "attempts" | "ack" | "retry">;
+
+async function targetForJob(env: Env, job: XJob): Promise<XRelayTarget | undefined> {
+  const routeID = job.event.route_id;
+  let match: XRelayTarget | undefined;
+  for (const target of xRelayTargets(env)) {
+    if (routeID !== undefined && target.routeID !== routeID) continue;
+    // 旧形式の job も、本人・送り先・資格情報が揃う既存の配送先だけに引き継ぐ。
+    if ((await relayBinding(target.config, target.recipient, routeID)) !== job.relay_binding)
+      continue;
+    if (match !== undefined) return undefined;
+    match = target;
+  }
+  return match;
+}
+
 export async function handleXQueue(
   messages: readonly QueueMessage[],
   env: Env,
@@ -73,20 +89,17 @@ export async function handleXQueue(
     }
     let delay = 60;
     try {
-      const target = xRelayTargets(env).find(
-        ({ routeID }) => routeID === parsed.data.event.route_id,
-      );
-      // 別アカウントの資格情報へ変更した後に、保存済みイベントをそのアカウントへ送らない (ADR-0002)。
-      if (
-        target === undefined ||
-        (await relayBinding(target.config, target.recipient, target.routeID)) !==
-          parsed.data.relay_binding
-      ) {
+      const target = await targetForJob(env, parsed.data);
+      if (target === undefined) {
         recordObservation({ kind: "discarded", reason: "relay_changed" });
         message.ack();
         continue;
       }
-      const outcome = await sendToRelay(target.config, parsed.data.event, deps, { remaining: 3 });
+      const event = {
+        ...parsed.data.event,
+        ...(target.routeID === undefined ? {} : { route_id: target.routeID }),
+      };
+      const outcome = await sendToRelay(target.config, event, deps, { remaining: 3 });
       recordObservation({ kind: "delivery", type: parsed.data.event.type, outcome: outcome.kind });
       if (outcome.kind === "accepted" || outcome.kind === "duplicate") {
         message.ack();

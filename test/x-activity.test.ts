@@ -467,6 +467,33 @@ describe("Xアカウントごとの複数端末配送", () => {
     expect(relay.sent[0]?.body).toMatchObject({ route_id: phone.route_id });
   });
 
+  it("複数配送先へ切り替えても、切り替え前の通知を元の端末だけに届ける", async () => {
+    const relay = fakeRelay();
+    const legacy = testEnv({ ENABLE_X_ACTIVITY: "true", RELAY_TOKEN: phone.relay_token });
+    expect((await post(event(), { environment: legacy, relay })).status).toBe(200);
+    expect(relay.queued).toHaveLength(1);
+    const body = XJobSchema.parse(relay.queued[0]);
+    expect(body.event).not.toHaveProperty("route_id");
+
+    const original = { body, attempts: 1, ack: vi.fn(), retry: vi.fn() };
+    await handleXQueue([original], environment(), relay.deps);
+    expect(original.ack).toHaveBeenCalledOnce();
+    expect(relay.sent).toHaveLength(1);
+    expect(relay.sent[0]).toMatchObject({
+      authorization: `Bearer ${phone.relay_token}`,
+      body: { event_id: body.event.event_id, route_id: phone.route_id },
+    });
+
+    const removed = { body, attempts: 1, ack: vi.fn(), retry: vi.fn() };
+    await handleXQueue(
+      [removed],
+      environment({ [recipient]: [tablet], [other]: [otherAccountOnPhone] }),
+      relay.deps,
+    );
+    expect(removed.ack).toHaveBeenCalledOnce();
+    expect(relay.sent).toHaveLength(1);
+  });
+
   it("曖昧な配送先を拒み、公開試験中は試験専用の送り先だけを使う", async () => {
     const relay = fakeRelay();
     for (const value of [
