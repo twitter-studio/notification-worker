@@ -192,7 +192,12 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
         const [eventID, preview] = await Promise.all([
           xEventID(idSecret, recipient, event, sourceID),
           isEnabled(env.ENABLE_X_NOTIFICATION_PREVIEW)
-            ? resolvePreview(previewSource, env.X_PREVIEW_BEARER_TOKEN, deps.fetch)
+            ? resolvePreview(
+                previewSource,
+                env.X_PREVIEW_BEARER_TOKEN,
+                deps.fetch,
+                isEnabled(env.ENABLE_X_POST_PREVIEW_LOOKUP),
+              )
             : undefined,
         ]);
         return Promise.all(

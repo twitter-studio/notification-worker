@@ -136,7 +136,7 @@ mise exec -- node scripts/x-activity-subscriptions.mjs stop '<保護ディレク
 ## 通知プレビュー
 
 1. プレビューに対応した運営 API が稼働していることを確認する。利用者 Worker を対応版へ更新し、自分の Wrangler 設定の `vars` に `ENABLE_X_NOTIFICATION_PREVIEW="true"` を追加する。共有の sandbox Workflow では未設定のままなので、プレビューは有効にならない。
-2. イベントに公開投稿者の情報がない場合も表示するには、同じ X アプリの App-only Bearer Token を利用者 Worker の `X_PREVIEW_BEARER_TOKEN` secret に置く。X の利用料を確認してから設定する。Worker は情報が欠けているイベントでだけユーザー照会を1回試す。運営や GitHub にトークンを渡さない。[X の User Lookup](https://docs.x.com/x-api/users/get-user-by-id)
+2. イベントに公開投稿者の情報がない場合も表示するには、同じ X アプリの App-only Bearer Token を利用者 Worker の `X_PREVIEW_BEARER_TOKEN` secret に置く。X の利用料を確認してから設定する。Worker は情報が欠けているイベントでだけユーザー照会を1回試す。運営や GitHub にトークンを渡さない。いいね・リツイートで元のツイートがイベントにない場合、`ENABLE_X_POST_PREVIEW_LOOKUP="true"` を追加すると公開ツイートを照会する。この設定を省略すると Post Lookup は行わない。[X の User Lookup](https://docs.x.com/x-api/users/get-user-by-id)
 3. メンションと直接返信を1件ずつ送り、各端末の通知に @ユーザー名と抜粋が出ること、タップで対象の投稿が開くことを確認する。投稿者を確認できない場合は定型文で届く。
 
 プレビュー非対応の版に戻す場合は、まず対応版のまま `ENABLE_X_NOTIFICATION_PREVIEW="false"` を反映する。利用者 Worker と運営 API の両 Queue で待機中・遅延中のジョブがなくなったことを確認してから旧版へ戻す。旧版はプレビュー付きの要求や待機ジョブを受け付けない。

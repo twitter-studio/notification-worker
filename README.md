@@ -69,7 +69,7 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 - `X_USER_ID`を、XでOAuth認可した本人のIDにします。mention・replyには本人によるOAuth 2.0の同意と`tweet.read`が必要です。OS通知許可やApp Attestで代用しません。
 - 利用者側にQueue `notification-x-events`を1つ用意し、保持を1日にします。設定例のproducerとconsumerの名前をそろえます。既存の模擬イベントだけを使う場合は、`queues`設定を利用者の設定から外せます。
 - 対象アカウント、アプリ、費用上限、Queue監視、削除と認可取り消しの手順を具体化し、承認後に配置・購読を行います。Xへの照会はオーナー判断により行いません。
-- メンションと直接返信の通知は、`ENABLE_X_NOTIFICATION_PREVIEW=true` のときに、公開の投稿者の @ユーザー名と本文の抜粋を表示できます。X のイベントに投稿者情報がない場合も表示するには、利用者の Worker に App-only Bearer Token を `X_PREVIEW_BEARER_TOKEN` secret として設定します。必要な場合だけ X の User Lookup を1回呼ぶため、X の利用料がかかる場合があります。照会できなければ定型文で通知します。プレビュー対応の中継 API を先に配置してください。
+- `ENABLE_X_NOTIFICATION_PREVIEW=true` で、メンション・直接返信・引用ツイート・リツイート・いいねの通知に、通知を起こした公開アカウントの @ユーザー名と公開ツイートの抜粋を表示できます。いいねとリツイートには元のツイートの本文を使います。Webhook に必要な情報がなければ、`X_PREVIEW_BEARER_TOKEN` を設定した場合に限り、X の User Lookup を行います。元のツイートの Post Lookup も使う場合は `ENABLE_X_POST_PREVIEW_LOOKUP=true` を設定します。照会には X の利用料がかかる場合があります。本文を確認できない場合は定型文で通知します。対応する中継 API を先に配置してください。
 - 準備と検証を終えてから`ENABLE_X_ACTIVITY`を`"true"`にします。それまでは`"false"`のままです。生のWebhook本文や署名をログへ追加しません。
 
 200の`queued`は保存の確認であり、APNs受理や実機表示の確認ではありません。Queue保存失敗は503です。consumerはaccepted/duplicateを受けてからackし、再試行しても処理できない場合は上限6回またはイベントの期限で破棄します。破棄理由・認証失敗・滞留を監視します。実環境の配信と監視の確認はリリース前のゲートです。

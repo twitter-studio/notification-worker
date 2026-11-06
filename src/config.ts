@@ -49,6 +49,7 @@ declare global {
     X_RELAY_ROUTES?: string;
     X_NOTIFICATION_TYPES?: string;
     ENABLE_X_NOTIFICATION_PREVIEW?: string;
+    ENABLE_X_POST_PREVIEW_LOOKUP?: string;
     PUBLIC_RELAY_TRIAL_UNTIL?: string;
     PUBLIC_RELAY_TRIAL_ORIGIN?: string;
     PUBLIC_RELAY_TRIAL_TOKEN?: string;

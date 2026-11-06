@@ -591,6 +591,137 @@ describe("通知種類の許可リスト", () => {
     "follow.follow": { source: { data: { id: actor } }, target: { data: { id: recipient } } },
   };
   it.each([
+    ["post.quote.create", "quote", "引用の本文"],
+    ["post.repost.create", "retweet", "元のツイート"],
+    ["like.create", "like", "元のツイート"],
+  ] as const)("%s の公開本文を中継する", async (event_type, type, excerpt) => {
+    const actorID = event_type === "like.create" ? actor : event().data.payload.author_id;
+    const input = {
+      data: {
+        ...event().data,
+        event_type,
+        payload: { ...payloads[event_type], text: "引用の本文" },
+        includes: {
+          users: [
+            { id: recipient, username: "recipient", protected: false },
+            { id: actorID, username: "example", protected: false },
+          ],
+          tweets: [
+            { id: original, author_id: recipient, text: "元のツイート", possibly_sensitive: false },
+          ],
+        },
+      },
+    };
+    const relay = fakeRelay();
+    const environment = {
+      ...env(),
+      X_NOTIFICATION_TYPES: type,
+      ENABLE_X_NOTIFICATION_PREVIEW: "true",
+    };
+    expect((await post(input, { relay, environment })).status).toBe(200);
+    await handleXQueue(
+      [{ body: relay.queued[0], attempts: 1, ack: vi.fn(), retry: vi.fn() }],
+      environment,
+      relay.deps,
+    );
+    expect(relay.sent[0]?.body).toMatchObject({ type, preview: { author: "example", excerpt } });
+  });
+
+  it("閲覧者が制限されたツイートは公開アカウントのいいねでも照会・表示しない", async () => {
+    const relay = fakeRelay();
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const input = {
+      data: {
+        ...event().data,
+        event_type: "like.create",
+        payload: payloads["like.create"],
+        includes: {
+          users: [
+            { id: actor, username: "example", protected: false },
+            { id: recipient, username: "recipient", protected: false },
+          ],
+          tweets: [
+            {
+              id: original,
+              author_id: recipient,
+              text: canary,
+              possibly_sensitive: false,
+              scopes: { followers: true },
+            },
+          ],
+        },
+      },
+    };
+    const environment = {
+      ...env(),
+      X_NOTIFICATION_TYPES: "like",
+      ENABLE_X_NOTIFICATION_PREVIEW: "true",
+      ENABLE_X_POST_PREVIEW_LOOKUP: "true",
+      X_PREVIEW_BEARER_TOKEN: "synthetic-preview-bearer",
+    };
+    expect(
+      (await post(input, { relay: { ...relay, deps: { ...relay.deps, fetch } }, environment }))
+        .status,
+    ).toBe(200);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(XJobSchema.parse(relay.queued[0]).event.preview).toBeUndefined();
+  });
+
+  it.each(["public", "sensitive", "restricted", "disabled"])(
+    "いいねで元のツイートを照会できる場合にだけ本文を表示する (%s)",
+    async (mode) => {
+      const relay = fakeRelay();
+      const input = {
+        data: {
+          ...event().data,
+          event_type: "like.create",
+          payload: payloads["like.create"],
+          includes: {
+            users:
+              mode === "disabled" ? [] : [{ id: actor, username: "example", protected: false }],
+          },
+        },
+      };
+      const environment = {
+        ...env(),
+        X_NOTIFICATION_TYPES: "like",
+        ENABLE_X_NOTIFICATION_PREVIEW: "true",
+        ENABLE_X_POST_PREVIEW_LOOKUP: mode === "disabled" ? "false" : "true",
+        X_PREVIEW_BEARER_TOKEN: "synthetic-preview-bearer",
+      };
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        Response.json({
+          includes: { users: [{ id: recipient, protected: false }] },
+          data: {
+            id: original,
+            author_id: recipient,
+            possibly_sensitive: mode === "sensitive",
+            ...(mode === "restricted" ? { scopes: { followers: true } } : {}),
+            text: "元のツイート",
+          },
+        }),
+      );
+      expect(
+        (await post(input, { relay: { ...relay, deps: { ...relay.deps, fetch } }, environment }))
+          .status,
+      ).toBe(200);
+      if (mode === "disabled") expect(fetch).not.toHaveBeenCalled();
+      else
+        expect(fetch).toHaveBeenCalledExactlyOnceWith(
+          new URL(
+            `https://api.x.com/2/tweets/${original}?post.fields=possibly_sensitive%2Cscopes%2Cwithheld&expansions=author_id&user.fields=protected`,
+          ),
+          expect.objectContaining({
+            redirect: "manual",
+          }),
+        );
+      expect(XJobSchema.parse(relay.queued[0]).event.preview).toEqual(
+        mode === "public" ? { author: "example", excerpt: "元のツイート" } : undefined,
+      );
+    },
+  );
+
+  it.each([
     ["post.quote.create", "quote", "2222222222222222222"],
     ["post.repost.create", "retweet", original],
     ["like.create", "like", original],
