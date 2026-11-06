@@ -10,7 +10,7 @@ Tweetbotの本番通知に、自分のX開発者アプリとCloudflare Workerを
 
 ## 2. 自分のWorkerを用意する
 
-[ローカルの準備](setup.md#1-ローカルの準備)に従い、設定例から `wrangler.jsonc` を作ります。Worker名とCloudflareアカウントを自分のものにします。Queue名はproducerとconsumerの両方で `notification-x-events` を使います。後で配置Workflowがこの名前を照合します。この名前を別の用途で使っている場合は、既存Queueを流用せずに作業を止めてください。D1は不要です。Cloudflareの無料プランではQueueの保持期間は24時間固定です。[Queueの上限](https://developers.cloudflare.com/queues/platform/limits/)
+[ローカルの準備](setup.md#1-ローカルの準備)に従い、設定例から `wrangler.jsonc` を作ります。Worker名とCloudflareアカウントを自分のものにします。Queue名はproducerとconsumerの両方でそろえます。保護付き配置Workflowを使う場合は `notification-x-events` にします。既に別の用途で使われている場合、そのQueueを流用しないでください。所有者が初回配置・更新・停止にCLIを使うと承認した場合は、両方の名前を新しい専用Queue名に変えます。別名のQueueは現在の配置Workflowでは更新できません。D1は不要です。Cloudflareの無料プランではQueueの保持期間は24時間固定です。[Queueの上限](https://developers.cloudflare.com/queues/platform/limits/)
 
 | 設定                 | 値                                                                                  |
 | -------------------- | ----------------------------------------------------------------------------------- |
@@ -26,7 +26,7 @@ Tweetbotの本番通知に、自分のX開発者アプリとCloudflare Workerを
 mise exec -- pnpm exec wrangler deploy --config wrangler.jsonc --dry-run
 ```
 
-自分のアカウントでWorkerを用意し、X入口を無効のまま初回配置します。対象名が既存Workerと重複していないことを確認してください。[保護された配置Workflow](deployment.md)は既存WorkerとQueueの更新用です。使う場合は、自分が管理するリポジトリにEnvironmentを設定します。初回作成にCLIを使う場合は、アカウントの所有者が対象と権限を確認してから、次を実行します。既にこの用途専用のQueueを作成済みなら、最初のコマンドは不要です。
+自分のアカウントでWorkerを用意し、X入口を無効のまま初回配置します。対象名が既存Workerと重複していないことを確認してください。[保護された配置Workflow](deployment.md)は既存WorkerとQueueの更新用です。使う場合は、自分が管理するリポジトリにEnvironmentを設定します。初回作成にCLIを使う場合は、アカウントの所有者が対象と権限を確認してから、次を実行します。下のQueue名は設定ファイルとそろえます。この用途専用のQueueを作成済みなら、最初のコマンドは不要です。
 
 ```sh
 mise exec -- pnpm exec wrangler queues create notification-x-events --config wrangler.jsonc
