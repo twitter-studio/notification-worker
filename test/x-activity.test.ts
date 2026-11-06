@@ -811,6 +811,89 @@ describe("通知種類の許可リスト", () => {
       expect(JSON.stringify(body)).not.toContain("private-");
     }
   });
+  it("DM プレビューを設定したルートだけに暗号化し、解除・鍵交換したルートは定型通知に戻す", async () => {
+    const relay = fakeRelay([
+      Response.json({}, { status: 202 }),
+      Response.json({}, { status: 202 }),
+      Response.json({}, { status: 202 }),
+    ]);
+    const route = {
+      route_id: crypto.randomUUID(),
+      relay_token: env().RELAY_TOKEN,
+      event_types: ["dm"],
+    };
+    const key = new Uint8Array(32).fill(7);
+    const encodedKey = btoa(String.fromCharCode(...key)).replace(/=+$/, "");
+    const enabled = {
+      ...env(),
+      X_RELAY_ROUTES: JSON.stringify({ [recipient]: [{ ...route, dm_preview_key: encodedKey }] }),
+    };
+    const disabled = { ...enabled, X_RELAY_ROUTES: JSON.stringify({ [recipient]: [route] }) };
+    const rotated = {
+      ...enabled,
+      X_RELAY_ROUTES: JSON.stringify({
+        [recipient]: [{ ...route, dm_preview_key: "A".repeat(43) }],
+      }),
+    };
+    const input = {
+      data: {
+        ...event("dm.received").data,
+        payload: {
+          direct_message_events: [
+            {
+              type: "message_create",
+              id: original,
+              message_create: {
+                target: { recipient_id: recipient },
+                sender_id: actor,
+                message_data: { text: canary },
+              },
+            },
+          ],
+        },
+      },
+    };
+    expect(await (await post(input, { relay, environment: enabled })).json()).toEqual({
+      counts: { queued: 1 },
+    });
+    const job = XJobSchema.parse(relay.queued[0]);
+    expect(JSON.stringify(job)).not.toContain(canary);
+    expect(JSON.stringify(job)).not.toContain(encodedKey);
+    const sealed = job.event.dm_preview;
+    if (sealed === undefined) throw new Error("Expected encrypted DM preview");
+    const bytes = Uint8Array.from(atob(sealed.replaceAll("-", "+").replaceAll("_", "/")), (value) =>
+      value.charCodeAt(0),
+    );
+    const cryptoKey = await crypto.subtle.importKey("raw", key, "AES-GCM", false, ["decrypt"]);
+    const decrypt = (id: string, account = recipient) =>
+      crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: bytes.slice(0, 12),
+          additionalData: new TextEncoder().encode(
+            `twitter-studio/dm-preview/v1\n${account}\n${id}\n${job.event.event_id}`,
+          ),
+        },
+        cryptoKey,
+        bytes.slice(12),
+      );
+    const plain = await decrypt(route.route_id);
+    expect(JSON.parse(new TextDecoder().decode(plain))).toEqual({
+      kind: "legacy",
+      excerpt: canary,
+      occurred_at: job.event.occurred_at,
+    });
+    await expect(decrypt(crypto.randomUUID())).rejects.toThrow();
+    await expect(decrypt(route.route_id, original)).rejects.toThrow();
+    const message = { body: job, attempts: 1, ack: vi.fn(), retry: vi.fn() };
+    await handleXQueue([message], enabled, relay.deps);
+    await handleXQueue([message], disabled, relay.deps);
+    await handleXQueue([message], rotated, relay.deps);
+    expect(relay.sent[0]?.body).toMatchObject({ dm_preview: sealed });
+    expect(relay.sent[1]?.body).not.toHaveProperty("dm_preview");
+    expect(relay.sent[2]?.body).not.toHaveProperty("dm_preview");
+    expect(JSON.stringify(relay.sent)).not.toContain(canary);
+  });
 });
 
 describe("Xアカウントごとの複数端末配送", () => {

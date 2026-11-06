@@ -15,7 +15,7 @@ const Profile = z.object({
 const MAX_EXCERPT_LENGTH = 280;
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-function excerptOf(text: string | undefined): string | undefined {
+export function excerptOf(text: string | undefined): string | undefined {
   const line = text
     ?.replace(/\s+/gu, " ")
     .replace(/[\p{Cc}\p{Cs}\p{Bidi_Control}]/gu, "")

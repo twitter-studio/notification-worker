@@ -1,6 +1,8 @@
 import { z } from "zod";
+import type { DmPreviewSource } from "./dm-preview";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
 import {
+  excerptOf,
   isRestrictedPost,
   PostPreviewFields,
   type PreviewSource,
@@ -103,6 +105,10 @@ const Event = z.object({
               message_create: z.object({
                 target: z.object({ recipient_id: XUserID }),
                 sender_id: XUserID,
+                message_data: z
+                  .object({ text: z.string().max(4000) })
+                  .optional()
+                  .catch(undefined),
               }),
             }),
           )
@@ -193,6 +199,7 @@ type AcceptedEvent = {
   sourceID: string;
   event: XEvent;
   previewSource: PreviewSource | undefined;
+  dmPreviewSource?: DmPreviewSource | undefined;
 };
 
 type NormalizedXEvent =
@@ -240,9 +247,11 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
         message_create.sender_id === recipient
       )
         return [];
+      const excerpt = excerptOf(message_create.message_data?.text);
       return [
         {
           sourceID: id,
+          dmPreviewSource: excerpt === undefined ? undefined : { kind: "legacy" as const, excerpt },
           previewSource: undefined,
           event: { type: "dm" as const, occurred_at },
         },

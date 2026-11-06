@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DmPreviewKey } from "./dm-preview";
 import { X_NOTIFICATION_TYPES } from "./normalize";
 import { XUserID } from "./x-activity";
 
@@ -31,6 +32,7 @@ const XRelayRoutes = z.record(
         relay_token: z.string().regex(RELAY_TOKEN),
         route_id: RelayRouteID,
         event_types: NotificationTypes.optional(),
+        dm_preview_key: DmPreviewKey.optional(),
       }),
     )
     .min(1)
@@ -41,6 +43,7 @@ export type XRelayTarget = {
   recipient: string;
   config: RelayConfig;
   routeID?: string;
+  dmPreviewKey?: string | undefined;
   eventTypes: readonly (typeof X_NOTIFICATION_TYPES)[number][];
 };
 
@@ -124,16 +127,22 @@ export function xRelayTargets(env: Env): XRelayTarget[] {
   if (entries.length === 0 || entries.length > 8) throw failure;
   const endpoint = relayEndpoint(env.RELAY_URL);
   const routeIDs = new Set<string>();
+  const previewKeys = new Set<string>();
   return entries.flatMap(([recipient, targets]) => {
     const tokens = new Set<string>();
-    return targets.map(({ relay_token, route_id, event_types }) => {
+    return targets.map(({ relay_token, route_id, event_types, dm_preview_key }) => {
       if (routeIDs.has(route_id) || tokens.has(relay_token)) throw failure;
+      if (dm_preview_key !== undefined) {
+        if (previewKeys.has(dm_preview_key)) throw failure;
+        previewKeys.add(dm_preview_key);
+      }
       routeIDs.add(route_id);
       tokens.add(relay_token);
       return {
         recipient,
         config: { endpoint, token: relay_token },
         routeID: route_id,
+        dmPreviewKey: dm_preview_key,
         eventTypes: event_types ?? defaultNotificationTypes,
       };
     });
