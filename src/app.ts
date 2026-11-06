@@ -161,14 +161,14 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
     });
     return problem(422, "Unprocessable Content");
   }
-  if (
-    normalized.kind === "dropped" ||
-    publicRelayTrialExpired(env) ||
-    (env.X_EVENT_NOT_BEFORE !== undefined &&
-      Date.parse(normalized.event.occurred_at) <= Number(env.X_EVENT_NOT_BEFORE))
-  )
+  if (normalized.kind === "dropped" || publicRelayTrialExpired(env))
     return Response.json({ counts: { dropped: 1 } });
-  const { event, recipient } = normalized;
+  const { recipient } = normalized;
+  const events = (normalized.kind === "batch" ? normalized.events : [normalized]).filter(
+    ({ event }) =>
+      env.X_EVENT_NOT_BEFORE === undefined ||
+      Date.parse(event.occurred_at) > Number(env.X_EVENT_NOT_BEFORE),
+  );
   let targets: ReturnType<typeof xRelayTargets>;
   try {
     targets = xRelayTargets(env).filter((target) => target.recipient === recipient);
@@ -177,29 +177,43 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
     log("error", "invalid_configuration", { setting: error.setting });
     return problem(500, "Internal Server Error");
   }
-  if (targets.length === 0) return Response.json({ counts: { dropped: 1 } });
+  const pending = events.filter(({ event }) =>
+    targets.some((target) => target.eventTypes.includes(event.type)),
+  );
+  if (pending.length === 0) return Response.json({ counts: { dropped: 1 } });
   const idSecret = env.X_EVENT_ID_SECRET ?? "";
   if (idSecret.length < MIN_SECRET_LENGTH) {
     log("error", "invalid_configuration", { setting: "X_EVENT_ID_SECRET" });
     return problem(500, "Internal Server Error");
   }
-  const [eventID, preview] = await Promise.all([
-    xEventID(idSecret, recipient, event),
-    isEnabled(env.ENABLE_X_NOTIFICATION_PREVIEW)
-      ? resolvePreview(normalized.previewSource, env.X_PREVIEW_BEARER_TOKEN, deps.fetch)
-      : undefined,
-  ]);
-  const jobs: XJob[] = await Promise.all(
-    targets.map(async ({ config, routeID }) => ({
-      event: {
-        ...event,
-        event_id: eventID,
-        ...(preview === undefined ? {} : { preview }),
-        ...(routeID === undefined ? {} : { route_id: routeID }),
-      },
-      relay_binding: await relayBinding(config, recipient, routeID),
-    })),
-  );
+  const jobs: XJob[] = (
+    await Promise.all(
+      pending.map(async ({ event, sourceID, previewSource }) => {
+        const [eventID, preview] = await Promise.all([
+          xEventID(idSecret, recipient, event, sourceID),
+          isEnabled(env.ENABLE_X_NOTIFICATION_PREVIEW)
+            ? resolvePreview(previewSource, env.X_PREVIEW_BEARER_TOKEN, deps.fetch)
+            : undefined,
+        ]);
+        return Promise.all(
+          targets
+            .filter((target) => target.eventTypes.includes(event.type))
+            .map(async ({ config, routeID }) => {
+              const relay_binding = await relayBinding(config, recipient, routeID);
+              return {
+                event: {
+                  ...event,
+                  event_id: eventID,
+                  ...(preview === undefined ? {} : { preview }),
+                  ...(routeID === undefined ? {} : { route_id: routeID }),
+                },
+                relay_binding,
+              };
+            }),
+        );
+      }),
+    )
+  ).flat();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -215,7 +229,7 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-  for (const _ of jobs) recordObservation({ kind: "enqueued", type: event.type });
+  for (const job of jobs) recordObservation({ kind: "enqueued", type: job.event.type });
   return Response.json({ counts: { queued: jobs.length } });
 }
 

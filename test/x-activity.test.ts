@@ -435,17 +435,7 @@ describe("許可イベントの正規化と再送", () => {
     const reply = event("post.reply.create");
     reply.data.payload.in_reply_to_user_id = "999";
     const relay = fakeRelay();
-    for (const payload of [
-      other,
-      self,
-      mention,
-      reply,
-      event("post.quote.create"),
-      event("like.create"),
-      event("dm.received"),
-      event("chat.received"),
-      event("future.event"),
-    ]) {
+    for (const payload of [other, self, mention, reply, event("future.event")]) {
       const response = await post(payload, { relay });
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ counts: { dropped: 1 } });
@@ -577,6 +567,118 @@ describe("許可イベントの正規化と再送", () => {
     const relay = fakeRelay();
     expect((await post(payload, { relay })).status).toBe(422);
     expect(relay.sent).toEqual([]);
+  });
+});
+
+describe("通知種類の許可リスト", () => {
+  const actor = "3333333333333333333";
+  const original = "4444444444444444444";
+  const payloads = {
+    "post.quote.create": {
+      ...event().data.payload,
+      referenced_tweets: [{ type: "quoted", id: original }],
+    },
+    "post.repost.create": {
+      ...event().data.payload,
+      referenced_tweets: [{ type: "retweeted", id: original }],
+    },
+    "like.create": {
+      id: "like-one",
+      liking_user_id: actor,
+      liked_tweet_author_id: recipient,
+      liked_tweet_id: original,
+    },
+    "follow.follow": { source: { data: { id: actor } }, target: { data: { id: recipient } } },
+  };
+  it.each([
+    ["post.quote.create", "quote", "2222222222222222222"],
+    ["post.repost.create", "retweet", original],
+    ["like.create", "like", original],
+    ["follow.follow", "follow", undefined],
+  ] as const)("%s は明示的に有効な配送先にだけ送る", async (event_type, type, postID) => {
+    const input = { data: { ...event().data, event_type, payload: payloads[event_type] } };
+    const relay = fakeRelay();
+    expect(await (await post(input, { relay })).json()).toEqual({ counts: { dropped: 1 } });
+    expect(relay.queued).toHaveLength(0);
+    const environment = { ...env(), X_NOTIFICATION_TYPES: type };
+    expect(await (await post(input, { relay, environment })).json()).toEqual({
+      counts: { queued: 1 },
+    });
+    const queued = XJobSchema.parse(relay.queued[0]);
+    expect(queued.event.type).toBe(type);
+    expect(queued.event.post_id).toBe(postID);
+    const message = { body: relay.queued[0], attempts: 1, ack: vi.fn(), retry: vi.fn() };
+    await handleXQueue([message], { ...environment, X_NOTIFICATION_TYPES: "" }, relay.deps);
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(relay.sent).toHaveLength(0);
+  });
+
+  it("DM は宛先を確認し、本文・X Chat の暗号文・トークンを転送しない", async () => {
+    const relay = fakeRelay([
+      Response.json({}, { status: 202 }),
+      Response.json({}, { status: 202 }),
+    ]);
+    const routeA = "00000000-0000-4000-8000-000000000001";
+    const routeB = "00000000-0000-4000-8000-000000000002";
+    const environment = {
+      ...env(),
+      X_RELAY_ROUTES: JSON.stringify({
+        [recipient]: [{ route_id: routeA, relay_token: env().RELAY_TOKEN, event_types: ["dm"] }],
+        [original]: [
+          { route_id: routeB, relay_token: `tsr_${"b".repeat(43)}`, event_types: ["dm"] },
+        ],
+      }),
+    };
+    const message_create = {
+      target: { recipient_id: recipient },
+      sender_id: actor,
+      message_data: { text: canary },
+    };
+    const legacy = {
+      data: {
+        ...event("dm.received").data,
+        payload: {
+          direct_message_events: [
+            { type: "message_create", id: original, message_create },
+            {
+              type: "message_create",
+              id: actor,
+              message_create: { ...message_create, target: { recipient_id: "999" } },
+            },
+          ],
+        },
+      },
+    };
+    const chat = {
+      data: {
+        ...event("chat.received").data,
+        payload: {
+          id: "00000000-0000-4000-8000-000000000001",
+          sender_id: actor,
+          encoded_event: "private-ciphertext",
+          conversation_token: "private-token",
+        },
+      },
+    };
+    for (const input of [legacy, chat])
+      expect(await (await post(input, { relay, environment })).json()).toEqual({
+        counts: { queued: 1 },
+      });
+    expect(JSON.stringify(relay.queued)).not.toContain(canary);
+    expect(JSON.stringify(relay.queued)).not.toContain("private-token");
+    expect(JSON.stringify(relay.queued)).not.toContain("private-ciphertext");
+    await handleXQueue(
+      relay.queued.map((body) => ({ body, attempts: 1, ack: vi.fn(), retry: vi.fn() })),
+      environment,
+      relay.deps,
+    );
+    expect(relay.sent).toHaveLength(2);
+    for (const { body } of relay.sent) {
+      expect(body).toMatchObject({ type: "dm", route_id: routeA });
+      expect(body).not.toHaveProperty("post_id");
+      expect(JSON.stringify(body)).not.toContain(canary);
+      expect(JSON.stringify(body)).not.toContain("private-");
+    }
   });
 });
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { X_NOTIFICATION_TYPES } from "./normalize";
 import { XUserID } from "./x-activity";
 
 // Worker の設定 (vars と秘密) を読む。値の誤りは、値を出さずに名前だけで知らせる。
@@ -20,10 +21,18 @@ export type RelayConfig = {
 
 const RELAY_TOKEN = /^tsr_[A-Za-z0-9_-]{43}$/;
 export const RelayRouteID = z.uuid().transform((value) => value.toLowerCase());
+const NotificationTypes = z.array(z.enum(X_NOTIFICATION_TYPES)).max(X_NOTIFICATION_TYPES.length);
+const defaultNotificationTypes = ["mention", "reply"] as const;
 const XRelayRoutes = z.record(
   XUserID,
   z
-    .array(z.strictObject({ relay_token: z.string().regex(RELAY_TOKEN), route_id: RelayRouteID }))
+    .array(
+      z.strictObject({
+        relay_token: z.string().regex(RELAY_TOKEN),
+        route_id: RelayRouteID,
+        event_types: NotificationTypes.optional(),
+      }),
+    )
     .min(1)
     .max(4),
 );
@@ -32,11 +41,13 @@ export type XRelayTarget = {
   recipient: string;
   config: RelayConfig;
   routeID?: string;
+  eventTypes: readonly (typeof X_NOTIFICATION_TYPES)[number][];
 };
 
 declare global {
   interface Env {
     X_RELAY_ROUTES?: string;
+    X_NOTIFICATION_TYPES?: string;
     ENABLE_X_NOTIFICATION_PREVIEW?: string;
     PUBLIC_RELAY_TRIAL_UNTIL?: string;
     PUBLIC_RELAY_TRIAL_ORIGIN?: string;
@@ -85,7 +96,17 @@ export function xRelayTargets(env: Env): XRelayTarget[] {
   if (usesPublicRelayTrial(env) || env.X_RELAY_ROUTES === undefined) {
     const recipient = XUserID.safeParse(env.X_USER_ID);
     if (!recipient.success) throw new ConfigError("X_USER_ID");
-    return [{ recipient: recipient.data, config: relayConfig(env) }];
+    const types = env.X_NOTIFICATION_TYPES;
+    const parsed = NotificationTypes.safeParse(types === "" ? [] : types?.split(","));
+    if (
+      !usesPublicRelayTrial(env) &&
+      types !== undefined &&
+      (!parsed.success || parsed.data.includes("dm"))
+    )
+      throw new ConfigError("X_NOTIFICATION_TYPES");
+    const eventTypes =
+      !usesPublicRelayTrial(env) && parsed.success ? parsed.data : defaultNotificationTypes;
+    return [{ recipient: recipient.data, config: relayConfig(env), eventTypes }];
   }
 
   const failure = new ConfigError("X_RELAY_ROUTES");
@@ -104,11 +125,16 @@ export function xRelayTargets(env: Env): XRelayTarget[] {
   const routeIDs = new Set<string>();
   return entries.flatMap(([recipient, targets]) => {
     const tokens = new Set<string>();
-    return targets.map(({ relay_token, route_id }) => {
+    return targets.map(({ relay_token, route_id, event_types }) => {
       if (routeIDs.has(route_id) || tokens.has(relay_token)) throw failure;
       routeIDs.add(route_id);
       tokens.add(relay_token);
-      return { recipient, config: { endpoint, token: relay_token }, routeID: route_id };
+      return {
+        recipient,
+        config: { endpoint, token: relay_token },
+        routeID: route_id,
+        eventTypes: event_types ?? defaultNotificationTypes,
+      };
     });
   });
 }

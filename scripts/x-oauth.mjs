@@ -14,7 +14,7 @@ import { createServer } from "node:http";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 
-const scopes = ["tweet.read", "users.read"];
+const baseScopes = ["tweet.read", "users.read"];
 export class OAuthFailure extends Error {
   constructor() {
     super("x_oauth_failed");
@@ -62,7 +62,7 @@ const Token = z.object({
   scope: z.string(),
   refresh_token: z.never().optional(),
 });
-async function readToken(response) {
+async function readToken(response, scopes) {
   if (!response.ok || !response.body) throw new OAuthFailure();
   const reader = response.body.getReader();
   const chunks = [];
@@ -103,7 +103,10 @@ export async function runOAuth({
   fetchImpl = fetch,
   onReady = () => {},
   signal,
+  likes = false,
+  dm = false,
 }) {
+  const scopes = [...baseScopes, ...(likes ? ["like.read"] : []), ...(dm ? ["dm.read"] : [])];
   let output;
   let htmlPath;
   let htmlIdentity;
@@ -224,7 +227,7 @@ export async function runOAuth({
             code_verifier: verifier,
           }),
         });
-        const token = await readToken(result);
+        const token = await readToken(result, scopes);
         if (finished) return;
         writeFileSync(
           output,
@@ -297,8 +300,14 @@ export async function runOAuth({
 }
 if (import.meta.main) {
   const [directory, ...extra] = process.argv.slice(2);
-  if (!directory || extra.length) {
-    console.error("usage: node scripts/x-oauth.mjs <owner-only credential directory>");
+  if (
+    !directory ||
+    extra.some((option) => option !== "--likes" && option !== "--dm") ||
+    new Set(extra).size !== extra.length
+  ) {
+    console.error(
+      "usage: node scripts/x-oauth.mjs <owner-only credential directory> [--likes] [--dm]",
+    );
     process.exitCode = 2;
   } else {
     const interrupted = new AbortController();
@@ -308,6 +317,8 @@ if (import.meta.main) {
     try {
       const result = await runOAuth({
         directory,
+        likes: extra.includes("--likes"),
+        dm: extra.includes("--dm"),
         signal: interrupted.signal,
         onReady: ({ htmlPath }) => {
           console.log(`認可待ち: ${htmlPath}（5分以内。コード・tokenは表示しません）`);

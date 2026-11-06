@@ -7,7 +7,7 @@ import {
   type XRelayTarget,
   xRelayTargets,
 } from "./config";
-import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
+import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS, X_NOTIFICATION_TYPES } from "./normalize";
 import { type RelayDeps, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
 
@@ -16,14 +16,24 @@ import { XNotificationPreview } from "./x-preview";
 const Encoded = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const XJobSchema = z.strictObject({
   relay_binding: Encoded,
-  event: z.strictObject({
-    event_id: z.string().regex(/^x2_[A-Za-z0-9_-]{43}$/),
-    type: z.enum(["mention", "reply"]),
-    post_id: z.string().regex(/^[1-9][0-9]{0,18}$/),
-    occurred_at: z.iso.datetime(),
-    route_id: RelayRouteID.optional(),
-    preview: XNotificationPreview.optional(),
-  }),
+  event: z
+    .strictObject({
+      event_id: z.string().regex(/^x2_[A-Za-z0-9_-]{43}$/),
+      type: z.enum(X_NOTIFICATION_TYPES),
+      post_id: z
+        .string()
+        .regex(/^[1-9][0-9]{0,18}$/)
+        .optional(),
+      occurred_at: z.iso.datetime(),
+      route_id: RelayRouteID.optional(),
+      preview: XNotificationPreview.optional(),
+    })
+    .refine(
+      ({ type, post_id, preview, route_id }) =>
+        (type === "follow" || type === "dm") === (post_id === undefined) &&
+        (preview === undefined || type === "mention" || type === "reply") &&
+        (type !== "dm" || route_id !== undefined),
+    ),
 });
 export type XJob = z.infer<typeof XJobSchema>;
 export type XEvent = Omit<XJob["event"], "event_id" | "route_id">;
@@ -33,7 +43,13 @@ function encode(value: ArrayBuffer): string {
     .replaceAll("/", "_")
     .replace(/=+$/, "");
 }
-export async function xEventID(secret: string, recipient: string, event: XEvent): Promise<string> {
+export async function xEventID(
+  secret: string,
+  recipient: string,
+  event: XEvent,
+  sourceID = event.post_id,
+): Promise<string> {
+  if (sourceID === undefined) throw new Error("Missing event identity");
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -41,7 +57,11 @@ export async function xEventID(secret: string, recipient: string, event: XEvent)
     false,
     ["sign"],
   );
-  return `x2_${encode(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`twitter-studio/x-post/v2\n${recipient}\n${event.post_id}`)))}`;
+  const input =
+    event.type === "mention" || event.type === "reply"
+      ? ["twitter-studio/x-post/v2", recipient, sourceID]
+      : ["twitter-studio/x-action/v1", recipient, event.type, sourceID];
+  return `x2_${encode(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(input.join("\n"))))}`;
 }
 export async function relayBinding(
   config: RelayConfig,
@@ -67,7 +87,7 @@ async function targetForJob(env: Env, job: XJob): Promise<XRelayTarget | undefin
     if (match !== undefined) return undefined;
     match = target;
   }
-  return match;
+  return match?.eventTypes.includes(job.event.type) ? match : undefined;
 }
 
 export async function handleXQueue(
