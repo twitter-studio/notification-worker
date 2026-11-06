@@ -232,6 +232,30 @@ describe("XAAの署名と本文", () => {
       },
     ]);
   });
+  it("署名済みの再送完了通知は配送せず受理し、未知の形式は引き続き拒む", async () => {
+    const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+    const relay = fakeRelay();
+    const status = { webhook_id: canary, job_id: canary, job_state_description: canary };
+    const completion = { replay_job_status: { ...status, job_state: "Complete" } };
+    expect((await post(completion, { headers: {}, relay })).status).toBe(401);
+    expect((await post(completion, { relay })).status).toBe(200);
+    expect(
+      (await post({ replay_job_status: { ...status, job_state: "Incomplete" } }, { relay })).status,
+    ).toBe(200);
+    expect(logs.mock.calls.map(([line]) => JSON.parse(line))).toEqual([
+      { event: "x_webhook_replay_status", state: "Complete" },
+      { event: "x_webhook_replay_status", state: "Incomplete" },
+    ]);
+    for (const input of [
+      { replay_job_status: { ...status, job_state: "unknown" } },
+      { replay_job_status: { job_state: "Complete" } },
+      { ...completion, data: { event_type: "post.reply.create" } },
+    ]) {
+      expect((await post(input, { relay })).status).toBe(422);
+    }
+    expect(relay.queued).toEqual([]);
+    expect(relay.sent).toEqual([]);
+  });
   it("設定のエラー・成功・拒否でも本文と資格情報をログへ出さない", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const logs = vi.spyOn(console, "log").mockImplementation(() => {});

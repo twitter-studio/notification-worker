@@ -148,6 +148,10 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
     return problem(400, "Bad Request");
   }
   const normalized = normalizeXEvent(json, new Date());
+  if (normalized.kind === "replay_status") {
+    log("log", "x_webhook_replay_status", { state: normalized.state });
+    return new Response(null, { status: 200 });
+  }
   if (normalized.kind === "invalid") {
     // Zod の生のエラーには入力値が含まれ得るため、固定の項目名と分類だけを記録する。
     log("log", "x_webhook_validation_rejected", {

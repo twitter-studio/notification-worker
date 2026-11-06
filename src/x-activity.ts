@@ -6,6 +6,13 @@ import type { XEvent } from "./x-queue";
 export const XUserID = z.string().regex(/^[1-9][0-9]{0,18}$/);
 const PostID = XUserID;
 const Envelope = z.object({ data: z.object({ event_type: z.string().min(1).max(100) }) });
+const ReplayStatus = z.strictObject({
+  replay_job_status: z.object({
+    webhook_id: z.string().min(1),
+    job_state: z.enum(["Complete", "Incomplete"]),
+    job_id: z.string().min(1),
+  }),
+});
 const Payload = z.object({
   id: PostID,
   author_id: XUserID,
@@ -72,6 +79,7 @@ const EnvelopeMarkers = [
   "events",
   "job_id",
   "replay_event",
+  "replay_job_status",
   "for_user_id",
   "tweet_create_events",
 ] as const;
@@ -106,6 +114,7 @@ type NormalizedXEvent =
       shape: ReturnType<typeof envelopeShape>;
     }
   | { kind: "dropped" }
+  | { kind: "replay_status"; state: "Complete" | "Incomplete" }
   | {
       kind: "accepted";
       recipient: string;
@@ -115,13 +124,18 @@ type NormalizedXEvent =
 
 export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
   const envelope = Envelope.safeParse(json);
-  if (!envelope.success)
+  if (!envelope.success) {
+    // 再送の完了通知は投稿ではない (#35)。未知の形式は引き続き拒否する。
+    const replay = ReplayStatus.safeParse(json);
+    if (replay.success)
+      return { kind: "replay_status", state: replay.data.replay_job_status.job_state };
     return {
       kind: "invalid",
       stage: "envelope",
       fields: invalidFields(envelope.error),
       shape: envelopeShape(json),
     };
+  }
   const eventType = envelope.data.data.event_type;
   if (eventType !== "post.mention.create" && eventType !== "post.reply.create")
     return { kind: "dropped" };
