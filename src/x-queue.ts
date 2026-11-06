@@ -7,6 +7,7 @@ import {
   type XRelayTarget,
   xRelayTargets,
 } from "./config";
+import { dmPreviewKeyID, SealedDmPreview } from "./dm-preview";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS, X_NOTIFICATION_TYPES } from "./normalize";
 import { type RelayDeps, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
@@ -14,29 +15,34 @@ import { recordObservation } from "./telemetry";
 import { XNotificationPreview } from "./x-preview";
 
 const Encoded = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
-export const XJobSchema = z.strictObject({
-  relay_binding: Encoded,
-  event: z
-    .strictObject({
-      event_id: z.string().regex(/^x2_[A-Za-z0-9_-]{43}$/),
-      type: z.enum(X_NOTIFICATION_TYPES),
-      post_id: z
-        .string()
-        .regex(/^[1-9][0-9]{0,18}$/)
-        .optional(),
-      occurred_at: z.iso.datetime(),
-      route_id: RelayRouteID.optional(),
-      preview: XNotificationPreview.optional(),
-    })
-    .refine(
-      ({ type, post_id, preview, route_id }) =>
-        (type === "follow" || type === "dm") === (post_id === undefined) &&
-        (preview === undefined || (type !== "follow" && type !== "dm")) &&
-        (type !== "dm" || route_id !== undefined),
-    ),
-});
+export const XJobSchema = z
+  .strictObject({
+    relay_binding: Encoded,
+    dm_preview_key_id: Encoded.optional(),
+    event: z
+      .strictObject({
+        event_id: z.string().regex(/^x2_[A-Za-z0-9_-]{43}$/),
+        type: z.enum(X_NOTIFICATION_TYPES),
+        post_id: z
+          .string()
+          .regex(/^[1-9][0-9]{0,18}$/)
+          .optional(),
+        occurred_at: z.iso.datetime(),
+        route_id: RelayRouteID.optional(),
+        preview: XNotificationPreview.optional(),
+        dm_preview: SealedDmPreview.optional(),
+      })
+      .refine(
+        ({ type, post_id, preview, route_id, dm_preview }) =>
+          (type === "follow" || type === "dm") === (post_id === undefined) &&
+          (preview === undefined || (type !== "follow" && type !== "dm")) &&
+          (type !== "dm" || route_id !== undefined) &&
+          (dm_preview === undefined || type === "dm"),
+      ),
+  })
+  .refine((job) => (job.dm_preview_key_id === undefined) === (job.event.dm_preview === undefined));
 export type XJob = z.infer<typeof XJobSchema>;
-export type XEvent = Omit<XJob["event"], "event_id" | "route_id">;
+export type XEvent = Omit<XJob["event"], "event_id" | "route_id" | "dm_preview">;
 function encode(value: ArrayBuffer): string {
   return btoa(String.fromCharCode(...new Uint8Array(value)))
     .replaceAll("+", "-")
@@ -118,8 +124,14 @@ export async function handleXQueue(
         message.ack();
         continue;
       }
+      const { dm_preview, ...queuedEvent } = parsed.data.event;
       const event = {
-        ...parsed.data.event,
+        ...queuedEvent,
+        ...(dm_preview !== undefined &&
+        target.dmPreviewKey !== undefined &&
+        parsed.data.dm_preview_key_id === (await dmPreviewKeyID(target.dmPreviewKey))
+          ? { dm_preview }
+          : {}),
         ...(target.routeID === undefined ? {} : { route_id: target.routeID }),
       };
       const outcome = await sendToRelay(target.config, event, deps, { remaining: 3 });

@@ -1,6 +1,8 @@
 import { z } from "zod";
+import type { DmPreviewSource } from "./dm-preview";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
 import {
+  excerptOf,
   isRestrictedPost,
   PostPreviewFields,
   type PreviewSource,
@@ -11,6 +13,12 @@ import type { XEvent } from "./x-queue";
 
 export const XUserID = z.string().regex(/^[1-9][0-9]{0,18}$/);
 const PostID = XUserID;
+const ActivityEventID = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
+const EncodedChatEvent = z
+  .string()
+  .min(1)
+  .max(2400)
+  .regex(/^[A-Za-z0-9+/]+={0,2}$/);
 const Envelope = z.object({ data: z.object({ event_type: z.string().min(1).max(100) }) });
 const ReplayStatus = z.strictObject({
   replay_job_status: z.object({
@@ -88,7 +96,7 @@ const Event = z.object({
     z.object({
       ...Common,
       event_type: z.literal("follow.follow"),
-      event_uuid: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+      event_uuid: ActivityEventID,
       payload: z.object({ source: FollowUser, target: FollowUser }),
     }),
     z.object({
@@ -103,6 +111,10 @@ const Event = z.object({
               message_create: z.object({
                 target: z.object({ recipient_id: XUserID }),
                 sender_id: XUserID,
+                message_data: z
+                  .object({ text: z.string().max(4000) })
+                  .optional()
+                  .catch(undefined),
               }),
             }),
           )
@@ -113,7 +125,23 @@ const Event = z.object({
     z.object({
       ...Common,
       event_type: z.literal("chat.received"),
-      payload: z.object({ id: z.uuid(), sender_id: XUserID, encoded_event: z.string().min(1) }),
+      event_uuid: z.unknown(),
+      payload: z.object({
+        id: z.uuid().optional(),
+        sender_id: XUserID,
+        encoded_event: z.string().min(1),
+        conversation_id: z
+          .string()
+          .regex(/^[A-Za-z0-9:-]{1,80}$/)
+          .optional()
+          .catch(undefined),
+        conversation_key_version: z
+          .string()
+          .regex(/^[0-9]{1,20}$/)
+          .optional()
+          .catch(undefined),
+        conversation_key_change_event: EncodedChatEvent.optional().catch(undefined),
+      }),
     }),
   ]),
 });
@@ -193,6 +221,7 @@ type AcceptedEvent = {
   sourceID: string;
   event: XEvent;
   previewSource: PreviewSource | undefined;
+  dmPreviewSource?: DmPreviewSource | undefined;
 };
 
 type NormalizedXEvent =
@@ -240,9 +269,11 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
         message_create.sender_id === recipient
       )
         return [];
+      const excerpt = excerptOf(message_create.message_data?.text);
       return [
         {
           sourceID: id,
+          dmPreviewSource: excerpt === undefined ? undefined : { kind: "legacy" as const, excerpt },
           previewSource: undefined,
           event: { type: "dm" as const, occurred_at },
         },
@@ -251,12 +282,34 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
     return events.length === 0 ? { kind: "dropped" } : { kind: "batch", recipient, events };
   }
   if (data.event_type === "chat.received") {
-    if (data.payload.sender_id === recipient) return { kind: "dropped" };
+    // 既存配送と同じ重複判定を維持する。公式の形式では payload.id が省略される。
+    const sourceID = ActivityEventID.safeParse(data.payload.id ?? data.event_uuid);
+    if (!sourceID.success)
+      return { kind: "invalid", stage: "dm", fields: ["data.event_uuid", "data.payload.id"] };
+    const { sender_id, conversation_id, conversation_key_version, conversation_key_change_event } =
+      data.payload;
+    if (sender_id === recipient) return { kind: "dropped" };
+    const encodedEvent = EncodedChatEvent.safeParse(data.payload.encoded_event);
     return {
       kind: "accepted",
       recipient,
-      sourceID: data.payload.id,
+      sourceID: sourceID.data,
       previewSource: undefined,
+      dmPreviewSource:
+        encodedEvent.success &&
+        conversation_id !== undefined &&
+        conversation_key_version !== undefined
+          ? {
+              kind: "x_chat",
+              sender_id,
+              conversation_id,
+              conversation_key_version,
+              encoded_event: encodedEvent.data,
+              ...(conversation_key_change_event === undefined
+                ? {}
+                : { conversation_key_change_event }),
+            }
+          : undefined,
       event: { type: "dm", occurred_at },
     };
   }

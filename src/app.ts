@@ -6,6 +6,7 @@ import {
   relayConfig,
   xRelayTargets,
 } from "./config";
+import { dmPreviewKeyID, sealDmPreview } from "./dm-preview";
 import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
 import { MAX_SUBREQUESTS, type RelayDeps, type RelayOutcome, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
@@ -188,7 +189,7 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
   }
   const jobs: XJob[] = (
     await Promise.all(
-      pending.map(async ({ event, sourceID, previewSource }) => {
+      pending.map(async ({ event, sourceID, previewSource, dmPreviewSource }) => {
         const [eventID, preview] = await Promise.all([
           xEventID(idSecret, recipient, event, sourceID),
           isEnabled(env.ENABLE_X_NOTIFICATION_PREVIEW)
@@ -203,16 +204,32 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
         return Promise.all(
           targets
             .filter((target) => target.eventTypes.includes(event.type))
-            .map(async ({ config, routeID }) => {
-              const relay_binding = await relayBinding(config, recipient, routeID);
+            .map(async ({ config, routeID, dmPreviewKey }) => {
+              const [relay_binding, dmPreview] = await Promise.all([
+                relayBinding(config, recipient, routeID),
+                dmPreviewSource !== undefined && dmPreviewKey !== undefined && routeID !== undefined
+                  ? sealDmPreview({
+                      source: dmPreviewSource,
+                      key: dmPreviewKey,
+                      recipient,
+                      routeID,
+                      occurredAt: event.occurred_at,
+                      eventID,
+                    }).catch(() => undefined)
+                  : undefined,
+              ]);
               return {
                 event: {
                   ...event,
                   event_id: eventID,
                   ...(preview === undefined ? {} : { preview }),
+                  ...(dmPreview === undefined ? {} : { dm_preview: dmPreview }),
                   ...(routeID === undefined ? {} : { route_id: routeID }),
                 },
                 relay_binding,
+                ...(dmPreview === undefined || dmPreviewKey === undefined
+                  ? {}
+                  : { dm_preview_key_id: await dmPreviewKeyID(dmPreviewKey) }),
               };
             }),
         );
