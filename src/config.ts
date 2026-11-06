@@ -95,7 +95,17 @@ function usesPublicRelayTrial(env: Env): boolean {
   return env.PUBLIC_RELAY_TRIAL_UNTIL !== undefined || env.PUBLIC_RELAY_TRIAL_ORIGIN !== undefined;
 }
 
-export function xRelayTargets(env: Env): XRelayTarget[] {
+export function xRelayTargets(env: Env, allowPairingOnly = false): XRelayTarget[] {
+  if (
+    allowPairingOnly &&
+    env.X_RELAY_ROUTES === undefined &&
+    env.X_USER_ID === undefined &&
+    env.RELAY_TOKEN === undefined &&
+    env.X_NOTIFICATION_TYPES === undefined
+  ) {
+    relayEndpoint(env.RELAY_URL);
+    return [];
+  }
   // 期限付きの公開試験には、試験専用の資格情報だけを使う。
   if (usesPublicRelayTrial(env) || env.X_RELAY_ROUTES === undefined) {
     const recipient = XUserID.safeParse(env.X_USER_ID);
@@ -154,7 +164,7 @@ export function xRelayTargets(env: Env): XRelayTarget[] {
   });
 }
 
-function relayEndpoint(origin: string | undefined): URL {
+export function relayEndpoint(origin: string | undefined): URL {
   let base: URL;
   try {
     base = new URL(origin ?? "");

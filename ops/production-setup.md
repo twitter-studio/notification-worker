@@ -104,3 +104,23 @@ X 側の課金につながる配信を止めるには、各アカウントで購
 DM は受信を定型文で知らせ、通知をタップすると対象アカウントの受信箱を開きます。本文を端末だけで復号できる経路を用意するまでは、DM の本文や暗号文を APNs に渡しません。[Apple の通知ペイロードのガイド](https://developer.apple.com/library/archive/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/CreatingtheNotificationPayload.html)
 
 DM の配送を試す前に、対応する運営 API とアプリに更新します。端末の共有・譲渡や X アカウントの削除時は、該当の配送先を外します。以前の Worker または運営 API へ戻す際は、追加の種類をオフにし、配送待ちが空になったことを確認します。
+
+## Tweetbot から端末をペアリングする
+
+X の Webhook と購読を設定した利用者 Worker に、SQLite の Durable Object を追加します。現在使用している Wrangler 設定で `main` を切り替え、次の項目を設定してください。既存の migration がある場合は、末尾に固有のタグで追加します。
+
+```jsonc
+"main": "src/pairing-worker.ts",
+"durable_objects": {
+  "bindings": [{ "name": "PAIRING_ROUTES", "class_name": "PairingStore" }]
+},
+"migrations": [{ "tag": "pairing-v1", "new_sqlite_classes": ["PairingStore"] }]
+```
+
+新規のストレージを作成する配置は、Worker 所有者が対象と利用条件を確認し、承認した配置手順で実行します。既存の sandbox Workflow はこの新規リソースの初期作成には対応していません。32 バイトの乱数を Base64URL にし、先頭に `tpa_` を付けた管理用トークンを Worker の `PAIRING_ADMIN_TOKEN` secret と手元の保護領域に保存します。
+
+1. 管理用トークンを保護領域から環境変数 `PAIRING_ADMIN_TOKEN` に読み込み、`node scripts/pair-device.mjs issue https://<worker-domain> <XユーザーID>` を実行します。出力は10分間有効な使い切りコードです。同じアカウント向けに新しいコードを発行すると前のコードは失効します。
+2. Tweetbot で通知を登録して配送をオンにし、対象の X アカウントを選びます。プッシュ通知の設定に Worker の URL とコードを入力し、表示された接続先を確認します。コードを発行した Worker かを確認してから、端末が保管する中継資格情報を送ります。旧ビルドの端末に値がない場合は、この端末で資格情報を入れ替えてください。入れ替え前の値を使う手動ルートも更新が必要です。
+3. 「Worker 経由のテスト通知を送信」を押し、通知センターで「新しい通知」を確認します。登録した端末には、その X アカウントで購読済みのメンションと返信が届きます。追加した端末の解除はアプリから行えます。アプリにアクセスできない場合は `node scripts/pair-device.mjs list https://<worker-domain>` で管理ルートを確認し、`node scripts/pair-device.mjs revoke https://<worker-domain> <配送先ID>` で解除できます。
+
+手動ルートを設定していない新規 Worker でも使えます。その場合は `X_RELAY_ROUTES`、`X_USER_ID`、`RELAY_TOKEN`、`X_NOTIFICATION_TYPES` を設定しません。既存の手動ルートも使えます。同じアカウントで同じ中継資格情報をすでに手動設定している端末は、二重配送を防ぐため追加できません。ペアリングは既存の購読を使うので、X の購読管理は上記の手順で行います。

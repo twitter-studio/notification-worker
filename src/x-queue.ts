@@ -5,10 +5,10 @@ import {
   type RelayConfig,
   RelayRouteID,
   type XRelayTarget,
-  xRelayTargets,
 } from "./config";
 import { dmPreviewKeyID, SealedDmPreview } from "./dm-preview";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS, X_NOTIFICATION_TYPES } from "./normalize";
+import { deliveryTargets } from "./pairing-store";
 import { type RelayDeps, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
 
@@ -85,7 +85,7 @@ type QueueMessage = Pick<Message, "body" | "attempts" | "ack" | "retry">;
 async function targetForJob(env: Env, job: XJob): Promise<XRelayTarget | undefined> {
   const routeID = job.event.route_id;
   let match: XRelayTarget | undefined;
-  for (const target of xRelayTargets(env)) {
+  for (const target of await deliveryTargets(env)) {
     if (routeID !== undefined && target.routeID !== routeID) continue;
     // 旧形式の job も、本人・送り先・資格情報が揃う既存の配送先だけに引き継ぐ。
     if ((await relayBinding(target.config, target.recipient, routeID)) !== job.relay_binding)
