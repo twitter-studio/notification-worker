@@ -153,6 +153,7 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
     log("log", "x_webhook_validation_rejected", {
       stage: normalized.stage,
       fields: normalized.fields,
+      ...(normalized.stage === "envelope" ? { shape: normalized.shape } : {}),
     });
     return problem(422, "Unprocessable Content");
   }

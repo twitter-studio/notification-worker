@@ -198,9 +198,10 @@ describe("XAAの署名と本文", () => {
     };
     const invalidMention = event();
     invalidMention.data.payload.entities.mentions = [{ id: recipient }, { id: canary }];
-    const unknownEnvelope = { [canary]: reply.data };
+    const unknownEnvelope = { [canary]: reply.data, job_id: canary };
+    const arrayEnvelope = { data: [reply.data] };
 
-    for (const input of [invalidReply, invalidMention, unknownEnvelope]) {
+    for (const input of [invalidReply, invalidMention, unknownEnvelope, arrayEnvelope]) {
       const relay = fakeRelay();
       expect((await post(input, { headers: {}, relay })).status).toBe(401);
       expect((await post(input, { relay })).status).toBe(422);
@@ -217,7 +218,18 @@ describe("XAAの署名と本文", () => {
         stage: "mention",
         fields: ["data.payload.entities.mentions.*.id"],
       },
-      { event: "x_webhook_validation_rejected", stage: "envelope", fields: ["data"] },
+      {
+        event: "x_webhook_validation_rejected",
+        stage: "envelope",
+        fields: ["data"],
+        shape: { root: "object", data: "missing", markers: ["job_id"] },
+      },
+      {
+        event: "x_webhook_validation_rejected",
+        stage: "envelope",
+        fields: ["data"],
+        shape: { root: "object", data: "array", markers: [] },
+      },
     ]);
   });
   it("設定のエラー・成功・拒否でも本文と資格情報をログへ出さない", async () => {
