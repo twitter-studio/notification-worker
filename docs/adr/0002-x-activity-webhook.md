@@ -46,3 +46,11 @@ XAAの署名とCRCは模擬Webhookの独自形式と異なる。XはWebhookに10
 - [Queueの期限と遅延上限](https://developers.cloudflare.com/queues/platform/limits/)
 - [Worker間のfetch](https://developers.cloudflare.com/workers/runtime-apis/fetch/)
 - [公開経路でのglobal fetch](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public)
+
+## アカウントと端末ごとの配送先
+
+オーナーの複数アカウント・複数端末対応の要望を受け、通常配送では任意の秘密 `X_RELAY_ROUTES` を使えるようにする。署名済みの受信者に設定された配送先だけを選び、端末ごとに独立した Queue メッセージを作る。配送先の設定方法は[本番セットアップ](../../ops/production-setup.md#複数の-x-アカウントや端末に届ける)を参照する。
+
+配送先 ID は端末内のアカウントに結び付く UUID。中継のイベントにはこの ID だけを追加し、X の受信者 ID と中継資格情報は Queue やイベント本文に入れない。Queue の照合値には配送先 ID も含める。配送先の変更や削除後に古いメッセージを別の端末へ送らないため。端末によって Queue の保存結果が分かれたときは Webhook の再送で補い、同じイベント ID で端末ごとに重複を除く。
+
+複数配送先を設定しない構成と期限付きの公開試験では、従来の単一配送先と Queue の形式を使う。

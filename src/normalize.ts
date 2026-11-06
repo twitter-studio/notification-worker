@@ -10,6 +10,7 @@ export type RelayEvent = {
   event_id: string;
   type: (typeof EVENT_TYPES)[number];
   post_id?: string;
+  route_id?: string | undefined;
   occurred_at: string;
 };
 

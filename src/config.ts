@@ -1,3 +1,6 @@
+import { z } from "zod";
+import { XUserID } from "./x-activity";
+
 // Worker の設定 (vars と秘密) を読む。値の誤りは、値を出さずに名前だけで知らせる。
 
 /** 設定の誤り。`setting` は設定の名前 (値は入れない)。 */
@@ -16,9 +19,24 @@ export type RelayConfig = {
 };
 
 const RELAY_TOKEN = /^tsr_[A-Za-z0-9_-]{43}$/;
+export const RelayRouteID = z.uuid().transform((value) => value.toLowerCase());
+const XRelayRoutes = z.record(
+  XUserID,
+  z
+    .array(z.strictObject({ relay_token: z.string().regex(RELAY_TOKEN), route_id: RelayRouteID }))
+    .min(1)
+    .max(4),
+);
+
+export type XRelayTarget = {
+  recipient: string;
+  config: RelayConfig;
+  routeID?: string;
+};
 
 declare global {
   interface Env {
+    X_RELAY_ROUTES?: string;
     PUBLIC_RELAY_TRIAL_UNTIL?: string;
     PUBLIC_RELAY_TRIAL_ORIGIN?: string;
     PUBLIC_RELAY_TRIAL_TOKEN?: string;
@@ -37,8 +55,7 @@ export function publicRelayTrialExpired(env: Env): boolean {
  * 要求ごとに外から URL を変えさせない (送り先は、利用者が置いた設定だけで決める)。
  */
 export function relayConfig(env: Env): RelayConfig {
-  const trial =
-    env.PUBLIC_RELAY_TRIAL_UNTIL !== undefined || env.PUBLIC_RELAY_TRIAL_ORIGIN !== undefined;
+  const trial = usesPublicRelayTrial(env);
   if (
     trial &&
     (!/^[0-9]{13}$/.test(env.PUBLIC_RELAY_TRIAL_UNTIL ?? "") ||
@@ -48,6 +65,54 @@ export function relayConfig(env: Env): RelayConfig {
     throw new ConfigError("PUBLIC_RELAY_TRIAL_UNTIL");
   const origin = trial ? env.PUBLIC_RELAY_TRIAL_ORIGIN : env.RELAY_URL;
   const token = trial ? env.PUBLIC_RELAY_TRIAL_TOKEN : env.RELAY_TOKEN;
+  const endpoint = relayEndpoint(origin);
+  if (token === undefined || !RELAY_TOKEN.test(token))
+    throw new ConfigError(trial ? "PUBLIC_RELAY_TRIAL_TOKEN" : "RELAY_TOKEN");
+  return {
+    endpoint,
+    token,
+    ...(trial ? { expiresAt: Number(env.PUBLIC_RELAY_TRIAL_UNTIL) } : {}),
+  };
+}
+
+function usesPublicRelayTrial(env: Env): boolean {
+  return env.PUBLIC_RELAY_TRIAL_UNTIL !== undefined || env.PUBLIC_RELAY_TRIAL_ORIGIN !== undefined;
+}
+
+export function xRelayTargets(env: Env): XRelayTarget[] {
+  // 期限付きの公開試験には、試験専用の資格情報だけを使う。
+  if (usesPublicRelayTrial(env) || env.X_RELAY_ROUTES === undefined) {
+    const recipient = XUserID.safeParse(env.X_USER_ID);
+    if (!recipient.success) throw new ConfigError("X_USER_ID");
+    return [{ recipient: recipient.data, config: relayConfig(env) }];
+  }
+
+  const failure = new ConfigError("X_RELAY_ROUTES");
+  if (env.X_RELAY_ROUTES.length > 5_000) throw failure;
+  let value: unknown;
+  try {
+    value = JSON.parse(env.X_RELAY_ROUTES);
+  } catch {
+    throw failure;
+  }
+  const routes = XRelayRoutes.safeParse(value);
+  if (!routes.success) throw failure;
+  const entries = Object.entries(routes.data);
+  if (entries.length === 0 || entries.length > 8) throw failure;
+  const endpoint = relayEndpoint(env.RELAY_URL);
+  const routeIDs = new Set<string>();
+  return entries.flatMap(([recipient, targets]) => {
+    const tokens = new Set<string>();
+    return targets.map(({ relay_token, route_id }) => {
+      if (routeIDs.has(route_id) || tokens.has(relay_token)) throw failure;
+      routeIDs.add(route_id);
+      tokens.add(relay_token);
+      return { recipient, config: { endpoint, token: relay_token }, routeID: route_id };
+    });
+  });
+}
+
+function relayEndpoint(origin: string | undefined): URL {
   let base: URL;
   try {
     base = new URL(origin ?? "");
@@ -64,13 +129,7 @@ export function relayConfig(env: Env): RelayConfig {
   ) {
     throw new ConfigError("RELAY_URL");
   }
-  if (token === undefined || !RELAY_TOKEN.test(token))
-    throw new ConfigError(trial ? "PUBLIC_RELAY_TRIAL_TOKEN" : "RELAY_TOKEN");
-  return {
-    endpoint: new URL("/v1/notifications", base),
-    token,
-    ...(trial ? { expiresAt: Number(env.PUBLIC_RELAY_TRIAL_UNTIL) } : {}),
-  };
+  return new URL("/v1/notifications", base);
 }
 
 /** "true" のときだけ有効 (書き間違いで有効にならないよう、ほかの値はすべて無効)。 */

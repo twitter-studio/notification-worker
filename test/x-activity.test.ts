@@ -395,3 +395,106 @@ describe("許可イベントの正規化と再送", () => {
     expect(relay.sent).toEqual([]);
   });
 });
+
+describe("Xアカウントごとの複数端末配送", () => {
+  const other = "4444444444444444444";
+  const phone = {
+    relay_token: `tsr_${"A".repeat(43)}`,
+    route_id: "123e4567-e89b-42d3-a456-426614174000",
+  };
+  const tablet = {
+    relay_token: `tsr_${"B".repeat(43)}`,
+    route_id: "123e4567-e89b-42d3-a456-426614174001",
+  };
+  const otherAccountOnPhone = {
+    relay_token: phone.relay_token,
+    route_id: "123e4567-e89b-42d3-a456-426614174002",
+  };
+  const routes = { [recipient]: [phone, tablet], [other]: [otherAccountOnPhone] };
+  const environment = (value: unknown = routes) =>
+    testEnv({
+      ENABLE_X_ACTIVITY: "true",
+      X_USER_ID: "",
+      RELAY_TOKEN: "",
+      X_RELAY_ROUTES: JSON.stringify(value),
+    });
+
+  it("署名された受信者の端末だけに送り、同じ端末上の別アカウントと混ぜない", async () => {
+    const relay = fakeRelay();
+    const configured = environment({
+      ...routes,
+      [recipient]: [{ ...phone, route_id: phone.route_id.toUpperCase() }, tablet],
+    });
+    const first = await post(event(), { environment: configured, relay });
+    expect(await first.json()).toEqual({ counts: { queued: 2 } });
+    const second = event("post.reply.create");
+    second.data.filter.user_id = other;
+    second.data.payload.in_reply_to_user_id = other;
+    expect(await (await post(second, { environment: configured, relay })).json()).toEqual({
+      counts: { queued: 1 },
+    });
+
+    const queued = JSON.stringify(relay.queued);
+    for (const privateValue of [recipient, other, phone.relay_token, tablet.relay_token, canary])
+      expect(queued).not.toContain(privateValue);
+    const jobs = relay.queued.map((body) => ({ body, attempts: 1, ack: vi.fn(), retry: vi.fn() }));
+    await handleXQueue(jobs, configured, relay.deps);
+    expect(jobs.every((job) => job.ack.mock.calls.length === 1)).toBe(true);
+    expect(relay.sent).toEqual(
+      [phone, tablet, otherAccountOnPhone].map((destination) =>
+        expect.objectContaining({
+          authorization: `Bearer ${destination.relay_token}`,
+          body: expect.objectContaining({ route_id: destination.route_id }),
+        }),
+      ),
+    );
+    const [firstJob, secondJob, thirdJob] = relay.queued.map((job) => XJobSchema.parse(job));
+    expect(firstJob?.event.event_id).toBe(secondJob?.event.event_id);
+    expect(firstJob?.event.event_id).not.toBe(thirdJob?.event.event_id);
+  });
+
+  it("資格情報を変えた端末への古いjobだけを破棄する", async () => {
+    const relay = fakeRelay();
+    await post(event(), { environment: environment(), relay });
+    const jobs = relay.queued.map((body) => ({ body, attempts: 1, ack: vi.fn(), retry: vi.fn() }));
+    await handleXQueue(
+      jobs,
+      environment({ [recipient]: [phone, { ...tablet, relay_token: `tsr_${"C".repeat(43)}` }] }),
+      relay.deps,
+    );
+    expect(jobs.every((job) => job.ack.mock.calls.length === 1)).toBe(true);
+    expect(relay.sent).toHaveLength(1);
+    expect(relay.sent[0]?.body).toMatchObject({ route_id: phone.route_id });
+  });
+
+  it("曖昧な配送先を拒み、公開試験中は試験専用の送り先だけを使う", async () => {
+    const relay = fakeRelay();
+    for (const value of [
+      {},
+      { [recipient]: [] },
+      { [recipient]: [phone, { ...tablet, route_id: phone.route_id }] },
+      { [recipient]: [phone, { ...tablet, relay_token: phone.relay_token }] },
+    ]) {
+      expect((await post(event(), { environment: environment(value), relay })).status).toBe(500);
+    }
+    expect(relay.queued).toEqual([]);
+    const trial = testEnv({
+      ENABLE_X_ACTIVITY: "true",
+      X_RELAY_ROUTES: JSON.stringify(routes),
+      PUBLIC_RELAY_TRIAL_UNTIL: String(Date.now() + 60_000),
+      PUBLIC_RELAY_TRIAL_ORIGIN: "https://public.example",
+      PUBLIC_RELAY_TRIAL_TOKEN: `tsr_${"Z".repeat(43)}`,
+    });
+    expect(await (await post(event(), { environment: trial, relay })).json()).toEqual({
+      counts: { queued: 1 },
+    });
+    const jobs = relay.queued.map((body) => ({ body, attempts: 1, ack: vi.fn(), retry: vi.fn() }));
+    await handleXQueue(jobs, trial, relay.deps);
+    expect(relay.sent).toHaveLength(1);
+    expect(relay.sent[0]).toMatchObject({
+      url: "https://public.example/v1/notifications",
+      authorization: `Bearer ${trial.PUBLIC_RELAY_TRIAL_TOKEN}`,
+    });
+    expect(relay.sent[0]?.body).not.toHaveProperty("route_id");
+  });
+});

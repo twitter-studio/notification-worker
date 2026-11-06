@@ -3,6 +3,7 @@
 
 # 中継の資格情報 (アプリが 1 回だけ見せる tsr_ で始まる値)。
 RELAY_TOKEN=
+# 任意の X_RELAY_ROUTES は、X アカウントごとの配送先を指定する JSON の秘密。空の値は設定しない。
 # 模擬の Webhook の署名の鍵 (32 文字以上の乱数)。ENABLE_MOCK_EVENTS を "true" にするときだけ要る。
 # 作り方は README の「模擬のイベントで試す」(画面に出さずに .dev.vars へ書く)。
 MOCK_WEBHOOK_SECRET=

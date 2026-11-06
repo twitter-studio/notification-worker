@@ -1,9 +1,14 @@
 import { z } from "zod";
-import { isEnabled, publicRelayTrialExpired, type RelayConfig, relayConfig } from "./config";
+import {
+  isEnabled,
+  publicRelayTrialExpired,
+  type RelayConfig,
+  RelayRouteID,
+  xRelayTargets,
+} from "./config";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
 import { type RelayDeps, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
-import { XUserID } from "./x-activity";
 
 const Encoded = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const XJobSchema = z.strictObject({
@@ -13,10 +18,11 @@ export const XJobSchema = z.strictObject({
     type: z.enum(["mention", "reply"]),
     post_id: z.string().regex(/^[1-9][0-9]{0,18}$/),
     occurred_at: z.iso.datetime(),
+    route_id: RelayRouteID.optional(),
   }),
 });
 export type XJob = z.infer<typeof XJobSchema>;
-export type XEvent = Omit<XJob["event"], "event_id">;
+export type XEvent = Omit<XJob["event"], "event_id" | "route_id">;
 function encode(value: ArrayBuffer): string {
   return btoa(String.fromCharCode(...new Uint8Array(value)))
     .replaceAll("+", "-")
@@ -33,15 +39,15 @@ export async function xEventID(secret: string, recipient: string, event: XEvent)
   );
   return `x2_${encode(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`twitter-studio/x-post/v2\n${recipient}\n${event.post_id}`)))}`;
 }
-export async function relayBinding(config: RelayConfig, recipient: string): Promise<string> {
-  return encode(
-    await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(
-        `twitter-studio/x-relay/v1\n${recipient}\n${config.endpoint.href}\n${config.token}`,
-      ),
-    ),
-  );
+export async function relayBinding(
+  config: RelayConfig,
+  recipient: string,
+  routeID?: string,
+): Promise<string> {
+  const prefix = routeID === undefined ? "twitter-studio/x-relay/v1" : "twitter-studio/x-relay/v2";
+  const fields = [prefix, recipient, config.endpoint.href, config.token];
+  if (routeID !== undefined) fields.push(routeID);
+  return encode(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(fields.join("\n"))));
 }
 
 type QueueMessage = Pick<Message, "body" | "attempts" | "ack" | "retry">;
@@ -67,16 +73,20 @@ export async function handleXQueue(
     }
     let delay = 60;
     try {
-      const config = relayConfig(env);
+      const target = xRelayTargets(env).find(
+        ({ routeID }) => routeID === parsed.data.event.route_id,
+      );
       // 別アカウントの資格情報へ変更した後に、保存済みイベントをそのアカウントへ送らない (ADR-0002)。
       if (
-        (await relayBinding(config, XUserID.parse(env.X_USER_ID))) !== parsed.data.relay_binding
+        target === undefined ||
+        (await relayBinding(target.config, target.recipient, target.routeID)) !==
+          parsed.data.relay_binding
       ) {
         recordObservation({ kind: "discarded", reason: "relay_changed" });
         message.ack();
         continue;
       }
-      const outcome = await sendToRelay(config, parsed.data.event, deps, { remaining: 3 });
+      const outcome = await sendToRelay(target.config, parsed.data.event, deps, { remaining: 3 });
       recordObservation({ kind: "delivery", type: parsed.data.event.type, outcome: outcome.kind });
       if (outcome.kind === "accepted" || outcome.kind === "duplicate") {
         message.ack();
