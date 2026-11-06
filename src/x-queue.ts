@@ -11,6 +11,8 @@ import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
 import { type RelayDeps, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
 
+import { XNotificationPreview } from "./x-preview";
+
 const Encoded = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const XJobSchema = z.strictObject({
   relay_binding: Encoded,
@@ -20,6 +22,7 @@ export const XJobSchema = z.strictObject({
     post_id: z.string().regex(/^[1-9][0-9]{0,18}$/),
     occurred_at: z.iso.datetime(),
     route_id: RelayRouteID.optional(),
+    preview: XNotificationPreview.optional(),
   }),
 });
 export type XJob = z.infer<typeof XJobSchema>;

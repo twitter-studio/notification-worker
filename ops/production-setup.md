@@ -33,7 +33,7 @@ mise exec -- pnpm exec wrangler queues create notification-x-events --config wra
 mise exec -- pnpm exec wrangler deploy --config wrangler.jsonc
 ```
 
-[CloudflareのWorker secret](https://developers.cloudflare.com/workers/configuration/secrets/)に、`RELAY_TOKEN`、`X_OAUTH2_CLIENT_SECRET`、署名鍵と独立に生成した `X_EVENT_ID_SECRET` を保存します。初回の無効配置を確認してから、WorkerのSettingsにあるVariables and Secretsで、種類をSecretにして保存します。本人OAuth tokenやApp-only Bearer Tokenは手元の保護領域に置きます。運営へ送る必要はありません。テスト専用の `PUBLIC_RELAY_TRIAL_TOKEN` や期限付きの上書き設定は不要です。
+[CloudflareのWorker secret](https://developers.cloudflare.com/workers/configuration/secrets/)に、`RELAY_TOKEN`、`X_OAUTH2_CLIENT_SECRET`、署名鍵と独立に生成した `X_EVENT_ID_SECRET` を保存します。初回の無効配置を確認してから、WorkerのSettingsにあるVariables and Secretsで、種類をSecretにして保存します。本人 OAuth token は手元の保護領域に置きます。App-only Bearer Token は、[通知プレビューの照会](setup.md#通知プレビュー)を使う場合だけ自分の Worker の secret にも保存します。テスト専用の `PUBLIC_RELAY_TRIAL_TOKEN` や期限付きの上書き設定は不要です。
 
 ## 3. XのWebhookを登録する
 

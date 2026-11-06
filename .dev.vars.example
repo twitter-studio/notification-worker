@@ -13,3 +13,6 @@ X_OAUTH2_CLIENT_SECRET=
 
 # 重複除去IDを作る独立した32文字以上の乱数。Xの署名秘密と共用しない。
 X_EVENT_ID_SECRET=
+
+# 公開投稿のユーザー名を補う任意の App-only Bearer Token。
+X_PREVIEW_BEARER_TOKEN=
