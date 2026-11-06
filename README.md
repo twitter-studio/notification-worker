@@ -17,13 +17,14 @@
 
 ## 用意するもの
 
-- 自分の Cloudflare のアカウント (Workers の無料のプランで動きます)。
-- tweetbot のアプリで通知を登録し、設定の画面に 1 回だけ出る中継の資格情報 (`tsr_` で始まる値) と、中継の API の URL。
+- 自分の Cloudflare アカウント。Workers と Queues の利用枠は、初回セットアップで確認します。
+- Tweetbot の通知を登録した iPhone と、登録時に 1 回だけ表示される中継の資格情報。
+- X 通知を受ける場合は、自分の X 開発者アプリ。
 - [mise](https://mise.jdx.dev) (Node.js と pnpm の版をそろえます)。
 
 ## デプロイの手順
 
-[初回セットアップと回復の手順](ops/setup.md) に、Queue作成、無効配置、秘密保存、監視、OAuth、Webhook/CRC、30分の試験購読、解除、停止・削除をまとめています。配置は保護したGitHub Environmentで行います。[配置workflow](ops/deployment.md)の実Environmentと資格情報は未設定のため、OPS-003の完了または所有者による対象を限定したCLI例外の承認が必要です。
+Tweetbotの本番通知を使う場合は、[利用者向けの初回セットアップ](ops/production-setup.md)から始めてください。招待制sandboxの試験と資格情報の回復は[試験用の手順](ops/setup.md)、既存Workerの承認付き更新は[配置Workflow](ops/deployment.md)を参照してください。
 
 ## 模擬のイベントで試す
 
