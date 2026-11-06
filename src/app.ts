@@ -147,14 +147,17 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
   } catch {
     return problem(400, "Bad Request");
   }
-  let normalized: ReturnType<typeof normalizeXEvent>;
-  try {
-    normalized = normalizeXEvent(json, new Date());
-  } catch {
+  const normalized = normalizeXEvent(json, new Date());
+  if (normalized.kind === "invalid") {
+    // Zod の生のエラーには入力値が含まれ得るため、固定の項目名と分類だけを記録する。
+    log("log", "x_webhook_validation_rejected", {
+      stage: normalized.stage,
+      fields: normalized.fields,
+    });
     return problem(422, "Unprocessable Content");
   }
   if (
-    normalized === undefined ||
+    normalized.kind === "dropped" ||
     publicRelayTrialExpired(env) ||
     (env.X_EVENT_NOT_BEFORE !== undefined &&
       Date.parse(normalized.event.occurred_at) <= Number(env.X_EVENT_NOT_BEFORE))
