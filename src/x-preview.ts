@@ -30,7 +30,27 @@ function excerptOf(text: string | undefined): string | undefined {
   return end === 0 ? undefined : `${line.slice(0, end).trimEnd()}…`;
 }
 
-export type PreviewSource = { authorID: string; excerpt: string; author: string | undefined };
+type Actor = { authorID: string; author: string | undefined };
+export type PreviewSource = Actor &
+  ({ kind: "excerpt"; excerpt: string } | { kind: "post"; postID: string; postAuthorID: string });
+
+export const PostPreviewFields = z.object({
+  text: z.string().optional().catch(undefined),
+  possibly_sensitive: z.boolean().optional().catch(true),
+  scopes: z.unknown().optional(),
+  withheld: z.unknown().optional(),
+});
+const PostIdentity = z.object({ id: z.string() });
+const ExpandedPost = PostPreviewFields.extend({ id: z.string(), author_id: z.string() });
+const PublicPostScopes = z.strictObject({ followers: z.literal(false) });
+
+export function isRestrictedPost(post: z.infer<typeof PostPreviewFields>): boolean {
+  return (
+    post.possibly_sensitive === true ||
+    (post.scopes != null && !PublicPostScopes.safeParse(post.scopes).success) ||
+    post.withheld != null
+  );
+}
 
 function observeLookup(
   outcome:
@@ -45,13 +65,13 @@ function observeLookup(
   console.info({ event: "x_preview_lookup", outcome, ...(status === undefined ? {} : { status }) });
 }
 
-async function lookupPreviewAuthor(
-  authorID: string,
+async function lookup<T>(
+  url: URL,
   bearer: string,
+  schema: z.ZodType<T>,
+  usable: (data: T) => boolean,
   fetch: typeof globalThis.fetch,
-) {
-  const url = new URL(`https://api.x.com/2/users/${authorID}`);
-  url.searchParams.set("user.fields", "protected");
+): Promise<T | undefined> {
   const signal = AbortSignal.timeout(1000);
   let status: number | undefined;
   try {
@@ -75,18 +95,17 @@ async function lookupPreviewAuthor(
     const json: unknown = JSON.parse(
       new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
     );
-    const parsed = z.object({ data: Profile }).safeParse(json);
-    if (!parsed.success || parsed.data.data.id !== authorID) {
+    const parsed = schema.safeParse(json);
+    if (!parsed.success) {
       observeLookup("invalid_response", status);
       return undefined;
     }
-    const { username, protected: isProtected } = parsed.data.data;
-    if (isProtected !== false || username === undefined) {
+    if (!usable(parsed.data)) {
       observeLookup("unavailable_profile", status);
       return undefined;
     }
     observeLookup("found", status);
-    return username;
+    return parsed.data;
   } catch {
     observeLookup(
       signal.aborted ? "timeout" : status === undefined ? "transport_error" : "invalid_response",
@@ -100,32 +119,114 @@ export async function resolvePreview(
   source: PreviewSource | undefined,
   bearer: string | undefined,
   fetch: typeof globalThis.fetch,
+  allowPostLookup: boolean,
 ): Promise<z.infer<typeof XNotificationPreview> | undefined> {
   if (source === undefined) return undefined;
-  const author =
-    source.author ??
-    (bearer ? await lookupPreviewAuthor(source.authorID, bearer, fetch) : undefined);
-  return author === undefined ? undefined : { author, excerpt: source.excerpt };
+  if (source.kind === "post" && (!bearer || !allowPostLookup)) return undefined;
+  const [author, excerpt] = await Promise.all([
+    source.author ?? (bearer ? lookupPreviewAuthor(source.authorID, bearer, fetch) : undefined),
+    source.kind === "excerpt"
+      ? source.excerpt
+      : bearer && lookupPostExcerpt(source.postID, source.postAuthorID, bearer, fetch),
+  ]);
+  return author === undefined || !excerpt ? undefined : { author, excerpt };
 }
 
-export function previewSourceFor(
-  payload: {
-    author_id: string;
-    possibly_sensitive?: boolean | undefined;
-    text?: string | undefined;
-  },
-  users: readonly unknown[],
-): PreviewSource | undefined {
-  if (payload.possibly_sensitive === true) return undefined;
-  const excerpt = excerptOf(payload.text);
-  if (excerpt === undefined) return undefined;
+async function lookupPreviewAuthor(
+  authorID: string,
+  bearer: string,
+  fetch: typeof globalThis.fetch,
+) {
+  const url = new URL(`https://api.x.com/2/users/${authorID}`);
+  url.searchParams.set("user.fields", "protected");
+  const response = await lookup(
+    url,
+    bearer,
+    z.object({ data: Profile }).refine(({ data }) => data.id === authorID),
+    ({ data }) => data.protected === false && data.username !== undefined,
+    fetch,
+  );
+  return response?.data.username;
+}
 
+async function lookupPostExcerpt(
+  postID: string,
+  postAuthorID: string,
+  bearer: string,
+  fetch: typeof globalThis.fetch,
+) {
+  const url = new URL(`https://api.x.com/2/tweets/${postID}`);
+  url.searchParams.set("post.fields", "possibly_sensitive,scopes,withheld");
+  url.searchParams.set("expansions", "author_id");
+  url.searchParams.set("user.fields", "protected");
+  const response = await lookup(
+    url,
+    bearer,
+    z.object({ data: ExpandedPost, includes: z.object({ users: z.array(Profile) }) }),
+    ({ data, includes }) =>
+      data.id === postID &&
+      data.author_id === postAuthorID &&
+      data.possibly_sensitive === false &&
+      !isRestrictedPost(data) &&
+      includes.users.some(
+        ({ id, protected: isProtected }) => id === postAuthorID && isProtected === false,
+      ) &&
+      !includes.users.some(
+        ({ id, protected: isProtected }) => id === postAuthorID && isProtected === true,
+      ),
+    fetch,
+  );
+  return excerptOf(response?.data.text);
+}
+
+function previewActor(authorID: string, users: readonly unknown[]): Actor | undefined {
   let author: string | undefined;
   for (const user of users) {
     const profile = Profile.safeParse(user);
-    if (!profile.success || profile.data.id !== payload.author_id) continue;
+    if (!profile.success || profile.data.id !== authorID) continue;
     if (profile.data.protected === true) return undefined;
     if (profile.data.protected === false) author ??= profile.data.username;
   }
-  return { authorID: payload.author_id, author, excerpt };
+  return { authorID, author };
+}
+
+export function previewSourceFor(
+  payload: z.infer<typeof PostPreviewFields> & { author_id: string },
+  users: readonly unknown[],
+): PreviewSource | undefined {
+  if (isRestrictedPost(payload)) return undefined;
+  const excerpt = excerptOf(payload.text);
+  const actor = previewActor(payload.author_id, users);
+  return excerpt === undefined || actor === undefined
+    ? undefined
+    : { ...actor, kind: "excerpt", excerpt };
+}
+
+export function previewSourceForReferencedPost({
+  actorID,
+  postID,
+  postAuthorID,
+  users,
+  tweets,
+}: {
+  actorID: string;
+  postID: string;
+  postAuthorID: string;
+  users: readonly unknown[];
+  tweets: readonly unknown[];
+}): PreviewSource | undefined {
+  const actor = previewActor(actorID, users);
+  const postAuthor = previewActor(postAuthorID, users);
+  if (actor === undefined || postAuthor === undefined) return undefined;
+  const matches = tweets.filter((tweet) => PostIdentity.safeParse(tweet).data?.id === postID);
+  if (matches.length > 1) return undefined;
+  if (matches.length === 1) {
+    const post = ExpandedPost.safeParse(matches[0]).data;
+    if (post?.author_id !== postAuthorID || isRestrictedPost(post)) return undefined;
+    if (post.possibly_sensitive === false && postAuthor.author !== undefined) {
+      const excerpt = excerptOf(post.text);
+      if (excerpt !== undefined) return { ...actor, kind: "excerpt", excerpt };
+    }
+  }
+  return { ...actor, kind: "post", postID, postAuthorID };
 }

@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
-import { type PreviewSource, previewSourceFor } from "./x-preview";
+import {
+  isRestrictedPost,
+  PostPreviewFields,
+  type PreviewSource,
+  previewSourceFor,
+  previewSourceForReferencedPost,
+} from "./x-preview";
 import type { XEvent } from "./x-queue";
 
 export const XUserID = z.string().regex(/^[1-9][0-9]{0,18}$/);
@@ -13,16 +19,17 @@ const ReplayStatus = z.strictObject({
     job_id: z.string().min(1),
   }),
 });
-const Payload = z.object({
+const Payload = PostPreviewFields.extend({
   id: PostID,
   author_id: XUserID,
-  text: z.string().optional().catch(undefined),
-  possibly_sensitive: z.boolean().optional().catch(true),
 });
 const Common = {
   created_at: z.iso.datetime({ offset: true }),
   includes: z
-    .object({ users: z.array(z.unknown()).max(100).optional() })
+    .object({
+      users: z.array(z.unknown()).max(100).optional().catch(undefined),
+      tweets: z.array(z.unknown()).max(100).optional().catch(undefined),
+    })
     .optional()
     .catch(undefined),
   filter: z.object({ user_id: XUserID }),
@@ -253,6 +260,8 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
       event: { type: "dm", occurred_at },
     };
   }
+  const users = data.includes?.users ?? [];
+  const tweets = data.includes?.tweets ?? [];
   if (data.event_type === "like.create") {
     const { id, liked_tweet_id, liked_tweet_author_id, liking_user_id } = data.payload;
     if (liked_tweet_author_id !== recipient || liking_user_id === recipient)
@@ -261,7 +270,13 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
       kind: "accepted",
       recipient,
       sourceID: id,
-      previewSource: undefined,
+      previewSource: previewSourceForReferencedPost({
+        actorID: liking_user_id,
+        postID: liked_tweet_id,
+        postAuthorID: recipient,
+        users,
+        tweets,
+      }),
       event: { type: "like", post_id: liked_tweet_id, occurred_at },
     };
   }
@@ -287,7 +302,17 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
       kind: "accepted",
       recipient,
       sourceID: data.payload.id,
-      previewSource: undefined,
+      previewSource: isQuote
+        ? previewSourceFor(data.payload, users)
+        : isRestrictedPost(data.payload)
+          ? undefined
+          : previewSourceForReferencedPost({
+              actorID: data.payload.author_id,
+              postID: original.id,
+              postAuthorID: recipient,
+              users,
+              tweets,
+            }),
       event: {
         type: isQuote ? "quote" : "retweet",
         post_id: isQuote ? data.payload.id : original.id,
@@ -307,7 +332,7 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
     kind: "accepted",
     recipient,
     sourceID: data.payload.id,
-    previewSource: previewSourceFor(data.payload, data.includes?.users ?? []),
+    previewSource: previewSourceFor(data.payload, users),
     event: { type, post_id: data.payload.id, occurred_at },
   };
 }

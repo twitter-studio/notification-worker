@@ -31,7 +31,7 @@ export const XJobSchema = z.strictObject({
     .refine(
       ({ type, post_id, preview, route_id }) =>
         (type === "follow" || type === "dm") === (post_id === undefined) &&
-        (preview === undefined || type === "mention" || type === "reply") &&
+        (preview === undefined || (type !== "follow" && type !== "dm")) &&
         (type !== "dm" || route_id !== undefined),
     ),
 });
