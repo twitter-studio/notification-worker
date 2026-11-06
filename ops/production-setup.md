@@ -37,7 +37,7 @@ mise exec -- pnpm exec wrangler deploy --config wrangler.jsonc
 
 ## 3. XのWebhookを登録する
 
-自分のX開発者アプリでRead権限、OAuth 2.0のConfidential client、戻り先 `http://127.0.0.1:8788/callback` を設定します。使用中のアプリを流用する場合は、既存用途や資格情報に影響しないことを先に確認してください。
+自分のX開発者アプリでRead権限、OAuth 2.0のConfidential client、戻り先 `http://127.0.0.1:8788/callback` を設定します。使用中のアプリを流用する場合は、既存用途や資格情報に影響しないことを先に確認してください。同じアプリに、本人宛てのメンションまたは直接返信の購読がすでにあり、このCLIで管理していない場合は新規購読を開始できません。既存の接続を変えずに、別の専用アプリを用意できるか確認してください。
 
 1. Workerの `/health` が200、X入口と模擬入口が404であることを確認します。
 2. `ENABLE_X_ACTIVITY` だけを `"true"` にして承認済みの方法で更新します。XでWebhook URLとして `https://<自分のWorker名>.<自分のサブドメイン>.workers.dev/webhooks/x` を登録し、CRC検証が成功したことを確認します。[XのWebhook登録](https://docs.x.com/x-api/webhooks/create-webhook)
