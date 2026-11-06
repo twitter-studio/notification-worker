@@ -67,8 +67,44 @@ function invalidFields(error: z.ZodError): ValidationField[] {
   ];
 }
 
+const EnvelopeMarkers = [
+  "event_type",
+  "events",
+  "job_id",
+  "replay_event",
+  "for_user_id",
+  "tweet_create_events",
+] as const;
+
+function jsonKind(value: unknown) {
+  if (Array.isArray(value)) return "array";
+  if (value === null) return "null";
+  if (typeof value === "object") return "object";
+  return "scalar";
+}
+
+function envelopeShape(json: unknown) {
+  const root = jsonKind(json);
+  const object =
+    typeof json === "object" && json !== null && !Array.isArray(json) ? json : undefined;
+  return {
+    root,
+    data:
+      object && "data" in object && Object.hasOwn(object, "data")
+        ? jsonKind(object.data)
+        : "missing",
+    markers: object ? EnvelopeMarkers.filter((key) => Object.hasOwn(object, key)) : [],
+  };
+}
+
 type NormalizedXEvent =
-  | { kind: "invalid"; stage: "envelope" | "mention" | "reply"; fields: ValidationField[] }
+  | { kind: "invalid"; stage: "mention" | "reply"; fields: ValidationField[] }
+  | {
+      kind: "invalid";
+      stage: "envelope";
+      fields: ValidationField[];
+      shape: ReturnType<typeof envelopeShape>;
+    }
   | { kind: "dropped" }
   | {
       kind: "accepted";
@@ -80,7 +116,12 @@ type NormalizedXEvent =
 export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
   const envelope = Envelope.safeParse(json);
   if (!envelope.success)
-    return { kind: "invalid", stage: "envelope", fields: invalidFields(envelope.error) };
+    return {
+      kind: "invalid",
+      stage: "envelope",
+      fields: invalidFields(envelope.error),
+      shape: envelopeShape(json),
+    };
   const eventType = envelope.data.data.event_type;
   if (eventType !== "post.mention.create" && eventType !== "post.reply.create")
     return { kind: "dropped" };
