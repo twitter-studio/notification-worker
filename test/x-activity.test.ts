@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { handle, MAX_BODY_BYTES } from "../src/app";
+import { xRelayTargets } from "../src/config";
 import { handleXQueue, XJobSchema } from "../src/x-queue";
 import { fakeRelay, testEnv } from "./helpers";
 
@@ -893,6 +894,31 @@ describe("通知種類の許可リスト", () => {
     expect(relay.sent[1]?.body).not.toHaveProperty("dm_preview");
     expect(relay.sent[2]?.body).not.toHaveProperty("dm_preview");
     expect(JSON.stringify(relay.sent)).not.toContain(canary);
+  });
+});
+
+describe("DM プレビューの配送設定", () => {
+  it("不正な鍵や使い回された鍵だけを無効にして配送ルートは維持する", () => {
+    const duplicate = "A".repeat(43);
+    const valid = `${"B".repeat(42)}A`;
+    const keys = [duplicate, duplicate, "invalid", valid];
+    const routes = keys.map((dm_preview_key, index) => ({
+      route_id: crypto.randomUUID(),
+      relay_token: `tsr_${String(index).repeat(43)}`,
+      event_types: ["dm"],
+      dm_preview_key,
+    }));
+    const targets = xRelayTargets({
+      ...env(),
+      X_RELAY_ROUTES: JSON.stringify({ [recipient]: routes }),
+    });
+    expect(targets.map((target) => target.routeID)).toEqual(routes.map((route) => route.route_id));
+    expect(targets.map((target) => target.dmPreviewKey)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      valid,
+    ]);
   });
 });
 
