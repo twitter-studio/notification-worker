@@ -1,9 +1,15 @@
-import { ConfigError, isEnabled, publicRelayTrialExpired, relayConfig } from "./config";
+import {
+  ConfigError,
+  isEnabled,
+  publicRelayTrialExpired,
+  relayConfig,
+  xRelayTargets,
+} from "./config";
 import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
 import { MAX_SUBREQUESTS, type RelayDeps, type RelayOutcome, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
 import { MIN_SECRET_LENGTH, verifyMockSignature } from "./verify";
-import { normalizeXEvent, verifyXSignature, XUserID, xCRC } from "./x-activity";
+import { normalizeXEvent, verifyXSignature, xCRC } from "./x-activity";
 import { relayBinding, type XJob, xEventID } from "./x-queue";
 
 export type AppDeps = RelayDeps & { enqueueX: (job: XJob) => Promise<void> };
@@ -160,51 +166,55 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
     ))
   )
     return problem(401, "Unauthorized");
-  const recipient = XUserID.safeParse(env.X_USER_ID);
-  if (!recipient.success) {
-    log("error", "invalid_configuration", { setting: "X_USER_ID" });
-    return problem(500, "Internal Server Error");
-  }
   let json: unknown;
   try {
     json = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body));
   } catch {
     return problem(400, "Bad Request");
   }
-  let event: ReturnType<typeof normalizeXEvent>;
+  let normalized: ReturnType<typeof normalizeXEvent>;
   try {
-    event = normalizeXEvent(json, recipient.data, new Date());
+    normalized = normalizeXEvent(json, new Date());
   } catch {
     return problem(422, "Unprocessable Content");
   }
   if (
-    event === undefined ||
+    normalized === undefined ||
     publicRelayTrialExpired(env) ||
     (env.X_EVENT_NOT_BEFORE !== undefined &&
-      Date.parse(event.occurred_at) <= Number(env.X_EVENT_NOT_BEFORE))
+      Date.parse(normalized.event.occurred_at) <= Number(env.X_EVENT_NOT_BEFORE))
   )
     return Response.json({ counts: { dropped: 1 } });
-  let config: ReturnType<typeof relayConfig>;
+  const { event, recipient } = normalized;
+  let targets: ReturnType<typeof xRelayTargets>;
   try {
-    config = relayConfig(env);
+    targets = xRelayTargets(env).filter((target) => target.recipient === recipient);
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     log("error", "invalid_configuration", { setting: error.setting });
     return problem(500, "Internal Server Error");
   }
+  if (targets.length === 0) return Response.json({ counts: { dropped: 1 } });
   const idSecret = env.X_EVENT_ID_SECRET ?? "";
   if (idSecret.length < MIN_SECRET_LENGTH) {
     log("error", "invalid_configuration", { setting: "X_EVENT_ID_SECRET" });
     return problem(500, "Internal Server Error");
   }
-  const job: XJob = {
-    event: { ...event, event_id: await xEventID(idSecret, recipient.data, event) },
-    relay_binding: await relayBinding(config, recipient.data),
-  };
+  const eventID = await xEventID(idSecret, recipient, event);
+  const jobs: XJob[] = await Promise.all(
+    targets.map(async ({ config, routeID }) => ({
+      event: {
+        ...event,
+        event_id: eventID,
+        ...(routeID === undefined ? {} : { route_id: routeID }),
+      },
+      relay_binding: await relayBinding(config, recipient, routeID),
+    })),
+  );
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      deps.enqueueX(job),
+      Promise.all(jobs.map((job) => deps.enqueueX(job))),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("enqueue_timeout")), 8000);
       }),
@@ -216,8 +226,8 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-  recordObservation({ kind: "enqueued", type: event.type });
-  return Response.json({ counts: { queued: 1 } });
+  for (const _ of jobs) recordObservation({ kind: "enqueued", type: event.type });
+  return Response.json({ counts: { queued: jobs.length } });
 }
 
 export async function handle(request: Request, env: Env, deps: AppDeps): Promise<Response> {

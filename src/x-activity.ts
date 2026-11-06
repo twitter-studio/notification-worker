@@ -27,7 +27,10 @@ const Event = z.object({
   ]),
 });
 
-export function normalizeXEvent(json: unknown, recipient: string, now: Date): XEvent | undefined {
+export function normalizeXEvent(
+  json: unknown,
+  now: Date,
+): { recipient: string; event: XEvent } | undefined {
   const envelope = Envelope.parse(json);
   if (
     envelope.data.event_type !== "post.mention.create" &&
@@ -35,9 +38,9 @@ export function normalizeXEvent(json: unknown, recipient: string, now: Date): XE
   )
     return undefined;
   const { data } = Event.parse(json);
+  const recipient = data.filter.user_id;
   const time = Date.parse(data.created_at);
   if (
-    data.filter.user_id !== recipient ||
     data.payload.author_id === recipient ||
     time < now.getTime() - MAX_EVENT_AGE_MS ||
     time > now.getTime() + CLOCK_SKEW_MS
@@ -49,9 +52,8 @@ export function normalizeXEvent(json: unknown, recipient: string, now: Date): XE
   } else if (data.payload.in_reply_to_user_id !== recipient) return undefined;
   const type = data.event_type === "post.mention.create" ? "mention" : "reply";
   return {
-    type,
-    post_id: data.payload.id,
-    occurred_at: new Date(time).toISOString(),
+    recipient,
+    event: { type, post_id: data.payload.id, occurred_at: new Date(time).toISOString() },
   };
 }
 
