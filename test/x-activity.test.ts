@@ -784,15 +784,22 @@ describe("通知種類の許可リスト", () => {
     const chat = {
       data: {
         ...event("chat.received").data,
+        event_uuid: "00000000-0000-4000-8000-000000000001",
         payload: {
-          id: "00000000-0000-4000-8000-000000000001",
           sender_id: actor,
           encoded_event: "private-ciphertext",
           conversation_token: "private-token",
         },
       },
     };
-    for (const input of [legacy, chat])
+    const activityChat = {
+      data: {
+        ...chat.data,
+        event_uuid: "8511582263942905822",
+        payload: { ...chat.data.payload, id: "00000000-0000-4000-8000-000000000002" },
+      },
+    };
+    for (const input of [legacy, chat, activityChat])
       expect(await (await post(input, { relay, environment })).json()).toEqual({
         counts: { queued: 1 },
       });
@@ -804,7 +811,7 @@ describe("通知種類の許可リスト", () => {
       environment,
       relay.deps,
     );
-    expect(relay.sent).toHaveLength(2);
+    expect(relay.sent).toHaveLength(3);
     for (const { body } of relay.sent) {
       expect(body).toMatchObject({ type: "dm", route_id: routeA });
       expect(body).not.toHaveProperty("post_id");

@@ -13,6 +13,7 @@ import type { XEvent } from "./x-queue";
 
 export const XUserID = z.string().regex(/^[1-9][0-9]{0,18}$/);
 const PostID = XUserID;
+const ActivityEventID = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const Envelope = z.object({ data: z.object({ event_type: z.string().min(1).max(100) }) });
 const ReplayStatus = z.strictObject({
   replay_job_status: z.object({
@@ -90,7 +91,7 @@ const Event = z.object({
     z.object({
       ...Common,
       event_type: z.literal("follow.follow"),
-      event_uuid: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+      event_uuid: ActivityEventID,
       payload: z.object({ source: FollowUser, target: FollowUser }),
     }),
     z.object({
@@ -119,7 +120,12 @@ const Event = z.object({
     z.object({
       ...Common,
       event_type: z.literal("chat.received"),
-      payload: z.object({ id: z.uuid(), sender_id: XUserID, encoded_event: z.string().min(1) }),
+      event_uuid: z.unknown(),
+      payload: z.object({
+        id: z.uuid().optional(),
+        sender_id: XUserID,
+        encoded_event: z.string().min(1),
+      }),
     }),
   ]),
 });
@@ -260,11 +266,15 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
     return events.length === 0 ? { kind: "dropped" } : { kind: "batch", recipient, events };
   }
   if (data.event_type === "chat.received") {
+    // 既存配送と同じ重複判定を維持する。公式の形式では payload.id が省略される。
+    const sourceID = ActivityEventID.safeParse(data.payload.id ?? data.event_uuid);
+    if (!sourceID.success)
+      return { kind: "invalid", stage: "dm", fields: ["data.event_uuid", "data.payload.id"] };
     if (data.payload.sender_id === recipient) return { kind: "dropped" };
     return {
       kind: "accepted",
       recipient,
-      sourceID: data.payload.id,
+      sourceID: sourceID.data,
       previewSource: undefined,
       event: { type: "dm", occurred_at },
     };
