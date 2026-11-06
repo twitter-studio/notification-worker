@@ -57,7 +57,8 @@ async function lookupPreviewAuthor(
   try {
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${bearer}` },
-      redirect: "error",
+      // Workers は "error" を実装していない (#33)。manual で Location を追わず、3xx は下で拒否する。
+      redirect: "manual",
       signal,
     });
     status = response.status;

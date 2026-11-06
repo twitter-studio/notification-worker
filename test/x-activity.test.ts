@@ -264,7 +264,7 @@ describe("通知のプレビュー", () => {
     expect(JSON.stringify(info.mock.calls)).not.toContain("投稿");
   });
 
-  it.each(["found", "mismatched", "protected", "unavailable", "disabled"])(
+  it.each(["found", "mismatched", "protected", "unavailable", "redirect", "disabled"])(
     "返信の投稿者が展開されない場合の照会結果が %s でも配送する",
     async (result) => {
       const relay = fakeRelay();
@@ -276,7 +276,10 @@ describe("通知のプレビュー", () => {
       };
       const fetch = vi.fn(relay.deps.fetch).mockImplementation(async (url, init) => {
         if (String(url) !== lookup) return relay.deps.fetch(url, init);
+        // fetch を差し替えても、workerd が実際に受け付ける設定であることを検証する。
+        new Request(url, init);
         if (result === "unavailable") return new Response(null, { status: 429 });
+        if (result === "redirect") return Response.redirect("https://other.example/");
         return Response.json({
           data: {
             ...author,
@@ -302,7 +305,7 @@ describe("通知のプレビュー", () => {
       } else {
         expect(fetch).toHaveBeenCalledExactlyOnceWith(new URL(lookup), {
           headers: { Authorization: `Bearer ${bearer}` },
-          redirect: "error",
+          redirect: "manual",
           signal: expect.any(AbortSignal),
         });
       }
@@ -319,6 +322,7 @@ describe("通知のプレビュー", () => {
         mismatched: "invalid_response",
         protected: "unavailable_profile",
         unavailable: "http_error",
+        redirect: "http_error",
       };
       expect(observations).toEqual(
         result === "disabled"
@@ -327,7 +331,7 @@ describe("通知のプレビュー", () => {
               {
                 event: "x_preview_lookup",
                 outcome: outcomes[result],
-                status: result === "unavailable" ? 429 : 200,
+                status: result === "unavailable" ? 429 : result === "redirect" ? 302 : 200,
               },
             ],
       );
