@@ -143,3 +143,5 @@ mise exec -- node scripts/x-activity-subscriptions.mjs stop '<保護ディレク
 
 プレビューが定型文になる場合は、Worker ログの `x_preview_lookup` で照会結果と HTTP ステータスを確認する。照会に使ったユーザー ID、URL、本文、資格情報はログに記録しない。
 照会ログがない場合は、プレビューの設定、照会用 secret、イベントに本文があるかを確認する。展開済みの投稿者情報だけでプレビューを作れた場合も、照会ログは出ない。
+
+X の Webhook が 422 を返した場合は、Worker ログの `x_webhook_validation_rejected` で検証段階と項目を確認する。項目名は固定リストに限り、配列の添字は `*` で表す。入力値や生の検証エラーは記録しない。

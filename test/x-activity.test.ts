@@ -190,6 +190,36 @@ describe("XAAの署名と本文", () => {
     const response = await post({ data: { event_type: "post.mention.create" } });
     expect(response.status).toBe(422);
   });
+  it("署名のある 422 は固定の検証項目だけを記録し、署名のない入力は記録しない", async () => {
+    const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+    const reply = event("post.reply.create");
+    const invalidReply = {
+      data: { ...reply.data, payload: { ...reply.data.payload, in_reply_to_user_id: canary } },
+    };
+    const invalidMention = event();
+    invalidMention.data.payload.entities.mentions = [{ id: recipient }, { id: canary }];
+    const unknownEnvelope = { [canary]: reply.data };
+
+    for (const input of [invalidReply, invalidMention, unknownEnvelope]) {
+      const relay = fakeRelay();
+      expect((await post(input, { headers: {}, relay })).status).toBe(401);
+      expect((await post(input, { relay })).status).toBe(422);
+      expect(relay.queued).toEqual([]);
+    }
+    expect(logs.mock.calls.map(([line]) => JSON.parse(line))).toEqual([
+      {
+        event: "x_webhook_validation_rejected",
+        stage: "reply",
+        fields: ["data.payload.in_reply_to_user_id"],
+      },
+      {
+        event: "x_webhook_validation_rejected",
+        stage: "mention",
+        fields: ["data.payload.entities.mentions.*.id"],
+      },
+      { event: "x_webhook_validation_rejected", stage: "envelope", fields: ["data"] },
+    ]);
+  });
   it("設定のエラー・成功・拒否でも本文と資格情報をログへ出さない", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const logs = vi.spyOn(console, "log").mockImplementation(() => {});

@@ -37,17 +37,57 @@ const Event = z.object({
   ]),
 });
 
-export function normalizeXEvent(
-  json: unknown,
-  now: Date,
-): { recipient: string; event: XEvent; previewSource: PreviewSource | undefined } | undefined {
-  const envelope = Envelope.parse(json);
-  if (
-    envelope.data.event_type !== "post.mention.create" &&
-    envelope.data.event_type !== "post.reply.create"
-  )
-    return undefined;
-  const { data } = Event.parse(json);
+const ValidationFields = [
+  "data",
+  "data.event_type",
+  "data.created_at",
+  "data.filter",
+  "data.filter.user_id",
+  "data.payload",
+  "data.payload.id",
+  "data.payload.author_id",
+  "data.payload.in_reply_to_user_id",
+  "data.payload.entities",
+  "data.payload.entities.mentions",
+  "data.payload.entities.mentions.*",
+  "data.payload.entities.mentions.*.id",
+] as const;
+type ValidationField = (typeof ValidationFields)[number] | "other";
+
+function invalidFields(error: z.ZodError): ValidationField[] {
+  return [
+    ...new Set(
+      error.issues.map(({ path }) => {
+        const normalized = path
+          .map((part) => (typeof part === "number" ? "*" : String(part)))
+          .join(".");
+        return ValidationFields.find((field) => field === normalized) ?? "other";
+      }),
+    ),
+  ];
+}
+
+type NormalizedXEvent =
+  | { kind: "invalid"; stage: "envelope" | "mention" | "reply"; fields: ValidationField[] }
+  | { kind: "dropped" }
+  | {
+      kind: "accepted";
+      recipient: string;
+      event: XEvent;
+      previewSource: PreviewSource | undefined;
+    };
+
+export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
+  const envelope = Envelope.safeParse(json);
+  if (!envelope.success)
+    return { kind: "invalid", stage: "envelope", fields: invalidFields(envelope.error) };
+  const eventType = envelope.data.data.event_type;
+  if (eventType !== "post.mention.create" && eventType !== "post.reply.create")
+    return { kind: "dropped" };
+  const type = eventType === "post.mention.create" ? "mention" : "reply";
+  const parsed = Event.safeParse(json);
+  if (!parsed.success) return { kind: "invalid", stage: type, fields: invalidFields(parsed.error) };
+  const { data } = parsed.data;
   const recipient = data.filter.user_id;
   const time = Date.parse(data.created_at);
   if (
@@ -55,13 +95,13 @@ export function normalizeXEvent(
     time < now.getTime() - MAX_EVENT_AGE_MS ||
     time > now.getTime() + CLOCK_SKEW_MS
   )
-    return undefined;
+    return { kind: "dropped" };
   if (data.event_type === "post.mention.create") {
     if (!data.payload.entities.mentions.some((mention) => mention.id === recipient))
-      return undefined;
-  } else if (data.payload.in_reply_to_user_id !== recipient) return undefined;
-  const type = data.event_type === "post.mention.create" ? "mention" : "reply";
+      return { kind: "dropped" };
+  } else if (data.payload.in_reply_to_user_id !== recipient) return { kind: "dropped" };
   return {
+    kind: "accepted",
     recipient,
     previewSource: previewSourceFor(data.payload, data.includes?.users ?? []),
     event: { type, post_id: data.payload.id, occurred_at: new Date(time).toISOString() },
