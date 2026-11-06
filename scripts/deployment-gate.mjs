@@ -3,7 +3,24 @@ export class DeploymentFailure extends Error {
     super("deployment_rejected");
   }
 }
+export function publicRelayTrialDeadline(env) {
+  const input = env.PUBLIC_RELAY_TRIAL_UNTIL;
+  if (!input) return;
+  const until = Date.parse(input);
+  const now = Date.now();
+  if (
+    env.DEPLOY_OPERATION !== "deploy" ||
+    env.DEPLOY_X_ACTIVITY !== "true" ||
+    !Number.isFinite(until) ||
+    new Date(until).toISOString().replace(".000Z", "Z") !== input ||
+    until <= now ||
+    until > now + 2 * 60 * 60 * 1000
+  )
+    throw new DeploymentFailure();
+  return String(until);
+}
 export function deploymentRequest(env, allowMigration = false) {
+  publicRelayTrialDeadline(env);
   const operation = env.DEPLOY_OPERATION;
   const xActivityEnabled = env.DEPLOY_X_ACTIVITY ?? "false";
   const confirmation = xActivityEnabled === "true" ? "deploy-x" : operation;

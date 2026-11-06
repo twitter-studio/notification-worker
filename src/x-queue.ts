@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isEnabled, type RelayConfig, relayConfig } from "./config";
+import { isEnabled, publicRelayTrialExpired, type RelayConfig, relayConfig } from "./config";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
 import { type RelayDeps, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
@@ -56,6 +56,7 @@ export async function handleXQueue(
     const eventTime = parsed.success ? Date.parse(parsed.data.event.occurred_at) : 0;
     if (
       !isEnabled(env.ENABLE_X_ACTIVITY) ||
+      publicRelayTrialExpired(env) ||
       !parsed.success ||
       eventTime < now - MAX_EVENT_AGE_MS ||
       eventTime > now + CLOCK_SKEW_MS
@@ -89,7 +90,10 @@ export async function handleXQueue(
         outcome: "configuration_or_transport_error",
       });
     }
-    if (message.attempts >= 6) {
+    if (publicRelayTrialExpired(env)) {
+      recordObservation({ kind: "discarded", reason: "inactive_invalid_or_expired" });
+      message.ack();
+    } else if (message.attempts >= 6) {
       recordObservation({ kind: "discarded", reason: "attempt_limit" });
       message.ack();
     } else message.retry({ delaySeconds: delay });

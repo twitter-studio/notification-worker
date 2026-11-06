@@ -4,7 +4,11 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { experimental_readRawConfig } from "wrangler";
 import { z } from "zod";
-import { checkDeploymentGate, DeploymentFailure } from "./deployment-gate.mjs";
+import {
+  checkDeploymentGate,
+  DeploymentFailure,
+  publicRelayTrialDeadline,
+} from "./deployment-gate.mjs";
 
 const KIND = "worker";
 const directory = resolve(import.meta.dirname, "..");
@@ -57,6 +61,11 @@ export function deploymentConfig(env) {
       X_USER_ID: input.X_USER_ID,
       RELAY_URL: input.RELAY_URL,
     };
+    const until = publicRelayTrialDeadline(env);
+    if (until) {
+      config.vars.PUBLIC_RELAY_TRIAL_UNTIL = until;
+      config.vars.PUBLIC_RELAY_TRIAL_ORIGIN = `https://notification-service-production.${input.CF_WORKER_SUBDOMAIN}.workers.dev`;
+    }
   } else {
     config.d1_databases[0].database_id = input.D1_DATABASE_ID;
     config.d1_databases[0].migrations_dir = resolve(directory, "../../packages/db/migrations");
@@ -80,7 +89,7 @@ const ExpectedSecrets =
         "DEVICE_TOKEN_KEYS",
         "ENROLLMENT_INVITE_CODE",
       ];
-export function checkSnapshot(snapshot, config) {
+export function checkSnapshot(snapshot, config, { before = false, trial = false } = {}) {
   const bindings = z
     .array(
       z.object({
@@ -110,9 +119,19 @@ export function checkSnapshot(snapshot, config) {
   )
     throw new DeploymentFailure();
   if (
-    ExpectedSecrets.some(
+    [...ExpectedSecrets, ...(trial ? ["PUBLIC_RELAY_TRIAL_TOKEN"] : [])].some(
       (name) =>
         !bindings.some((binding) => binding.name === name && binding.type === "secret_text"),
+    )
+  )
+    throw new DeploymentFailure();
+  if (
+    (!before || trial) &&
+    bindings.some(
+      (binding) =>
+        binding.type === "plain_text" &&
+        ["PUBLIC_RELAY_TRIAL_ORIGIN", "PUBLIC_RELAY_TRIAL_UNTIL"].includes(binding.name) &&
+        (before || !Object.hasOwn(config.vars, binding.name)),
     )
   )
     throw new DeploymentFailure();
@@ -179,6 +198,7 @@ export async function executeDeployment(
   const worker = `workers/scripts/${config.name}`;
   const queue = `queues/${input.CF_QUEUE_ID}`;
   let stoppingX = false;
+  const trial = config.vars.PUBLIC_RELAY_TRIAL_UNTIL !== undefined;
   if (request.operation === "deploy") {
     const current = await api(`${worker}/settings`);
     const currentConfig = structuredClone(config);
@@ -188,9 +208,33 @@ export async function executeDeployment(
       )?.text;
       if (xActivity !== "false" && xActivity !== "true") throw new DeploymentFailure();
       currentConfig.vars.ENABLE_X_ACTIVITY = xActivity;
+      delete currentConfig.vars.PUBLIC_RELAY_TRIAL_UNTIL;
+      delete currentConfig.vars.PUBLIC_RELAY_TRIAL_ORIGIN;
+      const prior = new Map(
+        current.bindings
+          ?.filter((binding) => binding.type === "plain_text")
+          .map((binding) => [binding.name, binding.text]),
+      );
+      const cutoff = prior.get("X_EVENT_NOT_BEFORE");
+      if (cutoff !== undefined) {
+        if (!/^[0-9]{13}$/.test(cutoff)) throw new DeploymentFailure();
+        config.vars.X_EVENT_NOT_BEFORE = cutoff;
+      }
+      const priorDeadline = prior.get("PUBLIC_RELAY_TRIAL_UNTIL");
+      if (priorDeadline !== undefined && !/^[0-9]{13}$/.test(priorDeadline))
+        throw new DeploymentFailure();
+      if (trial || priorDeadline !== undefined)
+        config.vars.X_EVENT_NOT_BEFORE = String(
+          Math.max(Date.now(), Number(priorDeadline ?? 0), Number(cutoff ?? 0)) + 5 * 60_000,
+        );
+      if (
+        trial &&
+        Number(config.vars.PUBLIC_RELAY_TRIAL_UNTIL) <= Number(config.vars.X_EVENT_NOT_BEFORE)
+      )
+        throw new DeploymentFailure();
       stoppingX = xActivity === "true" && config.vars.ENABLE_X_ACTIVITY === "false";
     }
-    checkSnapshot(current, currentConfig);
+    checkSnapshot(current, currentConfig, { before: true, trial });
     const details = await api(queue);
     const metrics = await api(`${queue}/metrics`);
     if (
@@ -204,6 +248,7 @@ export async function executeDeployment(
       throw new DeploymentFailure();
   }
   const path = resolve(directory, `.sandbox-deploy-${randomUUID()}.jsonc`);
+  publicRelayTrialDeadline(env);
   try {
     writeFileSync(path, JSON.stringify(config), { mode: 0o600, flag: "wx" });
     const args =
@@ -237,7 +282,7 @@ export async function executeDeployment(
       /Current Version ID:\s*([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})/i,
     )?.[1];
     if (!version) throw new DeploymentFailure();
-    checkSnapshot(await api(`${worker}/settings`), config);
+    checkSnapshot(await api(`${worker}/settings`), config, { trial });
     const deployments = await api(`${worker}/deployments`);
     const active = deployments.deployments?.[0]?.versions;
     if (active?.length !== 1 || active[0].version_id !== version || active[0].percentage !== 100)

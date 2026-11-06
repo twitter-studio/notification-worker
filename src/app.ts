@@ -1,4 +1,4 @@
-import { ConfigError, isEnabled, relayConfig } from "./config";
+import { ConfigError, isEnabled, publicRelayTrialExpired, relayConfig } from "./config";
 import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
 import { MAX_SUBREQUESTS, type RelayDeps, type RelayOutcome, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
@@ -177,7 +177,13 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
   } catch {
     return problem(422, "Unprocessable Content");
   }
-  if (event === undefined) return Response.json({ counts: { dropped: 1 } });
+  if (
+    event === undefined ||
+    publicRelayTrialExpired(env) ||
+    (env.X_EVENT_NOT_BEFORE !== undefined &&
+      Date.parse(event.occurred_at) <= Number(env.X_EVENT_NOT_BEFORE))
+  )
+    return Response.json({ counts: { dropped: 1 } });
   let config: ReturnType<typeof relayConfig>;
   try {
     config = relayConfig(env);

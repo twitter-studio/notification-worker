@@ -62,6 +62,9 @@ export async function sendToRelay(
   let retryAfterSeconds = 1;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (budget.remaining <= 0) break;
+    const remainingMs =
+      config.expiresAt === undefined ? REQUEST_TIMEOUT_MS : config.expiresAt - Date.now();
+    if (remainingMs <= 0) return { kind: "rejected" };
     budget.remaining--;
     let response: Response;
     try {
@@ -74,7 +77,7 @@ export async function sendToRelay(
         body: JSON.stringify(event),
         // リダイレクトに従わない (設定の誤りで、イベントをほかの先へ送らない。従った回数も、外へ送る回数に数えられる)。
         redirect: "manual",
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remainingMs)),
       });
     } catch {
       // つながらない、時間切れ。少し待ってやり直す。
