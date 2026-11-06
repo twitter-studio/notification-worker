@@ -268,6 +268,7 @@ describe("通知のプレビュー", () => {
     "返信の投稿者が展開されない場合の照会結果が %s でも配送する",
     async (result) => {
       const relay = fakeRelay();
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
       const environment = {
         ...env(),
         ENABLE_X_NOTIFICATION_PREVIEW: result === "disabled" ? "false" : "true",
@@ -310,6 +311,26 @@ describe("通知のプレビュー", () => {
         result === "found" ? { author: "example", excerpt: canary } : undefined,
       );
       expect(JSON.stringify(job)).not.toContain(bearer);
+      const observations = info.mock.calls
+        .map(([fields]) => fields)
+        .filter((fields) => fields.event === "x_preview_lookup");
+      const outcomes: Record<string, string> = {
+        found: "found",
+        mismatched: "invalid_response",
+        protected: "unavailable_profile",
+        unavailable: "http_error",
+      };
+      expect(observations).toEqual(
+        result === "disabled"
+          ? []
+          : [
+              {
+                event: "x_preview_lookup",
+                outcome: outcomes[result],
+                status: result === "unavailable" ? 429 : 200,
+              },
+            ],
+      );
     },
   );
 });
