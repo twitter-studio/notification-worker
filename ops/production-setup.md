@@ -1,6 +1,6 @@
 # TweetbotでXの通知を受け取る
 
-Tweetbotの本番通知に、自分のX開発者アプリとCloudflare Workerを接続します。受け取るのは自分宛てのメンションと直接返信です。Xの利用料は自分のXアカウントにかかります。始める前に[Xのイベント料金](https://docs.x.com/x-api/activity/event-pricing)と[Cloudflare Workers](https://developers.cloudflare.com/workers/platform/pricing/)、[Queues](https://developers.cloudflare.com/queues/platform/pricing/)の利用枠と現在の使用量を確認してください。
+Tweetbotの本番通知に、自分のX開発者アプリとCloudflare Workerを接続します。既定では自分宛てのメンションと直接返信を受け取ります。Xの利用料は自分のXアカウントにかかります。始める前に[Xのイベント料金](https://docs.x.com/x-api/activity/event-pricing)と[Cloudflare Workers](https://developers.cloudflare.com/workers/platform/pricing/)、[Queues](https://developers.cloudflare.com/queues/platform/pricing/)の利用枠と現在の使用量を確認してください。
 
 ## 1. iPhoneを登録する
 
@@ -79,4 +79,24 @@ X アカウントごとに別の保護ディレクトリを作ります。各デ
 
 ## 停止する
 
-X 側の課金につながる配信を止めるには、購読している X アカウントそれぞれの保護ディレクトリで購読 CLI の `stop` を実行します。すべてのアカウントで `subscriptions: 0` を確認してください。その後に Worker の `ENABLE_X_ACTIVITY` を `"false"` に戻し、Queue の状態を確認します。端末で通知をオフにしても X の購読は続きます。[購読の停止・資格情報の更新](setup.md#継続する購読の作成延長解除)
+X 側の課金につながる配信を止めるには、各アカウントで購読 CLI の `stop` を実行してメンションと返信を停止し、手動で追加した種類は購読 ID で削除します。[X の購読一覧](https://docs.x.com/x-api/activity/get-x-activity-subscriptions)で対象 Webhook の購読がすべて消えたことを確認してください。その後に Worker の `ENABLE_X_ACTIVITY` を `"false"` に戻し、Queue の状態を確認します。端末で通知をオフにしても X の購読は続きます。[購読の停止・資格情報の更新](setup.md#継続する購読の作成延長解除)
+
+## 通知の種類を選ぶ
+
+各配送先の `X_RELAY_ROUTES` に `event_types` を指定します。値は `mention`、`reply`、`retweet`、`quote`、`like`、`follow`、`dm` です。省略時は `mention` と `reply` が有効です。空配列でその配送先の全種類がオフになります。設定変更後、Queue に残っていたオフの種類も中継を止めます。たとえば `"event_types": ["mention", "reply", "like", "dm"]` にすると、この4種類を受け取ります。単一配送先の旧形式では `X_NOTIFICATION_TYPES` にカンマ区切りで指定できます。DM にはアカウントを照合できる `X_RELAY_ROUTES` が必要です。
+
+追加のイベントは、X の本人認可後に、既存 Webhook と同じ `webhook_id` へ種類ごとに購読します。既存の購読 CLI はメンション・返信を管理するため、新しい種類の購読は [X Activity API の作成操作](https://docs.x.com/x-api/activity/create-x-activity-subscription) を使い、`filter.user_id` に認可した本人を指定します。
+
+| 通知         | `event_type`                     | 認可とフィルター                                         |
+| ------------ | -------------------------------- | -------------------------------------------------------- |
+| リツイート   | `post.repost.create`             | `tweet.read`                                             |
+| 引用ツイート | `post.quote.create`              | `tweet.read`                                             |
+| いいね       | `like.create`                    | `like.read`、`filter.qualifiers.direction` は `inbound`  |
+| 新規フォロー | `follow.follow`                  | `tweet.read`、`filter.qualifiers.direction` は `inbound` |
+| DM           | `dm.received` と `chat.received` | `dm.read`。従来 DM と暗号化 X Chat の受信を別々に購読    |
+
+`scripts/x-oauth.mjs` の `--likes` と `--dm` で必要な権限だけを追加します。既存の本人認可とは別の保護ディレクトリを使い、本人トークンで `POST /2/activity/subscriptions` に `event_type`、`filter`、`webhook_id` を送ります。受理された購読 ID を控えます。端末配送だけを止める場合は配送先の `event_types` から種類を外します。X からの配信と課金も止めるには、どの配送先でも不要になった購読だけを [購読 ID で削除](https://docs.x.com/x-api/activity/delete-x-activity-subscription)します。
+
+DM は受信を定型文で知らせ、通知をタップすると対象アカウントの受信箱を開きます。本文を端末だけで復号できる経路を用意するまでは、DM の本文や暗号文を APNs に渡しません。[Apple の通知ペイロードのガイド](https://developer.apple.com/library/archive/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/CreatingtheNotificationPayload.html)
+
+DM の配送を試す前に、対応する運営 API とアプリに更新します。端末の共有・譲渡や X アカウントの削除時は、該当の配送先を外します。以前の Worker または運営 API へ戻す際は、追加の種類をオフにし、配送待ちが空になったことを確認します。

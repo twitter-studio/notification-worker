@@ -28,12 +28,12 @@ function fixture(t) {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
-function success() {
+function success(scope = "users.read tweet.read") {
   return Response.json({
     access_token: tokenValue,
     token_type: "bearer",
     expires_in: 7200,
-    scope: "users.read tweet.read",
+    scope,
     private_extra: secret,
   });
 }
@@ -108,6 +108,29 @@ test("S256・最小scope・固定endpointで交換し、tokenだけを0600で保
     "client-secret.txt",
     "user-token.json",
   ]);
+});
+test("いいねとDMは明示的に選んだ権限だけを要求して保存する", async (t) => {
+  const directory = fixture(t);
+  const result = await runOAuth({
+    directory,
+    port: 0,
+    likes: true,
+    dm: true,
+    fetchImpl: async () => success("dm.read users.read tweet.read like.read"),
+    onReady: async (ready) => {
+      assert.equal(
+        new URL(ready.authorizeURL).searchParams.get("scope"),
+        "tweet.read users.read like.read dm.read",
+      );
+      const response = await fetch(callback(ready));
+      assert.equal(response.status, 200);
+      await response.body.cancel();
+    },
+  });
+  assert.equal(
+    JSON.parse(readFileSync(result.tokenPath, "utf8")).scope,
+    "tweet.read users.read like.read dm.read",
+  );
 });
 test("state不一致・Unicode・重複・別path・POSTは交換せず、その後の正しい認可を妨げない", async (t) => {
   const directory = fixture(t);

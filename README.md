@@ -2,7 +2,7 @@
 
 利用者が自分の Cloudflare に置く Worker のひな形です。イベントを受けて正規化し、運営の通知の中継 API (notification-service) へ、自分の中継の資格情報で送ります。中継の API が、tweetbot のアプリへ通知を送ります。
 
-- 運営は、X の API の資格情報を集めません。XAAのmention・直接replyの受信を実装しています。既定で無効 (`ENABLE_X_ACTIVITY=false`) です。
+- 運営は、X の API の資格情報を集めません。XAA のメンション、直接返信、リツイート、引用ツイート、いいね、新規フォロー、DM 受信に対応します。既定で無効 (`ENABLE_X_ACTIVITY=false`) です。種類ごとの選択は[本番セットアップ](ops/production-setup.md#通知の種類を選ぶ)を参照してください。
 - 今は、試すための模擬のイベント (`POST /webhooks/mock`) を送れます。
 - 決まりごとは `docs/adr/0001-mock-webhook-and-relay.md`、開発の決まりは `AGENTS.md` にあります。
 
@@ -13,7 +13,7 @@
 | `GET /health`         | `{"status":"ok"}` を返す。設定は返さない                                                |
 | `POST /webhooks/mock` | 署名した模擬のイベントを受け、中継の API へ送る。`ENABLE_MOCK_EVENTS="true"` のときだけ |
 | `GET /webhooks/x`     | XのCRC。既定では404                                                                     |
-| `POST /webhooks/x`    | XAAの署名を確認して本人宛てのmention・replyだけをQueueへ保存。既定では404               |
+| `POST /webhooks/x`    | XAA の署名を確認して、本人宛てで有効にした通知だけを Queue へ保存。既定では404          |
 
 ## 用意するもの
 

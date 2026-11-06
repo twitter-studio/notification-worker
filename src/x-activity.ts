@@ -27,6 +27,28 @@ const Common = {
     .catch(undefined),
   filter: z.object({ user_id: XUserID }),
 };
+const PostReference = z.object({ type: z.string(), id: PostID });
+const FollowUser = z.object({ data: z.object({ id: XUserID }) });
+const ActivityKind = z.enum([
+  "post.mention.create",
+  "post.reply.create",
+  "post.quote.create",
+  "post.repost.create",
+  "like.create",
+  "follow.follow",
+  "dm.received",
+  "chat.received",
+]);
+const notificationTypes = {
+  "post.mention.create": "mention",
+  "post.reply.create": "reply",
+  "post.quote.create": "quote",
+  "post.repost.create": "retweet",
+  "like.create": "like",
+  "follow.follow": "follow",
+  "dm.received": "dm",
+  "chat.received": "dm",
+} as const satisfies Record<z.infer<typeof ActivityKind>, XEvent["type"]>;
 const Event = z.object({
   data: z.discriminatedUnion("event_type", [
     z.object({
@@ -41,6 +63,51 @@ const Event = z.object({
       event_type: z.literal("post.reply.create"),
       payload: Payload.extend({ in_reply_to_user_id: XUserID }),
     }),
+    z.object({
+      ...Common,
+      event_type: z.enum(["post.quote.create", "post.repost.create"]),
+      payload: Payload.extend({ referenced_tweets: z.array(PostReference).max(20) }),
+    }),
+    z.object({
+      ...Common,
+      event_type: z.literal("like.create"),
+      payload: z.object({
+        id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+        liked_tweet_id: PostID,
+        liked_tweet_author_id: XUserID,
+        liking_user_id: XUserID,
+      }),
+    }),
+    z.object({
+      ...Common,
+      event_type: z.literal("follow.follow"),
+      event_uuid: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+      payload: z.object({ source: FollowUser, target: FollowUser }),
+    }),
+    z.object({
+      ...Common,
+      event_type: z.literal("dm.received"),
+      payload: z.object({
+        direct_message_events: z
+          .array(
+            z.object({
+              type: z.literal("message_create"),
+              id: PostID,
+              message_create: z.object({
+                target: z.object({ recipient_id: XUserID }),
+                sender_id: XUserID,
+              }),
+            }),
+          )
+          .min(1)
+          .max(10),
+      }),
+    }),
+    z.object({
+      ...Common,
+      event_type: z.literal("chat.received"),
+      payload: z.object({ id: z.uuid(), sender_id: XUserID, encoded_event: z.string().min(1) }),
+    }),
   ]),
 });
 
@@ -48,6 +115,7 @@ const ValidationFields = [
   "data",
   "data.event_type",
   "data.created_at",
+  "data.event_uuid",
   "data.filter",
   "data.filter.user_id",
   "data.payload",
@@ -58,6 +126,15 @@ const ValidationFields = [
   "data.payload.entities.mentions",
   "data.payload.entities.mentions.*",
   "data.payload.entities.mentions.*.id",
+  "data.payload.referenced_tweets",
+  "data.payload.liked_tweet_id",
+  "data.payload.liked_tweet_author_id",
+  "data.payload.liking_user_id",
+  "data.payload.source.data.id",
+  "data.payload.target.data.id",
+  "data.payload.direct_message_events",
+  "data.payload.sender_id",
+  "data.payload.encoded_event",
 ] as const;
 type ValidationField = (typeof ValidationFields)[number] | "other";
 
@@ -105,8 +182,14 @@ function envelopeShape(json: unknown) {
   };
 }
 
+type AcceptedEvent = {
+  sourceID: string;
+  event: XEvent;
+  previewSource: PreviewSource | undefined;
+};
+
 type NormalizedXEvent =
-  | { kind: "invalid"; stage: "mention" | "reply"; fields: ValidationField[] }
+  | { kind: "invalid"; stage: XEvent["type"]; fields: ValidationField[] }
   | {
       kind: "invalid";
       stage: "envelope";
@@ -115,12 +198,8 @@ type NormalizedXEvent =
     }
   | { kind: "dropped" }
   | { kind: "replay_status"; state: "Complete" | "Incomplete" }
-  | {
-      kind: "accepted";
-      recipient: string;
-      event: XEvent;
-      previewSource: PreviewSource | undefined;
-    };
+  | ({ kind: "accepted"; recipient: string } & AcceptedEvent)
+  | { kind: "batch"; recipient: string; events: AcceptedEvent[] };
 
 export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
   const envelope = Envelope.safeParse(json);
@@ -136,30 +215,100 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
       shape: envelopeShape(json),
     };
   }
-  const eventType = envelope.data.data.event_type;
-  if (eventType !== "post.mention.create" && eventType !== "post.reply.create")
-    return { kind: "dropped" };
-  const type = eventType === "post.mention.create" ? "mention" : "reply";
+  const eventType = ActivityKind.safeParse(envelope.data.data.event_type);
+  if (!eventType.success) return { kind: "dropped" };
+  const type = notificationTypes[eventType.data];
   const parsed = Event.safeParse(json);
   if (!parsed.success) return { kind: "invalid", stage: type, fields: invalidFields(parsed.error) };
   const { data } = parsed.data;
   const recipient = data.filter.user_id;
   const time = Date.parse(data.created_at);
-  if (
-    data.payload.author_id === recipient ||
-    time < now.getTime() - MAX_EVENT_AGE_MS ||
-    time > now.getTime() + CLOCK_SKEW_MS
-  )
+  if (time < now.getTime() - MAX_EVENT_AGE_MS || time > now.getTime() + CLOCK_SKEW_MS)
     return { kind: "dropped" };
+  const occurred_at = new Date(time).toISOString();
+  if (data.event_type === "dm.received") {
+    const events = data.payload.direct_message_events.flatMap(({ id, message_create }) => {
+      if (
+        message_create.target.recipient_id !== recipient ||
+        message_create.sender_id === recipient
+      )
+        return [];
+      return [
+        {
+          sourceID: id,
+          previewSource: undefined,
+          event: { type: "dm" as const, occurred_at },
+        },
+      ];
+    });
+    return events.length === 0 ? { kind: "dropped" } : { kind: "batch", recipient, events };
+  }
+  if (data.event_type === "chat.received") {
+    if (data.payload.sender_id === recipient) return { kind: "dropped" };
+    return {
+      kind: "accepted",
+      recipient,
+      sourceID: data.payload.id,
+      previewSource: undefined,
+      event: { type: "dm", occurred_at },
+    };
+  }
+  if (data.event_type === "like.create") {
+    const { id, liked_tweet_id, liked_tweet_author_id, liking_user_id } = data.payload;
+    if (liked_tweet_author_id !== recipient || liking_user_id === recipient)
+      return { kind: "dropped" };
+    return {
+      kind: "accepted",
+      recipient,
+      sourceID: id,
+      previewSource: undefined,
+      event: { type: "like", post_id: liked_tweet_id, occurred_at },
+    };
+  }
+  if (data.event_type === "follow.follow") {
+    if (data.payload.target.data.id !== recipient || data.payload.source.data.id === recipient)
+      return { kind: "dropped" };
+    return {
+      kind: "accepted",
+      recipient,
+      sourceID: data.event_uuid,
+      previewSource: undefined,
+      event: { type: "follow", occurred_at },
+    };
+  }
+  if (data.payload.author_id === recipient) return { kind: "dropped" };
+  if (data.event_type === "post.quote.create" || data.event_type === "post.repost.create") {
+    const isQuote = data.event_type === "post.quote.create";
+    const original = data.payload.referenced_tweets.find(
+      ({ type }) => type === (isQuote ? "quoted" : "retweeted"),
+    );
+    if (original === undefined || original.id === data.payload.id) return { kind: "dropped" };
+    return {
+      kind: "accepted",
+      recipient,
+      sourceID: data.payload.id,
+      previewSource: undefined,
+      event: {
+        type: isQuote ? "quote" : "retweet",
+        post_id: isQuote ? data.payload.id : original.id,
+        occurred_at,
+      },
+    };
+  }
   if (data.event_type === "post.mention.create") {
     if (!data.payload.entities.mentions.some((mention) => mention.id === recipient))
       return { kind: "dropped" };
-  } else if (data.payload.in_reply_to_user_id !== recipient) return { kind: "dropped" };
+  } else if (
+    data.event_type === "post.reply.create" &&
+    data.payload.in_reply_to_user_id !== recipient
+  )
+    return { kind: "dropped" };
   return {
     kind: "accepted",
     recipient,
+    sourceID: data.payload.id,
     previewSource: previewSourceFor(data.payload, data.includes?.users ?? []),
-    event: { type, post_id: data.payload.id, occurred_at: new Date(time).toISOString() },
+    event: { type, post_id: data.payload.id, occurred_at },
   };
 }
 

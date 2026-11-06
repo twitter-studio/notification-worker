@@ -5,11 +5,12 @@ import { z } from "zod";
 
 /** 中継の API が受けるイベントの種類 (notification-service の ADR-0009 と同じ)。 */
 export const EVENT_TYPES = ["mention", "reply", "quote", "retweet", "like", "follow"] as const;
+export const X_NOTIFICATION_TYPES = [...EVENT_TYPES, "dm"] as const;
 
 export type RelayEvent = {
   event_id: string;
-  type: (typeof EVENT_TYPES)[number];
-  post_id?: string;
+  type: (typeof X_NOTIFICATION_TYPES)[number];
+  post_id?: string | undefined;
   route_id?: string | undefined;
   occurred_at: string;
 };
