@@ -49,7 +49,7 @@ mise exec -- pnpm exec wrangler queues create notification-x-events --message-re
 
 配置は保護したGitHub Environmentと対象アカウントに限定したCloudflare資格情報で行う。保護を検査する[配置workflow](deployment.md)はあるが、実Environmentと資格情報は未設定のため、[OPS-003](https://github.com/twitter-studio/notification-docs/issues/11)が完了するまではここがゲートになる。CLI例外を使うなら、その回のQueue作成・秘密保存・初回無効配置・一時有効化・無効への復帰を所有者が明示承認する必要がある。
 
-承認した配置経路で `RELAY_TOKEN`、`X_OAUTH2_CLIENT_SECRET`、`X_EVENT_ID_SECRET` をsecretとして保存する。各保護ファイルを標準入力から送る。Client ID、本人token、App-only Bearer TokenはWorkerへ保存しない。ログ取り込みや配置の戻り値に秘密を含めない。
+承認した配置経路で `RELAY_TOKEN`、`X_OAUTH2_CLIENT_SECRET`、`X_EVENT_ID_SECRET` をsecretとして保存する。各保護ファイルを標準入力から送る。Client ID と本人 token は手元に置く。App-only Bearer Token を Worker に置くのは、下の通知プレビューの照会を使う場合に限る。ログ取り込みや配置の戻り値に秘密を含めない。
 
 無効版の稼働後に `/health` が200、X/mock入口が404、Queue件数とbytesが0を確認する。[監視手順](README.md)に従い、10分以内のheartbeat、対象Worker限定の警報と本人へのテストメール受信を確認する。通知先変更・新しい監視権限も承認範囲に含める。
 
@@ -132,3 +132,11 @@ mise exec -- node scripts/x-activity-subscriptions.mjs stop '<保護ディレク
 - `start` と `renew` は本人認可を使う。認可が切れたら同じアプリ・同じ本人で再認可する。延長は購読が有効なうちに実行する。[Xの購読期限と更新](https://docs.x.com/x-api/activity/introduction#subscription-expiration)
 - 応答が失われたら、`status` で件数を確認し、同じ操作と期限で再実行する。途中でやめる場合は `stop` を実行する。作成・更新結果を一覧で確認できない場合、CLIは操作を保留する。期限付きなら期限到達後に停止を再確認する。無期限の場合は同じXアプリで購読が一覧に現れたかを確認する。`activity-subscriptions.json` は作成前の記録と購読IDを保存するので、完了まで保持する。プロセスが強制終了してロックが残った場合は、同じディレクトリで実行中のプロセスがないことを確認してから `activity-session.lock` を取り除く。
 - `stop` が `subscriptions: 0` を返したら、記録した購読の不在を確認できた。続けてWorkerのX入口を無効にし、Queueの状態とXの利用量を確認する。Webhookを外す操作は購読解除の後に行う。すでに外した場合でも、同じApp-only Bearerで解除を続けられる。Bearerも変更済みの場合は、同じXアプリのコンソールで購読の残りを確認する。
+
+## 通知プレビュー
+
+1. プレビューに対応した運営 API が稼働していることを確認する。利用者 Worker を対応版へ更新し、自分の Wrangler 設定の `vars` に `ENABLE_X_NOTIFICATION_PREVIEW="true"` を追加する。共有の sandbox Workflow では未設定のままなので、プレビューは有効にならない。
+2. イベントに公開投稿者の情報がない場合も表示するには、同じ X アプリの App-only Bearer Token を利用者 Worker の `X_PREVIEW_BEARER_TOKEN` secret に置く。X の利用料を確認してから設定する。Worker は情報が欠けているイベントでだけユーザー照会を1回試す。運営や GitHub にトークンを渡さない。[X の User Lookup](https://docs.x.com/x-api/users/get-user-by-id)
+3. メンションと直接返信を1件ずつ送り、各端末の通知に @ユーザー名と抜粋が出ること、タップで対象の投稿が開くことを確認する。投稿者を確認できない場合は定型文で届く。
+
+プレビュー非対応の版に戻す場合は、まず対応版のまま `ENABLE_X_NOTIFICATION_PREVIEW="false"` を反映する。利用者 Worker と運営 API の両 Queue で待機中・遅延中のジョブがなくなったことを確認してから旧版へ戻す。旧版はプレビュー付きの要求や待機ジョブを受け付けない。

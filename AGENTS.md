@@ -100,7 +100,7 @@ pnpm build       # wrangler deploy --dry-run。デプロイはしない
 - 依存は、公開から 3 日たった版を選ぶ (`pnpm-workspace.yaml` の `minimumReleaseAge`)。インストール時のスクリプトは動かさない (`allowBuilds` で false)。
 - 設定の正本は `wrangler.example.jsonc`。利用者は `wrangler.jsonc` に写して使う (コミットしない)。テスト、型、`build` は `wrangler.example.jsonc` を使う。
 - 秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`) は、名前だけを `.dev.vars.example` に書き、値は置かない。型 (`worker-configuration.d.ts`) は `pnpm types` で作る (vars は `--strict-vars=false` で文字列の型にする。テストで値を変えるため)。`wrangler.example.jsonc` か `.dev.vars.example` を変えたら作り直す (CI が `--check` で調べる)。
-- 送り先 (`RELAY_URL`) は設定だけで決め、要求の値で変えさせない。中継の API の本文で、アカウント、X の ID、トークン、文、URL を送らない (notification-service の ADR-0009)。
+- 送り先 (`RELAY_URL`) は設定だけで決め、要求の値で変えさせない。中継の API の本文で、送信先アカウント、数値の X ユーザー ID、トークン、任意の見出し、タップ先 URL を送らない。本文はメンションと返信の公開投稿の抜粋だけを許す (notification-service の ADR-0009)。
 - Webhook の署名は、生の本文を解析する前に確かめる。時刻の幅でやり直しを拒む。
 - ログには、答えの数、設定の名前、エラーの名前だけを出す。資格情報、鍵、イベントの中身、中継の API のエラーの本文を出さない。
 - `ENABLE_X_ACTIVITY` は既定で `"false"`。X の規約の判断 (LEGAL-001) が通るまで、X の連携を作らない。実際の X のアカウントや X の API を使わない。

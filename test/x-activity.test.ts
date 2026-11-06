@@ -221,11 +221,104 @@ describe("XAAの署名と本文", () => {
       expect(logged).not.toContain(value);
   });
 });
+describe("通知のプレビュー", () => {
+  const author = { id: "3333333333333333333", username: "example", protected: false };
+  const lookup = "https://api.x.com/2/users/3333333333333333333?user.fields=protected";
+  const bearer = "synthetic-preview-bearer";
+
+  it("メンションは本人や参照先でなく、投稿者と短い本文を中継する", async () => {
+    const relay = fakeRelay();
+    const payload = event();
+    payload.data.payload.text = `投稿\n\u202E${"界".repeat(276)}👩🏽‍💻末尾`;
+    payload.data.includes = Object.assign(payload.data.includes, {
+      users: [{ id: recipient, username: "recipient", protected: false }, author],
+    });
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    expect(
+      (
+        await post(payload, {
+          relay,
+          environment: testEnv({
+            ENABLE_X_ACTIVITY: "true",
+            ENABLE_X_NOTIFICATION_PREVIEW: "true",
+          }),
+        })
+      ).status,
+    ).toBe(200);
+    await handleXQueue(
+      [
+        {
+          body: relay.queued[0],
+          attempts: 1,
+          ack: vi.fn(),
+          retry: vi.fn(),
+        },
+      ],
+      env(),
+      relay.deps,
+    );
+    expect(relay.sent).toHaveLength(1);
+    expect(relay.sent[0]?.body).toMatchObject({
+      preview: { author: "example", excerpt: `投稿 ${"界".repeat(276)}…` },
+    });
+    expect(JSON.stringify(info.mock.calls)).not.toContain("投稿");
+  });
+
+  it.each(["found", "mismatched", "protected", "unavailable", "disabled"])(
+    "返信の投稿者が展開されない場合の照会結果が %s でも配送する",
+    async (result) => {
+      const relay = fakeRelay();
+      const environment = {
+        ...env(),
+        ENABLE_X_NOTIFICATION_PREVIEW: result === "disabled" ? "false" : "true",
+        X_PREVIEW_BEARER_TOKEN: bearer,
+      };
+      const fetch = vi.fn(relay.deps.fetch).mockImplementation(async (url, init) => {
+        if (String(url) !== lookup) return relay.deps.fetch(url, init);
+        if (result === "unavailable") return new Response(null, { status: 429 });
+        return Response.json({
+          data: {
+            ...author,
+            id: result === "mismatched" ? recipient : author.id,
+            protected: result === "protected",
+          },
+        });
+      });
+      const deps = { ...relay.deps, fetch };
+      const request = JSON.stringify(event("post.reply.create"));
+      const response = await handle(
+        new Request("https://worker.test/webhooks/x", {
+          method: "POST",
+          body: request,
+          headers: { "X-Twitter-Webhooks-Signature-OAuth2": await mac(request) },
+        }),
+        environment,
+        deps,
+      );
+      expect(response.status).toBe(200);
+      if (result === "disabled") {
+        expect(fetch).not.toHaveBeenCalled();
+      } else {
+        expect(fetch).toHaveBeenCalledExactlyOnceWith(new URL(lookup), {
+          headers: { Authorization: `Bearer ${bearer}` },
+          redirect: "error",
+          signal: expect.any(AbortSignal),
+        });
+      }
+      const job = XJobSchema.parse(relay.queued[0]);
+      expect(job.event.preview).toEqual(
+        result === "found" ? { author: "example", excerpt: canary } : undefined,
+      );
+      expect(JSON.stringify(job)).not.toContain(bearer);
+    },
+  );
+});
+
 describe("許可イベントの正規化と再送", () => {
   it.each([
     ["post.mention.create", "mention"],
     ["post.reply.create", "reply"],
-  ])("%sは本文・本人IDを除いて中継する", async (kind, type) => {
+  ])("%sは投稿者が不明なら定型通知として中継する", async (kind, type) => {
     const relay = fakeRelay();
     const payload = event(kind);
     expect((await post(payload, { relay })).status).toBe(200);

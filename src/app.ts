@@ -1,3 +1,4 @@
+import { readBody } from "./body";
 import {
   ConfigError,
   isEnabled,
@@ -10,6 +11,7 @@ import { MAX_SUBREQUESTS, type RelayDeps, type RelayOutcome, sendToRelay } from 
 import { recordObservation } from "./telemetry";
 import { MIN_SECRET_LENGTH, verifyMockSignature } from "./verify";
 import { normalizeXEvent, verifyXSignature, xCRC } from "./x-activity";
+import { resolvePreview } from "./x-preview";
 import { relayBinding, type XJob, xEventID } from "./x-queue";
 
 export type AppDeps = RelayDeps & { enqueueX: (job: XJob) => Promise<void> };
@@ -30,33 +32,6 @@ function log(level: "log" | "error", event: string, fields: Record<string, unkno
   console[level](JSON.stringify({ event, ...fields }));
 }
 
-/** 本文を、上限の大きさまで読む。越えたら undefined。 */
-async function readBody(request: Request): Promise<Uint8Array | undefined> {
-  const declared = request.headers.get("Content-Length");
-  if (declared !== null && Number(declared) > MAX_BODY_BYTES) return undefined;
-  if (request.body === null) return new Uint8Array(0);
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    length += value.length;
-    if (length > MAX_BODY_BYTES) {
-      await reader.cancel();
-      return undefined;
-    }
-    chunks.push(value);
-  }
-  const body = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return body;
-}
-
 /** 送るのをやめる答え。残りのイベントを送っても、同じ答えになるか、中継の API の回数の制限と D1 の枠を使うだけなので。 */
 const STOP_KINDS: ReadonlySet<RelayOutcome["kind"]> = new Set([
   "retry_later",
@@ -70,7 +45,7 @@ async function handleMockWebhook(request: Request, env: Env, deps: RelayDeps): P
     log("error", "invalid_configuration", { setting: "MOCK_WEBHOOK_SECRET" });
     return problem(500, "Internal Server Error");
   }
-  const body = await readBody(request);
+  const body = await readBody(request, MAX_BODY_BYTES);
   if (body === undefined) return problem(413, "Content Too Large");
   const now = new Date();
   // 署名は、生の本文を解析する前に、中継の API の設定より先に確かめる (署名のない要求で、設定の誤りのログを出させない)。
@@ -155,7 +130,7 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
       { headers: { "Cache-Control": "no-store" } },
     );
   }
-  const body = await readBody(request);
+  const body = await readBody(request, MAX_BODY_BYTES);
   if (body === undefined) return problem(413, "Content Too Large");
   // OAuth 1.0へのfallbackは設けず、OAuth 2.0の公式ヘッダーだけを検証する (ADR-0002)。
   if (
@@ -200,12 +175,18 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
     log("error", "invalid_configuration", { setting: "X_EVENT_ID_SECRET" });
     return problem(500, "Internal Server Error");
   }
-  const eventID = await xEventID(idSecret, recipient, event);
+  const [eventID, preview] = await Promise.all([
+    xEventID(idSecret, recipient, event),
+    isEnabled(env.ENABLE_X_NOTIFICATION_PREVIEW)
+      ? resolvePreview(normalized.previewSource, env.X_PREVIEW_BEARER_TOKEN, deps.fetch)
+      : undefined,
+  ]);
   const jobs: XJob[] = await Promise.all(
     targets.map(async ({ config, routeID }) => ({
       event: {
         ...event,
         event_id: eventID,
+        ...(preview === undefined ? {} : { preview }),
         ...(routeID === undefined ? {} : { route_id: routeID }),
       },
       relay_binding: await relayBinding(config, recipient, routeID),

@@ -37,6 +37,7 @@ export type XRelayTarget = {
 declare global {
   interface Env {
     X_RELAY_ROUTES?: string;
+    ENABLE_X_NOTIFICATION_PREVIEW?: string;
     PUBLIC_RELAY_TRIAL_UNTIL?: string;
     PUBLIC_RELAY_TRIAL_ORIGIN?: string;
     PUBLIC_RELAY_TRIAL_TOKEN?: string;

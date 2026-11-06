@@ -1,13 +1,23 @@
 import { z } from "zod";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
+import { type PreviewSource, previewSourceFor } from "./x-preview";
 import type { XEvent } from "./x-queue";
 
 export const XUserID = z.string().regex(/^[1-9][0-9]{0,18}$/);
 const PostID = XUserID;
 const Envelope = z.object({ data: z.object({ event_type: z.string().min(1).max(100) }) });
-const Payload = z.object({ id: PostID, author_id: XUserID });
+const Payload = z.object({
+  id: PostID,
+  author_id: XUserID,
+  text: z.string().optional().catch(undefined),
+  possibly_sensitive: z.boolean().optional().catch(true),
+});
 const Common = {
   created_at: z.iso.datetime({ offset: true }),
+  includes: z
+    .object({ users: z.array(z.unknown()).max(100).optional() })
+    .optional()
+    .catch(undefined),
   filter: z.object({ user_id: XUserID }),
 };
 const Event = z.object({
@@ -30,7 +40,7 @@ const Event = z.object({
 export function normalizeXEvent(
   json: unknown,
   now: Date,
-): { recipient: string; event: XEvent } | undefined {
+): { recipient: string; event: XEvent; previewSource: PreviewSource | undefined } | undefined {
   const envelope = Envelope.parse(json);
   if (
     envelope.data.event_type !== "post.mention.create" &&
@@ -53,6 +63,7 @@ export function normalizeXEvent(
   const type = data.event_type === "post.mention.create" ? "mention" : "reply";
   return {
     recipient,
+    previewSource: previewSourceFor(data.payload, data.includes?.users ?? []),
     event: { type, post_id: data.payload.id, occurred_at: new Date(time).toISOString() },
   };
 }
