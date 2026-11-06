@@ -1,13 +1,9 @@
 import { readBody } from "./body";
-import {
-  ConfigError,
-  isEnabled,
-  publicRelayTrialExpired,
-  relayConfig,
-  xRelayTargets,
-} from "./config";
+import { ConfigError, isEnabled, publicRelayTrialExpired, relayConfig } from "./config";
 import { dmPreviewKeyID, sealDmPreview } from "./dm-preview";
 import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
+import { handlePairing } from "./pairing";
+import { deliveryTargets } from "./pairing-store";
 import { MAX_SUBREQUESTS, type RelayDeps, type RelayOutcome, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
 import { MIN_SECRET_LENGTH, verifyMockSignature } from "./verify";
@@ -170,9 +166,9 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
       env.X_EVENT_NOT_BEFORE === undefined ||
       Date.parse(event.occurred_at) > Number(env.X_EVENT_NOT_BEFORE),
   );
-  let targets: ReturnType<typeof xRelayTargets>;
+  let targets: Awaited<ReturnType<typeof deliveryTargets>>;
   try {
-    targets = xRelayTargets(env).filter((target) => target.recipient === recipient);
+    targets = (await deliveryTargets(env)).filter((target) => target.recipient === recipient);
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     log("error", "invalid_configuration", { setting: error.setting });
@@ -257,6 +253,11 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
 
 export async function handle(request: Request, env: Env, deps: AppDeps): Promise<Response> {
   const { pathname } = new URL(request.url);
+  if (pathname === "/v1/pairing" || pathname.startsWith("/v1/pairing/")) {
+    return handlePairing(request, pathname, env, deps).catch(() =>
+      problem(503, "Service Unavailable"),
+    );
+  }
   if (pathname === "/health") {
     if (request.method !== "GET") return problem(405, "Method Not Allowed", { Allow: "GET" });
     // 状態だけを返す。版、設定、秘密の有無を返すと、外から構成を探られる手がかりになるため。
