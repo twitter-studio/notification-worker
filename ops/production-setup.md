@@ -5,12 +5,12 @@ Tweetbotの本番通知に、自分のX開発者アプリとCloudflare Workerを
 ## 1. iPhoneを登録する
 
 1. Tweetbotの「設定 → プッシュ通知」で、招待コードを空欄にして登録します。iOSの通知を許可し、「配信」がオンになるまで待ちます。
-2. 「テスト通知を送信」を1回押します。iPhoneに1件届けば、Tweetbotから運営の中継までの設定は完了です。Xとの接続は手順4で確認します。
-3. 登録時の中継資格情報を自分のWorkerの `RELAY_TOKEN` として保存します。すでに表示を閉じていて、値を保存していなければ「中継の資格情報を入れ替える」で再発行します。入れ替えると前の値は無効になります。資格情報はチャットやGitに貼らないでください。
+2. 「テスト通知の送信」を1回押します。iPhoneに1件届けば、Tweetbotから運営の中継までの設定は完了です。Xとの接続は手順4で確認します。
+3. 登録時の中継資格情報を手元の保護領域に保存します。手順2で自分のWorkerの `RELAY_TOKEN` に使います。すでに表示を閉じていて、値を保存していなければ「中継の資格情報を入れ替える」で再発行します。入れ替えると前の値は無効になります。資格情報はチャットやGitに貼らないでください。
 
 ## 2. 自分のWorkerを用意する
 
-[ローカルの準備](setup.md#1-ローカルの準備)に従い、設定例から `wrangler.jsonc` を作ります。Worker名、Cloudflareアカウント、Queue名を自分のものにします。Queue名はproducerとconsumerの両方でそろえます。専用Queueを1つ用意してください。D1は不要です。Cloudflareの無料プランではQueueの保持期間は24時間固定です。[Queueの上限](https://developers.cloudflare.com/queues/platform/limits/)
+[ローカルの準備](setup.md#1-ローカルの準備)に従い、設定例から `wrangler.jsonc` を作ります。Worker名とCloudflareアカウントを自分のものにします。Queue名はproducerとconsumerの両方で `notification-x-events` を使います。後で配置Workflowがこの名前を照合します。この名前を別の用途で使っている場合は、既存Queueを流用せずに作業を止めてください。D1は不要です。Cloudflareの無料プランではQueueの保持期間は24時間固定です。[Queueの上限](https://developers.cloudflare.com/queues/platform/limits/)
 
 | 設定                 | 値                                                                                  |
 | -------------------- | ----------------------------------------------------------------------------------- |
@@ -26,7 +26,7 @@ Tweetbotの本番通知に、自分のX開発者アプリとCloudflare Workerを
 mise exec -- pnpm exec wrangler deploy --config wrangler.jsonc --dry-run
 ```
 
-自分のアカウントでWorkerを用意し、X入口を無効のまま初回配置します。対象名が既存Workerと重複していないことを確認してください。[保護された配置Workflow](deployment.md)は既存WorkerとQueueの更新用です。初回作成にCLIを使う場合は、アカウントの所有者が対象と権限を確認してから、次を実行します。Queue名は設定ファイルで指定した名前に置き換えます。既に専用Queueを作成済みなら、最初のコマンドは不要です。
+自分のアカウントでWorkerを用意し、X入口を無効のまま初回配置します。対象名が既存Workerと重複していないことを確認してください。[保護された配置Workflow](deployment.md)は既存WorkerとQueueの更新用です。使う場合は、自分が管理するリポジトリにEnvironmentを設定します。初回作成にCLIを使う場合は、アカウントの所有者が対象と権限を確認してから、次を実行します。既にこの用途専用のQueueを作成済みなら、最初のコマンドは不要です。
 
 ```sh
 mise exec -- pnpm exec wrangler queues create notification-x-events --config wrangler.jsonc
