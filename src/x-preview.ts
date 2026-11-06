@@ -32,6 +32,19 @@ function excerptOf(text: string | undefined): string | undefined {
 
 export type PreviewSource = { authorID: string; excerpt: string; author: string | undefined };
 
+function observeLookup(
+  outcome:
+    | "found"
+    | "http_error"
+    | "invalid_response"
+    | "unavailable_profile"
+    | "timeout"
+    | "transport_error",
+  status?: number,
+): void {
+  console.info({ event: "x_preview_lookup", outcome, ...(status === undefined ? {} : { status }) });
+}
+
 async function lookupPreviewAuthor(
   authorID: string,
   bearer: string,
@@ -39,28 +52,47 @@ async function lookupPreviewAuthor(
 ) {
   const url = new URL(`https://api.x.com/2/users/${authorID}`);
   url.searchParams.set("user.fields", "protected");
+  const signal = AbortSignal.timeout(1000);
+  let status: number | undefined;
   try {
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${bearer}` },
       redirect: "error",
-      signal: AbortSignal.timeout(1000),
+      signal,
     });
+    status = response.status;
     if (!response.ok) {
-      await response.body?.cancel();
+      observeLookup("http_error", status);
+      await response.body?.cancel().catch(() => {});
       return undefined;
     }
     const body = await readBody(response, 8192);
-    if (body === undefined) return undefined;
+    if (body === undefined) {
+      observeLookup("invalid_response", status);
+      return undefined;
+    }
     const json: unknown = JSON.parse(
       new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
     );
     const parsed = z.object({ data: Profile }).safeParse(json);
-    if (parsed.success && parsed.data.data.id === authorID && parsed.data.data.protected === false)
-      return parsed.data.data.username;
+    if (!parsed.success || parsed.data.data.id !== authorID) {
+      observeLookup("invalid_response", status);
+      return undefined;
+    }
+    const { username, protected: isProtected } = parsed.data.data;
+    if (isProtected !== false || username === undefined) {
+      observeLookup("unavailable_profile", status);
+      return undefined;
+    }
+    observeLookup("found", status);
+    return username;
   } catch {
+    observeLookup(
+      signal.aborted ? "timeout" : status === undefined ? "transport_error" : "invalid_response",
+      status,
+    );
     return undefined;
   }
-  return undefined;
 }
 
 export async function resolvePreview(
