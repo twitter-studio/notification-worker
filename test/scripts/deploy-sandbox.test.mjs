@@ -38,6 +38,9 @@ function fixture({
   migrate = false,
   enableX = false,
   initialX = false,
+  trialUntil,
+  initialTrial = false,
+  trialSecret = false,
 } = {}) {
   const selectedEnv = migrate
     ? {
@@ -48,7 +51,12 @@ function fixture({
         SCHEMA_CONFIRMED: "false",
       }
     : enableX
-      ? { ...env, DEPLOY_X_ACTIVITY: "true", DEPLOY_CONFIRMATION: `deploy-x:${sha}` }
+      ? {
+          ...env,
+          DEPLOY_X_ACTIVITY: "true",
+          DEPLOY_CONFIRMATION: `deploy-x:${sha}`,
+          PUBLIC_RELAY_TRIAL_UNTIL: trialUntil,
+        }
       : env;
   const { config } = deploymentConfig(env);
   const secrets =
@@ -75,6 +83,7 @@ function fixture({
   };
   const calls = [];
   let mutations = 0;
+  let writtenVars;
   return {
     env: selectedEnv,
     calls,
@@ -130,6 +139,26 @@ function fixture({
           result = structuredClone(snapshot);
           const x = result.bindings.find(({ name }) => name === "ENABLE_X_ACTIVITY");
           x.text = String(mutations === 0 ? initialX : enableX);
+          if (trialSecret)
+            result.bindings.push({ name: "PUBLIC_RELAY_TRIAL_TOKEN", type: "secret_text" });
+          if (mutations === 0 && initialTrial)
+            result.bindings.push(
+              {
+                name: "PUBLIC_RELAY_TRIAL_UNTIL",
+                type: "plain_text",
+                text: String(Date.now() + 60_000),
+              },
+              {
+                name: "PUBLIC_RELAY_TRIAL_ORIGIN",
+                type: "plain_text",
+                text: "https://notification-service-production.synthetic.workers.dev",
+              },
+            );
+          if (writtenVars) {
+            for (const [name, text] of Object.entries(writtenVars))
+              if (!Object.hasOwn(config.vars, name))
+                result.bindings.push({ name, type: "plain_text", text });
+          }
         } else if (u.pathname.endsWith("/metrics")) result = { backlog_count: 0, backlog_bytes: 0 };
         else if (u.pathname.endsWith("/deployments"))
           result = { deployments: [{ versions: [{ version_id: versionID, percentage: 100 }] }] };
@@ -157,6 +186,7 @@ function fixture({
       assert.equal(command, "pnpm");
       mutations++;
       const written = JSON.parse(readFileSync(args.at(-1), "utf8"));
+      writtenVars = written.vars;
       assert.equal(written.preview_urls, false);
       assert.equal(written.vars.ENABLE_X_ACTIVITY, String(enableX));
       assert.equal(written.vars.ENABLE_MOCK_EVENTS, "false");
@@ -168,6 +198,29 @@ function fixture({
     },
   };
 }
+test("公開中継試験は専用secretを要求し、終了時に元の中継とイベントの下限時刻を設定する", async () => {
+  const trialUntil = new Date(Date.now() + 30 * 60_000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const options = { enableX: true, initialX: true, trialUntil };
+  const missing = fixture(options);
+  await assert.rejects(executeDeployment(missing.env, missing));
+  const trial = fixture({ ...options, trialSecret: true });
+  const { config } = deploymentConfig(trial.env);
+  assert.equal(config.vars.RELAY_URL, env.RELAY_URL);
+  assert.equal(
+    config.vars.PUBLIC_RELAY_TRIAL_ORIGIN,
+    "https://notification-service-production.synthetic.workers.dev",
+  );
+  assert.equal(config.vars.PUBLIC_RELAY_TRIAL_UNTIL, String(Date.parse(trialUntil)));
+  await executeDeployment(trial.env, trial);
+  const tooShort = fixture({
+    ...options,
+    trialSecret: true,
+    trialUntil: new Date(Date.now() + 60_000).toISOString().replace(/\.\d{3}Z$/, "Z"),
+  });
+  await assert.rejects(executeDeployment(tooShort.env, tooShort));
+  const restore = fixture({ enableX: true, initialX: true, initialTrial: true });
+  await executeDeployment(restore.env, restore);
+});
 test("停止中sandboxを更新し、稼働版・設定・Queue・Cron・公開入口を確認する", async () => {
   const f = fixture();
   const result = await executeDeployment(env, f);

@@ -20,6 +20,10 @@ on:
         required: true
         default: false
         type: boolean
+      public_relay_trial_until:
+        description: 公開中継試験の終了時刻（UTCのYYYY-MM-DDTHH:MM:SSZ）
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -32,6 +36,7 @@ concurrency:
 env:
   DEPLOY_OPERATION: deploy
   DEPLOY_X_ACTIVITY: ${{ inputs.x_activity_enabled }}
+  PUBLIC_RELAY_TRIAL_UNTIL: ${{ inputs.public_relay_trial_until }}
   DEPLOY_SHA: ${{ inputs.target_sha }}
   DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
   MAINTENANCE_CONFIRMED: ${{ inputs.maintenance_confirmed }}

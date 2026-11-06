@@ -43,3 +43,8 @@ mainの対象SHAのpush CI成功を待ち、購読解除・送信停止・Queue�
 詳細な障害・鍵更新・削除の運営用手順は [notification-docs](https://github.com/twitter-studio/notification-docs/blob/main/docs/operations/recovery.md) にある。非公開資料のため、アクセスできる管理者だけが参照する。利用者の接続・停止・鍵更新・削除は、このrepoの [セットアップ手順](setup.md) も参照する。公開コードの提供と、実際の運営サービスの利用登録・公開運用の承認は分ける。
 
 仕様の根拠: [GitHub Environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)、[Cloudflare権限](https://developers.cloudflare.com/workers/authorization/workers/)。
+# 公開中継を使う実機試験
+
+公開通知 API と期限をそろえ、`public_relay_trial_until` を指定した保護付き配置を行う。公開登録用の中継資格情報は、対象 Worker の `PUBLIC_RELAY_TRIAL_TOKEN` に保存する。試験用の送り先と資格情報は期限内にだけ使う。配置後はイベントの下限時刻を過ぎてから購読を開始する。
+
+試験後は購読を解除し、Queue が空になったことを確かめる。試験入力を空欄にして配置し、元の中継先への復帰を確認する。試験中に生じたイベントの再配信は時刻で除外する。公開用の中継資格情報を取り消し、試験用 secret を削除する。
