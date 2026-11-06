@@ -6,6 +6,7 @@ export default defineConfig({
   test: { exclude: [...configDefaults.exclude, "test/scripts/**"] },
   plugins: [
     cloudflareTest({
+      main: "./src/pairing-worker.ts",
       wrangler: { configPath: "./wrangler.example.jsonc" },
       miniflare: {
         durableObjects: { PAIRING_ROUTES: { className: "PairingStore", useSQLite: true } },

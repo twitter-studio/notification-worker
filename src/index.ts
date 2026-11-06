@@ -2,8 +2,6 @@ import { handle } from "./app";
 import { recordQueueState } from "./telemetry";
 import { handleXQueue } from "./x-queue";
 
-// ペアリングを有効にした構成だけがこの Durable Object を束縛する。
-export { PairingStore } from "./pairing-store";
 export default {
   fetch(request, env) {
     return handle(request, env, {

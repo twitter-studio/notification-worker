@@ -107,9 +107,10 @@ DM の配送を試す前に、対応する運営 API とアプリに更新しま
 
 ## Tweetbot から端末をペアリングする
 
-X の Webhook と購読を設定した利用者 Worker に、SQLite の Durable Object を追加します。現在使用している Wrangler 設定に次の項目を足してください。既存の migration がある場合は、末尾に固有のタグで追加します。
+X の Webhook と購読を設定した利用者 Worker に、SQLite の Durable Object を追加します。現在使用している Wrangler 設定で `main` を切り替え、次の項目を設定してください。既存の migration がある場合は、末尾に固有のタグで追加します。
 
 ```jsonc
+"main": "src/pairing-worker.ts",
 "durable_objects": {
   "bindings": [{ "name": "PAIRING_ROUTES", "class_name": "PairingStore" }]
 },
