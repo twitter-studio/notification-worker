@@ -902,6 +902,71 @@ describe("通知種類の許可リスト", () => {
     expect(relay.sent[2]?.body).not.toHaveProperty("dm_preview");
     expect(JSON.stringify(relay.sent)).not.toContain(canary);
   });
+
+  it.each([false, true])(
+    "X Chat を端末ルートで暗号化し、大きな鍵変更は省く（%s）",
+    async (large) => {
+      const relay = fakeRelay();
+      const key = new Uint8Array(32).fill(7);
+      const routeID = crypto.randomUUID();
+      const environment = {
+        ...env(),
+        X_RELAY_ROUTES: JSON.stringify({
+          [recipient]: [
+            {
+              route_id: routeID,
+              relay_token: env().RELAY_TOKEN,
+              event_types: ["dm"],
+              dm_preview_key: btoa(String.fromCharCode(...key)).replace(/=+$/, ""),
+            },
+          ],
+        }),
+      };
+      const chat = {
+        sender_id: actor,
+        conversation_id: `${recipient}:${actor}`,
+        conversation_key_version: "123",
+        encoded_event: btoa(large ? "m".repeat(600) : "synthetic-chat-message"),
+        conversation_key_change_event: btoa(large ? "k".repeat(1800) : "synthetic-key-change"),
+      };
+      const response = await post(
+        {
+          data: {
+            ...event("chat.received").data,
+            event_uuid: crypto.randomUUID(),
+            payload: { ...chat, conversation_token: canary },
+          },
+        },
+        { relay, environment },
+      );
+      expect(await response.json()).toEqual({ counts: { queued: 1 } });
+      const { event: job } = XJobSchema.parse(relay.queued[0]);
+      expect(JSON.stringify(job)).not.toContain(chat.encoded_event);
+      expect(JSON.stringify(job)).not.toContain(chat.conversation_key_change_event);
+      if (!job.dm_preview) throw new Error("Expected encrypted X Chat preview");
+      const bytes = Uint8Array.from(
+        atob(job.dm_preview.replaceAll("-", "+").replaceAll("_", "/")),
+        (value) => value.charCodeAt(0),
+      );
+      const plaintext = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: bytes.slice(0, 12),
+          additionalData: new TextEncoder().encode(
+            `twitter-studio/dm-preview/v1\n${recipient}\n${routeID}\n${job.event_id}`,
+          ),
+        },
+        await crypto.subtle.importKey("raw", key, "AES-GCM", false, ["decrypt"]),
+        bytes.slice(12),
+      );
+      expect(JSON.parse(new TextDecoder().decode(plaintext))).toEqual({
+        kind: "x_chat",
+        ...chat,
+        ...(large ? { conversation_key_change_event: undefined } : {}),
+        occurred_at: job.occurred_at,
+      });
+    },
+  );
 });
 
 describe("DM プレビューの配送設定", () => {

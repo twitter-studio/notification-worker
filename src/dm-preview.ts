@@ -7,7 +7,16 @@ export const SealedDmPreview = z
   .max(3400)
   .regex(/^[A-Za-z0-9_-]+$/);
 
-export type DmPreviewSource = { kind: "legacy"; excerpt: string };
+export type DmPreviewSource =
+  | { kind: "legacy"; excerpt: string }
+  | {
+      kind: "x_chat";
+      sender_id: string;
+      conversation_id: string;
+      conversation_key_version: string;
+      encoded_event: string;
+      conversation_key_change_event?: string;
+    };
 
 export async function dmPreviewKeyID(key: string): Promise<string> {
   const data = new TextEncoder().encode(`twitter-studio/dm-preview-key/v1\n${key}`);
@@ -41,9 +50,22 @@ export async function sealDmPreview({
   occurredAt: string;
 }): Promise<string | undefined> {
   const encoder = new TextEncoder();
-  const plaintext = encoder.encode(JSON.stringify({ ...source, occurred_at: occurredAt }));
+  let plaintext = encoder.encode(JSON.stringify({ ...source, occurred_at: occurredAt }));
   // 12-byte nonce + AES-GCM ciphertext + 16-byte tag must fit the APNs budget after encoding.
-  if (plaintext.length > 2522) return undefined;
+  if (plaintext.length > 2522 && source.kind === "x_chat" && source.conversation_key_change_event) {
+    plaintext.fill(0);
+    plaintext = encoder.encode(
+      JSON.stringify({
+        ...source,
+        conversation_key_change_event: undefined,
+        occurred_at: occurredAt,
+      }),
+    );
+  }
+  if (plaintext.length > 2522) {
+    plaintext.fill(0);
+    return undefined;
+  }
   const rawKey = Uint8Array.from(atob(key.replaceAll("-", "+").replaceAll("_", "/")), (char) =>
     char.charCodeAt(0),
   );
