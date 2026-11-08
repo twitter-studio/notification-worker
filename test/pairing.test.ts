@@ -75,8 +75,18 @@ test("pairs only the selected account once, tests its relay, and removes just th
   );
 
   expect((await call("/routes", manager, {})).status).toBe(401);
+  // 持ち主の一覧には、接続コードでつないだ (X のログインではない) ことと、つないだ時刻も出る。
   expect(await (await call("/routes", admin, {})).json()).toEqual({
-    routes: [{ x_user_id: user, route_id, event_types: ["mention", "reply"], dm_preview: false }],
+    routes: [
+      {
+        x_user_id: user,
+        route_id,
+        event_types: ["mention", "reply"],
+        dm_preview: false,
+        x_login: false,
+        connected_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+      },
+    ],
   });
   const targets = await deliveryTargets(env);
   expect(targets).toHaveLength(2);
