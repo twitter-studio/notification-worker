@@ -428,15 +428,21 @@ describe("connecting with an X login", () => {
     const user = "1212121212121212121";
     const env = connectEnv(user);
     const x = fakeX({ me: user });
-    const login = await startLogin(env, x, user, "mention", `tpm_${"E".repeat(43)}`);
-    // ログインの途中の状態の期限を、過去に書き換える。
-    const taken = await store(env).takeLogin(login.state);
-    if (!taken.login) throw new Error("Missing login");
-    await store(env).finishLogin(login.state);
-    await store(env).beginLogin({ ...taken.login, expires: Date.now() - 1 });
-    expect(
-      appRedirect(await callback(env, x, `code=x-code&state=${login.state}`, login.cookie)),
-    ).toEqual({ state: appState, error: "expired" });
+    // 接続元の上限を超えていても、期限切れを伝える (上限が戻るのを待っても、つながらない)。
+    const limited = connectEnv(user, {
+      CONNECT_LIMITER: { limit: async () => ({ success: false }) },
+    });
+    for (const returning of [env, limited]) {
+      const login = await startLogin(env, x, user, "mention", `tpm_${"E".repeat(43)}`);
+      // ログインの途中の状態の期限を、過去に書き換える。
+      const taken = await store(env).takeLogin(login.state);
+      if (!taken.login) throw new Error("Missing login");
+      await store(env).finishLogin(login.state);
+      await store(env).beginLogin({ ...taken.login, expires: Date.now() - 1 });
+      expect(
+        appRedirect(await callback(returning, x, `code=x-code&state=${login.state}`, login.cookie)),
+      ).toEqual({ state: appState, error: "expired" });
+    }
     expect(x.calls).toHaveLength(0);
   });
 
@@ -638,6 +644,21 @@ describe("connecting with an X login", () => {
     );
     expect(stranger.status).toBe(429);
     expect(stranger.headers.get("Location")).toBeNull();
+
+    // 始めたアプリが分からない戻りも、上限を超えたことだけを返す。
+    for (const query of ["code=x-code&state=short", `code=x-code&state=${"U".repeat(43)}`]) {
+      const response = await callback(limited, x, query, "");
+      expect(response.status).toBe(429);
+      expect(response.headers.get("Location")).toBeNull();
+    }
+
+    // X で許可しなかったことは、上限を超えていてもそのまま伝える (やり直し方が違う)。
+    const refused = await startLogin(connectEnv(user), x, user, "mention", `tpm_${"L".repeat(43)}`);
+    expect(
+      appRedirect(
+        await callback(limited, x, `error=access_denied&state=${refused.state}`, refused.cookie),
+      ),
+    ).toEqual({ state: appState, error: "denied" });
 
     const other = await startLogin(connectEnv(user), x, user, "mention", `tpm_${"L".repeat(43)}`);
     const response = await callback(limited, x, `code=x-code&state=${other.state}`, other.cookie);

@@ -165,7 +165,7 @@ X アプリの Callback URL に `https://<worker-domain>/oauth/callback` を足�
 - Workers の Free プランで Rate Limiting の binding を使えるか。
 - 本人の認可で作った購読を、App-only の Bearer で消せるか。消せない場合は、一覧で消えたと分かるまで記録に残し、定期の処理で試し続けます。
 - いいねと新しいフォロワーの購読の向き (`inbound`) は、X の OpenAPI に合わせて `filter.direction` で送ります。概要は `filter.qualifiers.direction` と同じものとしています。
-- 新しいフォロワーの購読に要る scope。X の Callback URL に workers.dev のホストを登録できること、ASWebAuthenticationSession の中で Cookie が保たれることは、実機で確かめました ([記録](https://github.com/twitter-studio/notification-docs/blob/main/docs/operations/2026-11-08-worker-x-login-device-test.md))。
+- 新しいフォロワーの購読に要る scope。X の Callback URL に workers.dev のホストを登録できること、ASWebAuthenticationSession の中で Cookie が保たれること (Worker は Cookie の合わない戻りを断るので、接続できたことから分かります) は、実機で確かめました ([記録](https://github.com/twitter-studio/notification-docs/blob/main/docs/operations/2026-11-08-worker-x-login-device-test.md))。
 - 使った後のトークンを取り消すと、本人の認可で作った購読も消えるか (消えないと分かるまで、取り消さない)。
 
 手動ルートを設定していない新規 Worker でも使えます。その場合は `X_RELAY_ROUTES`、`X_USER_ID`、`RELAY_TOKEN`、`X_NOTIFICATION_TYPES` を設定しません。既存の手動ルートも使えます。同じアカウントで同じ中継資格情報をすでに手動設定している端末は、二重配送を防ぐため追加できません。ペアリングは既存の購読を使うので、X の購読管理は上記の手順で行います。

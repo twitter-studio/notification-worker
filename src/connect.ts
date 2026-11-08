@@ -132,7 +132,8 @@ export async function handleConnect(
   if (!config || !store) return text(404, "Not Found");
   if (request.method !== "GET") return text(405, "Method Not Allowed");
   // 認証のない入口なので、接続元ごとに回数を絞る。絞らないと、持ち主の X アプリへのトークンの要求を外から繰り返させられる。
-  // 上限を超えたら、X へは何も求めず、始めたアプリが分かればそのアプリへ戻す。
+  // 上限を超えたら、X へは何も求めず、ログインも始めない (書き込まない)。始めたアプリが分かれば、そのアプリへ戻す。
+  // X から戻ったときは、始めたアプリを知るために、上限を超えていてもログインを読む (読み出しは絞らない)。
   const source = sourceKey(request.headers.get("CF-Connecting-IP") ?? "unknown");
   const limited = !(await config.limiter.limit({ key: `connect:${source}` })).success;
   const url = new URL(request.url);
@@ -220,11 +221,11 @@ async function finish(
       return reject("Start again from Tweetbot.");
     if (expired) return toApp({ state: login.appState, error: "expired" });
     const fail = (error: string) => toApp({ state: login.appState, error });
-    // X の認可コードは使い切りで、すぐに切れる。後で同じ戻り先を開き直せないので、ここで終えて初めからやり直してもらう。
-    if (limited) return fail("rate_limited");
     const code = url.searchParams.get("code") ?? "";
     if (url.searchParams.has("error") || code.length === 0 || code.length > 512)
       return fail("denied");
+    // X の認可コードは使い切りで、すぐに切れる。後で同じ戻り先を開き直せないので、ここで終えて初めからやり直してもらう。
+    if (limited) return fail("rate_limited");
     try {
       return await connect(code, state, login, config, store, deps, fail);
     } catch {
