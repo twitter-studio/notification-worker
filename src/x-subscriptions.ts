@@ -277,7 +277,8 @@ export async function deleteSubscriptions(
 ): Promise<{ deleted: string[]; unsent: string[] }> {
   const deleted: string[] = [];
   for (const [index, id] of ids.entries()) {
-    if (Date.now() >= deadline) return { deleted, unsent: ids.slice(index) };
+    // 1 回分の時間が残っていなければ送らない (短く打ち切った要求の時間切れを、X の失敗と取り違えない)。
+    if (deadline - Date.now() < callTimeout) return { deleted, unsent: ids.slice(index) };
     if (!SubscriptionID.safeParse(id).success) continue;
     const response = await call(deps, "DELETE", `/2/activity/subscriptions/${id}`, token, {
       deadline,
@@ -345,7 +346,9 @@ export async function releaseWorkerSubscriptions(
     }
     await store.forgetSubscriptions(recipient, gone);
     failed = listFailed || gone.length < tried.length;
-    if (unsentAny) retryAt = Math.min(retryAt ?? Number.POSITIVE_INFINITY, Date.now() + 5 * 60_000);
+    // 送ったものが失敗していれば、送らなかった分も、延ばした間の後にまとめてやり直す (5 分に戻さない)。
+    if (unsentAny && !failed)
+      retryAt = Math.min(retryAt ?? Number.POSITIVE_INFINITY, Date.now() + 5 * 60_000);
   } finally {
     await store.endRelease(recipient, { failed, retryAt }).catch(() => undefined);
   }
