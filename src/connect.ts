@@ -56,6 +56,17 @@ function toApp(values: Record<string, string>): Response {
   return redirect(`${appCallback}?${new URLSearchParams(values)}`, clearCookie);
 }
 
+/**
+ * `/connect` で断ったわけを、ログインを始めたアプリへ戻す。文字だけのページを返すと、利用者は認証のシートを閉じるしかなく、
+ * アプリには「キャンセルした」と出る。`app_state` が 1 つだけで形が合うときだけ戻す (読めなければ、どのログインのものか分からない)。
+ */
+function refuse(url: URL, status: number, message: string, error: string): Response {
+  const [appState, ...rest] = url.searchParams.getAll("app_state");
+  return appState !== undefined && rest.length === 0 && Random.test(appState)
+    ? toApp({ state: appState, error })
+    : text(status, message);
+}
+
 function base64URL(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes))
     .replaceAll("+", "-")
@@ -121,16 +132,22 @@ export async function handleConnect(
   if (!config || !store) return text(404, "Not Found");
   if (request.method !== "GET") return text(405, "Method Not Allowed");
   // 認証のない入口なので、接続元ごとに回数を絞る。絞らないと、持ち主の X アプリへのトークンの要求を外から繰り返させられる。
+  // 上限を超えたら、X へは何も求めず、始めたアプリが分かればそのアプリへ戻す。
   const source = sourceKey(request.headers.get("CF-Connecting-IP") ?? "unknown");
-  if (!(await config.limiter.limit({ key: `connect:${source}` })).success)
-    return text(429, "Too Many Requests");
+  const limited = !(await config.limiter.limit({ key: `connect:${source}` })).success;
   const url = new URL(request.url);
   return url.pathname === "/connect"
-    ? start(url, config, store)
-    : finish(request, url, config, store, deps);
+    ? start(url, config, store, limited)
+    : finish(request, url, config, store, deps, limited);
 }
 
-async function start(url: URL, config: ConnectConfig, store: Store): Promise<Response> {
+async function start(
+  url: URL,
+  config: ConnectConfig,
+  store: Store,
+  limited: boolean,
+): Promise<Response> {
+  if (limited) return refuse(url, 429, "Too Many Requests", "rate_limited");
   const params = z
     .strictObject({
       x_user_id: XUserID,
@@ -139,9 +156,10 @@ async function start(url: URL, config: ConnectConfig, store: Store): Promise<Res
       management_hash: z.string().regex(/^[a-f0-9]{64}$/),
     })
     .safeParse(Object.fromEntries(url.searchParams));
-  if (!params.success) return text(400, "Bad Request");
+  // 引数が合わないのは、アプリと Worker の版の違い (Worker の知らない種類など) のことが多い。
+  if (!params.success) return refuse(url, 400, "Bad Request", "invalid_request");
   const types = NotificationTypes.min(1).safeParse(params.data.types.split(","));
-  if (!types.success) return text(400, "Bad Request");
+  if (!types.success) return refuse(url, 400, "Bad Request", "invalid_request");
   const { x_user_id, app_state, management_hash } = params.data;
   // 本当の守りは、ログインの後に本人の ID を確かめること (connect)。ここで断るのは、許可していない X アカウントに
   // 持ち主の X アプリの同意画面を出さないため。どの ID が許可されているかは、応答の違いから外に分かる。
@@ -184,19 +202,26 @@ async function finish(
   config: ConnectConfig,
   store: Store,
   deps: RelayDeps,
+  limited: boolean,
 ): Promise<Response> {
+  // ログインを始めたブラウザだと分かるまでは、アプリへ戻さない。上限を超えていたら、文字のページも 429 にする。
+  const reject = (message: string) =>
+    limited ? text(429, "Too Many Requests") : text(400, message);
   const state = url.searchParams.get("state") ?? "";
-  if (!Random.test(state)) return text(400, "Bad Request");
+  if (!Random.test(state)) return reject("Bad Request");
+  // 上限を超えていても、ログインは読む (始めたアプリへ戻すため)。X へは何も求めない。
   const { login, expired } = await store.takeLogin(state);
-  if (!login) return text(400, "Start again from Tweetbot.");
+  if (!login) return reject("Start again from Tweetbot.");
   try {
     // ログインを始めたブラウザでなければ断る (RFC 6749 §10.12)。他人が始めたログインの URL を開かされて同意しても、
     // 購読もコードも作らない。この応答はアプリへ戻さない (始めたアプリではないため)。期限切れを戻すのも、この後にする。
     const browser = cookieValue(request);
     if (browser === undefined || (await hex(browser)) !== login.browserHash)
-      return text(400, "Start again from Tweetbot.");
+      return reject("Start again from Tweetbot.");
     if (expired) return toApp({ state: login.appState, error: "expired" });
     const fail = (error: string) => toApp({ state: login.appState, error });
+    // X の認可コードは使い切りで、すぐに切れる。後で同じ戻り先を開き直せないので、ここで終えて初めからやり直してもらう。
+    if (limited) return fail("rate_limited");
     const code = url.searchParams.get("code") ?? "";
     if (url.searchParams.has("error") || code.length === 0 || code.length > 512)
       return fail("denied");
