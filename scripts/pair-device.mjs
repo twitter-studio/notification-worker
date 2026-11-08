@@ -51,7 +51,15 @@ try {
       const preview =
         typeof route.dm_preview === "boolean" ? (route.dm_preview ? "dm-preview" : "-") : "?";
       // X のログインでつないだか (x-login) と、つないだ時刻。覚えのない接続を見つけるのに使う。前の版の Worker は返さない。
-      const via = typeof route.x_login === "boolean" ? (route.x_login ? "x-login" : "code") : "?";
+      // つなぎ方を記録するようになる前のルートは null (-)。前の版の Worker は返さない (?)。
+      const via =
+        route.x_login === null
+          ? "-"
+          : typeof route.x_login === "boolean"
+            ? route.x_login
+              ? "x-login"
+              : "code"
+            : "?";
       const connected =
         route.connected_at === null
           ? "-"

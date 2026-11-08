@@ -225,14 +225,15 @@ export class PairingStore extends DurableObject<Env> {
   list(): ({
     x_user_id: string;
     route_id: string;
-    x_login: boolean;
+    x_login: boolean | null;
     connected_at: string | null;
   } & RouteSettings)[] {
     return this.read().routes.map((route) => ({
       x_user_id: route.recipient,
       route_id: route.routeID,
       ...routeSettings(route),
-      x_login: route.viaLogin === true,
+      // この版より前につないだルートは、どうつないだか記録がない (null)。
+      x_login: route.viaLogin ?? null,
       connected_at:
         route.connectedAt === undefined ? null : new Date(route.connectedAt).toISOString(),
     }));

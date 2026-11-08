@@ -225,8 +225,11 @@ function confirmStart(
     status: 200,
     headers: {
       ...headers,
+      // no-referrer にすると、フォームの POST の Origin が "null" になり、同じオリジンから送ったと分からない (Fetch の決まり)。
+      // same-origin なら、X へ移るときには Referer を送らない (ページの URL の引数を X に渡さない)。
+      "Referrer-Policy": "same-origin",
       "Content-Type": "text/html; charset=utf-8",
-      // 外のページの枠の中に出して、押させない。
+      // 外のページの枠の中に出して、押させない。form-action は付けない: 送った後の 303 (x.com へ移る) まで止めるブラウザがある。
       "Content-Security-Policy":
         "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
       "X-Frame-Options": "DENY",
@@ -251,9 +254,10 @@ async function start(
   const forbidden = () => text(403, "Start again from Tweetbot.");
   if (!/^application\/x-www-form-urlencoded\b/i.test(request.headers.get("Content-Type") ?? ""))
     return forbidden();
-  // ブラウザは、同じサイトからのフォームにも Origin を付ける。違うサイトから送らせたものは断る。
+  // ほかのオリジンから送らせたと分かるものは、ここで断る。Origin がない、または "null" (referrer policy で隠された) ときは、
+  // 下の確かめの値と Strict の Cookie に任せる (どちらも外のサイトからは用意できない)。
   const origin = request.headers.get("Origin");
-  if (origin !== null && origin !== url.origin) return forbidden();
+  if (origin !== null && origin !== "null" && origin !== url.origin) return forbidden();
   const body = await readBody(request, 2048);
   if (body === undefined) return text(413, "Payload Too Large");
   const form = new URLSearchParams(new TextDecoder().decode(body));

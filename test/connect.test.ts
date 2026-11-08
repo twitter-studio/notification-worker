@@ -305,6 +305,7 @@ async function pairWithCode(
   user: string,
   code: string,
   manager: string,
+  route_id: string = crypto.randomUUID(),
 ) {
   const call = (suffix: string, body: unknown) =>
     handle(
@@ -316,7 +317,6 @@ async function pairWithCode(
       env,
       deps,
     );
-  const route_id = crypto.randomUUID();
   const signed = await call("/challenge", {
     lookup: await toHex(code),
     nonce: "a".repeat(64),
@@ -683,7 +683,8 @@ describe("connecting with an X login", () => {
     expect(page.headers.get("Location")).toBeNull();
     expect(page.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
     expect(page.headers.get("Cache-Control")).toBe("no-store");
-    expect(page.headers.get("Referrer-Policy")).toBe("no-referrer");
+    // no-referrer だと、ブラウザはフォームの POST の Origin を "null" にする。X へは Referer を送らない。
+    expect(page.headers.get("Referrer-Policy")).toBe("same-origin");
     // 外のページの枠の中に出させない。スクリプトも動かさない。
     expect(page.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
     expect(page.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
@@ -700,6 +701,7 @@ describe("connecting with an X login", () => {
     );
     expect(html).toContain("worker.test");
     expect(html).toContain("<li>メンション</li><li>DM</li>");
+    expect(html).toContain('<button type="submit">続行</button>');
     expect(html).toContain("DMの通知も、このWorkerを通して届きます。");
     expect(html).toContain('<form method="post" action="/connect">');
     expect(Object.fromEntries(formOf(html))).toEqual({
@@ -715,7 +717,7 @@ describe("connecting with an X login", () => {
     const english = await (
       await handle(new Request(`https://worker.test/connect?${query}`), env, x.deps)
     ).text();
-    expect(english).toContain("Continue only if you tapped Connect to Worker in Tweetbot");
+    expect(english).toContain("Continue only if you tapped Connect Worker in Tweetbot");
     expect(english).toContain("<li>Replies</li>");
     expect(english).not.toContain("DM notifications");
   });
@@ -783,7 +785,16 @@ describe("connecting with an X login", () => {
     const started = await confirmLogin(env, x, form, cookie);
     expect(started.status).toBe(303);
     expect(new URL(started.headers.get("Location") ?? "").host).toBe("x.com");
-    expect(await stored(env, "logins")).toHaveLength(1);
+    // referrer policy で Origin を隠したブラウザ ("null") や、Origin を付けないブラウザでも、確かめの値と Cookie が合えば続けられる。
+    for (const origin of ["null", undefined]) {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: cookie,
+        ...(origin === undefined ? {} : { Origin: origin }),
+      };
+      expect((await post(form, headers)).status).toBe(303);
+    }
+    expect(await stored(env, "logins")).toHaveLength(3);
     // 戻り先は GET だけ。
     expect(
       (
@@ -794,6 +805,61 @@ describe("connecting with an X login", () => {
         )
       ).status,
     ).toBe(405);
+  });
+
+  test("lists how and when each route was last connected, also after connecting it again", async () => {
+    const user = "2323232323232323232";
+    const manager = `tpm_${"V".repeat(43)}`;
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const issued = await handle(
+      new Request("https://worker.test/v1/pairing/codes", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${admin}` },
+        body: JSON.stringify({ x_user_id: user }),
+      }),
+      env,
+      x.deps,
+    );
+    const { code } = (await issued.json()) as { code: string };
+    const paired = await pairWithCode(env, x.deps, user, code, manager);
+    expect(paired.status).toBe(204);
+    const [byCode] = await store(env).list();
+    expect(byCode).toEqual(
+      expect.objectContaining({ x_login: false, connected_at: expect.any(String) }),
+    );
+
+    // 同じ端末が X のログインでつなぎ直すと、つなぎ方と時刻が新しくなる。
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const login = await startLogin(env, x, user, "mention", manager);
+    const back = appRedirect(
+      await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
+    );
+    expect(
+      (await pairWithCode(env, x.deps, user, back.code ?? "", manager, paired.route_id)).status,
+    ).toBe(204);
+    const [byLogin, ...others] = await store(env).list();
+    expect(others).toEqual([]);
+    expect(byLogin?.x_login).toBe(true);
+    expect(Date.parse(byLogin?.connected_at ?? "")).toBeGreaterThan(
+      Date.parse(byCode?.connected_at ?? ""),
+    );
+
+    // 記録するようになる前につないだルートは、どちらも分からない (null) と出す。
+    const stub = env.PAIRING_ROUTES?.getByName("routes");
+    if (!stub) throw new Error("Missing store");
+    await runInDurableObject(stub, (_instance, state) => {
+      const pairing = state.storage.kv.get<{ routes: Record<string, unknown>[] }>("pairing");
+      if (!pairing) throw new Error("Missing pairing");
+      for (const route of pairing.routes) {
+        delete route.connectedAt;
+        delete route.viaLogin;
+      }
+      state.storage.kv.put("pairing", pairing);
+    });
+    expect(await store(env).list()).toEqual([
+      expect.objectContaining({ x_login: null, connected_at: null }),
+    ]);
   });
 
   test("returns a refused start to the app only when the request names exactly one app state", async () => {

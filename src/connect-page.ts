@@ -9,7 +9,7 @@ const names: Record<NotificationType, { en: string; ja: string }> = {
   quote: { en: "Quote Tweets", ja: "引用ツイート" },
   retweet: { en: "Retweets", ja: "リツイート" },
   like: { en: "Likes", ja: "いいね" },
-  follow: { en: "New followers", ja: "新しいフォロワー" },
+  follow: { en: "New Followers", ja: "新しいフォロワー" },
   dm: { en: "DMs", ja: "DM" },
 };
 
@@ -18,7 +18,7 @@ const text = {
     lang: "en",
     title: "Connect Tweetbot Notifications",
     warning:
-      "Continue only if you tapped Connect to Worker in Tweetbot to get here. If you opened this page from another app, a website, or a message, close it.",
+      "Continue only if you tapped Connect Worker in Tweetbot to get here. If you opened this page from another app, a website, or a message, close it.",
     worker: "Worker",
     types: "Notifications",
     dm: "DM notifications will also go through this Worker.",
@@ -34,7 +34,7 @@ const text = {
     types: "受け取る通知",
     dm: "DMの通知も、このWorkerを通して届きます。",
     next: "続けると、Twitterのログインの画面に進みます。つなぐアカウントでログインしてください。",
-    continue: "続ける",
+    continue: "続行",
   },
 } as const;
 
@@ -50,6 +50,8 @@ function html(value: string): string {
 /**
  * `/connect` の確かめのページ。値は読み取りで形を確かめたものだけを入れるが、どれもエスケープしてから埋める。
  * スクリプトは使わない (CSP で止めている)。
+ * つなぐアカウントは出さない: この時点では数字の ID しか分からず、見せても本人には見分けられない。アカウントは次の X の
+ * ログインの画面に出て、Worker はログインの後に本人かを確かめる。
  */
 export function confirmationPage(
   host: string,
@@ -69,7 +71,7 @@ export function confirmationPage(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
+<meta name="referrer" content="same-origin">
 <title>${html(t.title)}</title>
 <style>
 :root { color-scheme: light dark; font-family: -apple-system, system-ui, sans-serif; }
