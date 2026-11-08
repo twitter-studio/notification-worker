@@ -424,10 +424,10 @@ describe("connecting with an X login", () => {
       ]);
       expect(x.rows.size).toBe(0);
       expect(await recorded(env, user)).toEqual([]);
-      // 応答がなかった作成は、作られたかどうか分からないので、定期の処理が一覧で探す。429 は作られなかったと分かる。
-      expect(((await stored<string[]>(env, "unsure")) ?? []).includes(user)).toBe(
-        failure.throwOnCreate !== undefined,
-      );
+      // 作り始めたアカウントは、片付けが一覧で探すまで確かめの印を残す。
+      expect((await stored<string[]>(env, "unsure")) ?? []).toContain(user);
+      await cleanupWorkerSubscriptions(env, store(env), x.deps);
+      expect((await stored<string[]>(env, "unsure")) ?? []).not.toContain(user);
     }
   });
 

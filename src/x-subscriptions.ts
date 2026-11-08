@@ -183,12 +183,19 @@ export async function ensureSubscriptions(options: {
   const tag = `${workerTag}-${options.attempt}`;
   const created: string[] = [];
   const list = () => listSubscriptions(recipient, bearer, deps, { webhookID, deadline });
+  let marked = false;
   try {
     let existing = await list();
     if (existing === undefined) return false;
-    await store.adoptSubscriptions(recipient, workerRows(existing));
+    await store.recordSubscriptions(recipient, workerRows(existing));
     for (const spec of [...new Set(types)].flatMap((type) => specs[type])) {
       if (existing.some((row) => covers(row, spec))) continue;
+      // 作る前に、確かめの印を残す。要求を送った後に処理が打ち切られても (アプリを閉じて接続が切れたなど)、
+      // 定期の処理が一覧で探して記録に取り込める。印は片付けが一覧を読んだときに外す (処理中の接続がないと分かっているとき)。
+      if (!marked) {
+        await store.markUnsure(recipient);
+        marked = true;
+      }
       const response = await call(deps, "POST", "/2/activity/subscriptions", userToken, {
         body: {
           event_type: spec.event_type,
@@ -219,12 +226,11 @@ export async function ensureSubscriptions(options: {
         for (const row of again)
           if (row.tag === tag && !created.includes(row.subscription_id))
             created.push(row.subscription_id);
-        await store.adoptSubscriptions(recipient, workerRows(again));
+        await store.recordSubscriptions(recipient, workerRows(again));
         existing = again;
         if (again.some((row) => covers(row, spec))) continue;
       }
-      // 作られたかどうか分からないまま終わる。一覧に後から出てくることがあるので、定期の処理が探して記録に取り込む。
-      if (status !== 409) await store.markUnsure(recipient);
+      // 作られたかどうか分からないまま終わる。一覧に後から出てくることがあるので、確かめの印のとおり、定期の処理が探す。
       throw new Error("create");
     }
     return true;

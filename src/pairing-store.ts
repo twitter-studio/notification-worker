@@ -419,7 +419,10 @@ export class PairingStore extends DurableObject<Env> {
     });
   }
 
-  /** 一覧で見つけた Worker の tag の購読を記録に取り込む。一覧を読めたので、確かめの印も外す。 */
+  /**
+   * 片付けの間 (`beginRelease` の後) に、一覧で見つけた Worker の tag の購読を記録に取り込み、確かめの印を外す。
+   * 片付けの間は接続の処理が動いていないので、ここで読んだ一覧には、作りかけの購読が残っていない。
+   */
   adoptSubscriptions(recipient: string, ids: string[]): void {
     this.ctx.storage.transactionSync(() => {
       if (ids.length > 0) {
@@ -436,7 +439,7 @@ export class PairingStore extends DurableObject<Env> {
     });
   }
 
-  /** 作ったかどうか分からない購読が残った。定期の処理が一覧で探して、記録に取り込む。 */
+  /** 購読を作り始める。作ったかどうか分からない購読が残りうるので、片付けで一覧を探して記録に取り込むまで印を残す。 */
   markUnsure(recipient: string): void {
     this.ctx.storage.transactionSync(() => {
       const unsure = this.unsure();
