@@ -50,7 +50,26 @@ try {
       const eventTypes = listed ? route.event_types.join(",") || "-" : "?";
       const preview =
         typeof route.dm_preview === "boolean" ? (route.dm_preview ? "dm-preview" : "-") : "?";
-      process.stdout.write(`${route.x_user_id} ${route.route_id} ${eventTypes} ${preview}\n`);
+      // X のログインでつないだか (x-login) と、つないだ時刻。覚えのない接続を見つけるのに使う。前の版の Worker は返さない。
+      // つなぎ方を記録するようになる前のルートは null (-)。前の版の Worker は返さない (?)。
+      const via =
+        route.x_login === null
+          ? "-"
+          : typeof route.x_login === "boolean"
+            ? route.x_login
+              ? "x-login"
+              : "code"
+            : "?";
+      const connected =
+        route.connected_at === null
+          ? "-"
+          : typeof route.connected_at === "string" &&
+              /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(route.connected_at)
+            ? route.connected_at
+            : "?";
+      process.stdout.write(
+        `${route.x_user_id} ${route.route_id} ${eventTypes} ${preview} ${via} ${connected}\n`,
+      );
     }
   } else if (action === "revoke" && response.status === 204) {
     process.stdout.write("Connection removed.\n");

@@ -1,7 +1,9 @@
 import { z } from "zod";
-import { discardBody } from "./body";
+import { discardBody, readBody } from "./body";
 import { NotificationTypes } from "./config";
 import { type ConnectConfig, connectConfig } from "./connect-config";
+import { confirmationPage } from "./connect-page";
+import type { X_NOTIFICATION_TYPES } from "./normalize";
 import { issuePairingCode } from "./pairing";
 import { pairingStore } from "./pairing-store";
 import type { RelayDeps } from "./relay";
@@ -9,6 +11,7 @@ import { XUserID } from "./x-activity";
 import { ensureSubscriptions, readJSON, scopesFor } from "./x-subscriptions";
 
 type Store = NonNullable<ReturnType<typeof pairingStore>>;
+type NotificationType = (typeof X_NOTIFICATION_TYPES)[number];
 
 /**
  * アプリが ASWebAuthenticationSession で受け取る戻り先。
@@ -23,6 +26,8 @@ const loginLifetime = 10 * 60_000;
 const processingLease = 5 * 60_000;
 /** ログインを始めたブラウザに置く Cookie。`__Host-` で、この Worker のホストのパス全体だけに付く。 */
 const browserCookie = "__Host-tweetbot-connect";
+/** 確かめのページを開いたブラウザに置く Cookie。「続ける」のフォームの値と照らし合わせる。 */
+const confirmCookie = "__Host-tweetbot-confirm";
 const Random = /^[A-Za-z0-9_-]{22,128}$/;
 const TokenReply = z.object({
   access_token: z.string().min(1).max(4096),
@@ -60,8 +65,8 @@ function toApp(values: Record<string, string>): Response {
  * `/connect` で断ったわけを、ログインを始めたアプリへ戻す。文字だけのページを返すと、利用者は認証のシートを閉じるしかなく、
  * アプリには「キャンセルした」と出る。`app_state` が 1 つだけで形が合うときだけ戻す (読めなければ、どのログインのものか分からない)。
  */
-function refuse(url: URL, status: number, message: string, error: string): Response {
-  const [appState, ...rest] = url.searchParams.getAll("app_state");
+function refuse(params: URLSearchParams, status: number, message: string, error: string): Response {
+  const [appState, ...rest] = params.getAll("app_state");
   return appState !== undefined && rest.length === 0 && Random.test(appState)
     ? toApp({ state: appState, error })
     : text(status, message);
@@ -86,10 +91,10 @@ async function hex(value: string): Promise<string> {
   return Array.from(await sha256(value), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function cookieValue(request: Request): string | undefined {
+function cookieValue(request: Request, cookie: string): string | undefined {
   for (const part of (request.headers.get("Cookie") ?? "").split(";")) {
     const [name, value] = part.trim().split("=", 2);
-    if (name === browserCookie && value !== undefined && Random.test(value)) return value;
+    if (name === cookie && value !== undefined && Random.test(value)) return value;
   }
   return undefined;
 }
@@ -121,7 +126,7 @@ function basic(clientID: string, clientSecret: string): string {
   return `Basic ${btoa(`${encode(clientID)}:${encode(clientSecret)}`)}`;
 }
 
-/** `GET /connect` と `GET /oauth/callback`。X でログインした本人に、そのアカウントの接続コードを渡す (ADR-0008 の段 3)。 */
+/** `/connect` と `GET /oauth/callback`。X でログインした本人に、そのアカウントの接続コードを渡す (ADR-0008 の段 3)。 */
 export async function handleConnect(
   request: Request,
   env: Env,
@@ -130,53 +135,151 @@ export async function handleConnect(
   const config = connectConfig(env);
   const store = pairingStore(env);
   if (!config || !store) return text(404, "Not Found");
-  if (request.method !== "GET") return text(405, "Method Not Allowed");
+  const url = new URL(request.url);
+  const method = url.pathname === "/connect" ? ["GET", "POST"] : ["GET"];
+  if (!method.includes(request.method)) return text(405, "Method Not Allowed");
   // 認証のない入口なので、接続元ごとに回数を絞る。絞らないと、持ち主の X アプリへのトークンの要求を外から繰り返させられる。
   // 上限を超えたら、X へは何も求めず、ログインも始めない (書き込まない)。始めたアプリが分かれば、そのアプリへ戻す。
   // X から戻ったときは、始めたアプリを知るために、上限を超えていてもログインを読む (読み出しは絞らない)。
   const source = sourceKey(request.headers.get("CF-Connecting-IP") ?? "unknown");
   const limited = !(await config.limiter.limit({ key: `connect:${source}` })).success;
-  const url = new URL(request.url);
-  return url.pathname === "/connect"
-    ? start(url, config, store, limited)
-    : finish(request, url, config, store, deps, limited);
+  if (url.pathname === "/connect")
+    return request.method === "GET"
+      ? confirmStart(request, url, config, limited)
+      : start(request, url, config, store, limited);
+  return finish(request, url, config, store, deps, limited);
 }
 
+type StartParams = {
+  recipient: string;
+  appState: string;
+  managementHash: string;
+  eventTypes: NotificationType[];
+};
+
+const StartQuery = z.strictObject({
+  x_user_id: XUserID,
+  types: z.string().max(100),
+  app_state: z.string().regex(Random),
+  management_hash: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+/** アプリが `/connect` に付けた引数を読む。読めなければ、断ったわけを返す (始めたアプリが分かれば、そのアプリへ)。 */
+function readStart(
+  params: URLSearchParams,
+  config: ConnectConfig,
+  limited: boolean,
+): { ok: true; value: StartParams } | { ok: false; response: Response } {
+  if (limited)
+    return { ok: false, response: refuse(params, 429, "Too Many Requests", "rate_limited") };
+  const parsed = StartQuery.safeParse(Object.fromEntries(params));
+  // 引数が合わないのは、アプリと Worker の版の違い (Worker の知らない種類など) のことが多い。
+  const types = parsed.success
+    ? NotificationTypes.min(1).safeParse(parsed.data.types.split(","))
+    : undefined;
+  if (!parsed.success || !types?.success)
+    return { ok: false, response: refuse(params, 400, "Bad Request", "invalid_request") };
+  const { x_user_id, app_state, management_hash } = parsed.data;
+  // 本当の守りは、ログインの後に本人の ID を確かめること (connect)。ここで断るのは、許可していない X アカウントに
+  // 持ち主の X アプリの同意画面を出さないため。どの ID が許可されているかは、応答の違いから外に分かる。
+  if (!config.allowed.has(x_user_id))
+    return { ok: false, response: toApp({ state: app_state, error: "not_allowed" }) };
+  return {
+    ok: true,
+    value: {
+      recipient: x_user_id,
+      appState: app_state,
+      managementHash: management_hash,
+      eventTypes: [...new Set(types.data)],
+    },
+  };
+}
+
+/**
+ * `GET /connect`。X へ送る前に、確かめのページを出す。
+ * `/connect` の URL は誰でも作れるので、他人の管理キーのハッシュを入れた URL を開かされても、本人が気づいて止められるようにする
+ * (#51)。ログインはまだ始めない (書き込まない)。
+ */
+function confirmStart(
+  request: Request,
+  url: URL,
+  config: ConnectConfig,
+  limited: boolean,
+): Response {
+  const read = readStart(url.searchParams, config, limited);
+  if (!read.ok) return read.response;
+  const nonce = random();
+  const page = confirmationPage(
+    url.host,
+    read.value.eventTypes,
+    {
+      x_user_id: read.value.recipient,
+      types: read.value.eventTypes.join(","),
+      app_state: read.value.appState,
+      management_hash: read.value.managementHash,
+      confirm: nonce,
+    },
+    /^ja\b/i.test(request.headers.get("Accept-Language") ?? ""),
+  );
+  const response = new Response(page, {
+    status: 200,
+    headers: {
+      ...headers,
+      // no-referrer にすると、フォームの POST の Origin が "null" になり、同じオリジンから送ったと分からない (Fetch の決まり)。
+      // same-origin なら、X へ移るときには Referer を送らない (ページの URL の引数を X に渡さない)。
+      "Referrer-Policy": "same-origin",
+      "Content-Type": "text/html; charset=utf-8",
+      // 外のページの枠の中に出して、押させない。form-action は付けない: 送った後の 303 (x.com へ移る) まで止めるブラウザがある。
+      "Content-Security-Policy":
+        "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+      "X-Frame-Options": "DENY",
+    },
+  });
+  // 続けるときのフォームの値と照らし合わせる。Strict なので、外のサイトから送らせたフォームには付かない。
+  response.headers.append(
+    "Set-Cookie",
+    `${confirmCookie}=${nonce}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${loginLifetime / 1000}`,
+  );
+  return response;
+}
+
+/** `POST /connect`。確かめのページで「続ける」を押したら、ログインを始めて X へ送る。 */
 async function start(
+  request: Request,
   url: URL,
   config: ConnectConfig,
   store: Store,
   limited: boolean,
 ): Promise<Response> {
-  if (limited) return refuse(url, 429, "Too Many Requests", "rate_limited");
-  const params = z
-    .strictObject({
-      x_user_id: XUserID,
-      types: z.string().max(100),
-      app_state: z.string().regex(Random),
-      management_hash: z.string().regex(/^[a-f0-9]{64}$/),
-    })
-    .safeParse(Object.fromEntries(url.searchParams));
-  // 引数が合わないのは、アプリと Worker の版の違い (Worker の知らない種類など) のことが多い。
-  if (!params.success) return refuse(url, 400, "Bad Request", "invalid_request");
-  const types = NotificationTypes.min(1).safeParse(params.data.types.split(","));
-  if (!types.success) return refuse(url, 400, "Bad Request", "invalid_request");
-  const { x_user_id, app_state, management_hash } = params.data;
-  // 本当の守りは、ログインの後に本人の ID を確かめること (connect)。ここで断るのは、許可していない X アカウントに
-  // 持ち主の X アプリの同意画面を出さないため。どの ID が許可されているかは、応答の違いから外に分かる。
-  if (!config.allowed.has(x_user_id)) return toApp({ state: app_state, error: "not_allowed" });
+  const forbidden = () => text(403, "Start again from Tweetbot.");
+  if (!/^application\/x-www-form-urlencoded\b/i.test(request.headers.get("Content-Type") ?? ""))
+    return forbidden();
+  // ほかのオリジンから送らせたと分かるものは、ここで断る。Origin がない、または "null" (referrer policy で隠された) ときは、
+  // 下の確かめの値と Strict の Cookie に任せる (どちらも外のサイトからは用意できない)。
+  const origin = request.headers.get("Origin");
+  if (origin !== null && origin !== "null" && origin !== url.origin) return forbidden();
+  const body = await readBody(request, 2048);
+  if (body === undefined) return text(413, "Payload Too Large");
+  const form = new URLSearchParams(new TextDecoder().decode(body));
+  const confirm = form.getAll("confirm");
+  form.delete("confirm");
+  // 確かめのページを開いたブラウザでなければ断る。始めたアプリへも戻さない (外から送らせたものかもしれない)。
+  const nonce = cookieValue(request, confirmCookie);
+  if (nonce === undefined || confirm.length !== 1 || confirm[0] !== nonce) return forbidden();
+  const read = readStart(form, config, limited);
+  if (!read.ok) return read.response;
+  const { recipient, appState, managementHash, eventTypes } = read.value;
   const state = random();
   const verifier = random();
   const browser = random();
-  const eventTypes = [...new Set(types.data)];
   const redirectURI = `${url.origin}/oauth/callback`;
   await store.beginLogin({
     state,
     verifier,
     browserHash: await hex(browser),
-    managementHash: management_hash,
-    appState: app_state,
-    recipient: x_user_id,
+    managementHash,
+    appState,
+    recipient,
     eventTypes,
     redirectURI,
     expires: Date.now() + loginLifetime,
@@ -191,10 +294,20 @@ async function start(
     code_challenge: base64URL(await sha256(verifier)),
     code_challenge_method: "S256",
   }).toString();
-  return redirect(
-    authorize.href,
+  // フォームの POST の後なので、303 で GET に変えて X へ送る。確かめの Cookie は使い切り。
+  const response = new Response(null, {
+    status: 303,
+    headers: { ...headers, Location: authorize.href },
+  });
+  response.headers.append(
+    "Set-Cookie",
     `${browserCookie}=${browser}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${loginLifetime / 1000}`,
   );
+  response.headers.append(
+    "Set-Cookie",
+    `${confirmCookie}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0`,
+  );
+  return response;
 }
 
 async function finish(
@@ -216,7 +329,7 @@ async function finish(
   try {
     // ログインを始めたブラウザでなければ断る (RFC 6749 §10.12)。他人が始めたログインの URL を開かされて同意しても、
     // 購読もコードも作らない。この応答はアプリへ戻さない (始めたアプリではないため)。期限切れを戻すのも、この後にする。
-    const browser = cookieValue(request);
+    const browser = cookieValue(request, browserCookie);
     if (browser === undefined || (await hex(browser)) !== login.browserHash)
       return reject("Start again from Tweetbot.");
     if (expired) return toApp({ state: login.appState, error: "expired" });

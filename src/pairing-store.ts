@@ -37,6 +37,9 @@ const settingsWindow = 10 * 60_000;
 const settingsWritesPerWindow = 30;
 
 export type StoredRoute = PairingRoute & {
+  /** 最後に接続した時刻と、X のログインで出したコードでつないだか。持ち主が一覧で、覚えのない接続を見つけるため (#51)。 */
+  connectedAt?: number;
+  viaLogin?: boolean;
   nextTestAt?: number;
   settingsWrites?: number;
   settingsWindowEndsAt?: number;
@@ -215,12 +218,24 @@ export class PairingStore extends DurableObject<Env> {
     });
   }
 
-  /** 管理者の一覧。端末が自分で選んだ種類と、DM プレビューの有無も出し、DM を受け取っている端末を外せるようにする。 */
-  list(): ({ x_user_id: string; route_id: string } & RouteSettings)[] {
+  /**
+   * 管理者の一覧。端末が自分で選んだ種類と、DM プレビューの有無も出し、DM を受け取っている端末を外せるようにする。
+   * X のログインでつないだものと、つないだ時刻も出す (ログインの URL を開かされて足されたルートに、持ち主が気づけるように)。
+   */
+  list(): ({
+    x_user_id: string;
+    route_id: string;
+    x_login: boolean | null;
+    connected_at: string | null;
+  } & RouteSettings)[] {
     return this.read().routes.map((route) => ({
       x_user_id: route.recipient,
       route_id: route.routeID,
       ...routeSettings(route),
+      // この版より前につないだルートは、どうつないだか記録がない (null)。
+      x_login: route.viaLogin ?? null,
+      connected_at:
+        route.connectedAt === undefined ? null : new Date(route.connectedAt).toISOString(),
     }));
   }
 
@@ -254,6 +269,8 @@ export class PairingStore extends DurableObject<Env> {
           return "conflict";
         // X でログインして接続し直したら、選んだ種類を当てる (購読を作った種類と揃える)。
         if (code.eventTypes !== undefined) existing.eventTypes = code.eventTypes;
+        existing.connectedAt = Date.now();
+        existing.viaLogin = code.managementHash !== undefined;
       } else {
         if (code.usedBy !== undefined) return "invalid";
         const manual = xRelayTargets(this.env, true);
@@ -273,9 +290,13 @@ export class PairingStore extends DurableObject<Env> {
           new Set([...all.map((item) => item.recipient), route.recipient]).size > 8
         )
           return "conflict";
-        state.routes.push(
-          code.eventTypes === undefined ? route : { ...route, eventTypes: code.eventTypes },
-        );
+        // ログインを始めたアプリの管理キーに結び付いたコードは、X のログインでしか出さない。
+        state.routes.push({
+          ...route,
+          ...(code.eventTypes === undefined ? {} : { eventTypes: code.eventTypes }),
+          connectedAt: Date.now(),
+          viaLogin: code.managementHash !== undefined,
+        });
       }
       code.usedBy = { managementHash: route.managementHash, routeID: route.routeID };
       this.ctx.storage.kv.put("pairing", state);
