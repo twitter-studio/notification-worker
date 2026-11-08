@@ -1,10 +1,9 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, test } from "vitest";
-import { z } from "zod";
 import { handle } from "../src/app";
 import { sourceKey } from "../src/connect";
 import { deliveryTargets, pairingStore } from "../src/pairing-store";
-import { cleanupWorkerSubscriptions } from "../src/x-subscriptions";
+import { cleanupWorkerSubscriptions, releaseWorkerSubscriptions } from "../src/x-subscriptions";
 import { testEnv } from "./helpers";
 
 const admin = `tpa_${"A".repeat(43)}`;
@@ -32,10 +31,19 @@ function fakeX(options: {
   failCreate?: string;
   throwOnCreate?: string;
   loseResponseOn?: string;
+  /** 作った後、読めない本文 (200 の `{}`) を返す種類。 */
+  garbleCreateOn?: string;
+  /** ほかの接続が同じ時に作ったとして、Worker の tag の購読を置いて 409 を返す種類。 */
+  conflictOn?: string;
+  /** 応答をなくした後、一覧も読めなくする。 */
+  breakListOnLose?: boolean;
   failDelete?: boolean;
+  /** 消さずに、この本文を 200 で返す。 */
+  deleteReply?: unknown;
   hideFromList?: boolean;
 }) {
   const calls: Call[] = [];
+  let listBroken = false;
   const rows = new Map<string, Row>(
     (options.existing ?? []).map((row, index) => [`${100 + index}`, row]),
   );
@@ -67,6 +75,7 @@ function fakeX(options: {
     }
     if (url.pathname === "/2/users/me") return Response.json({ data: { id: options.me } });
     if (url.pathname === "/2/activity/subscriptions" && request.method === "GET") {
+      if (listBroken) return Response.json({}, { status: 503 });
       if (options.hideFromList) return Response.json({ data: [] });
       return Response.json({
         data: [...rows].map(([id, row]) => ({
@@ -87,7 +96,19 @@ function fakeX(options: {
       if (sent.event_type === options.throwOnCreate) throw new Error("timeout");
       if (sent.event_type === options.loseResponseOn) {
         rows.set(`${next++}`, { event_type: sent.event_type, tag: sent.tag });
+        if (options.breakListOnLose) listBroken = true;
         throw new Error("response lost");
+      }
+      if (sent.event_type === options.garbleCreateOn) {
+        rows.set(`${next++}`, { event_type: sent.event_type, tag: sent.tag });
+        return Response.json({});
+      }
+      if (sent.event_type === options.conflictOn) {
+        rows.set(`${next++}`, {
+          event_type: sent.event_type,
+          tag: "tweetbot-worker-connect-other",
+        });
+        return Response.json({}, { status: 409 });
       }
       if (sent.event_type === options.failCreate) return Response.json({}, { status: 429 });
       const id = `${next++}`;
@@ -96,6 +117,7 @@ function fakeX(options: {
     }
     if (url.pathname.startsWith("/2/activity/subscriptions/") && request.method === "DELETE") {
       if (options.failDelete) return Response.json({}, { status: 503 });
+      if (options.deleteReply !== undefined) return Response.json(options.deleteReply);
       rows.delete(url.pathname.split("/").at(-1) ?? "");
       return Response.json({ data: { deleted: true } });
     }
@@ -107,12 +129,32 @@ function fakeX(options: {
     setChallenge: (value: string) => {
       challenge = value;
     },
+    fixList: () => {
+      listBroken = false;
+    },
     deps: {
       fetch: fetch as typeof globalThis.fetch,
       enqueueX: async () => {},
       sleep: async () => {},
     },
   };
+}
+
+function store(env: Env) {
+  const found = pairingStore(env);
+  if (!found) throw new Error("Missing store");
+  return found;
+}
+
+/** Durable Object に保存した値を、そのまま読む。 */
+async function stored<T>(env: Env, key: string): Promise<T | undefined> {
+  const stub = env.PAIRING_ROUTES?.getByName("routes");
+  if (!stub) throw new Error("Missing store");
+  return runInDurableObject(stub, (_instance, state) => state.storage.kv.get<T>(key));
+}
+
+async function recorded(env: Env, user: string): Promise<string[]> {
+  return (await stored<Record<string, string[]>>(env, "subscriptions"))?.[user] ?? [];
 }
 
 function connectEnv(user: string, overrides: Partial<Env> = {}): Env {
@@ -351,14 +393,11 @@ describe("connecting with an X login", () => {
     const env = connectEnv(user);
     const x = fakeX({ me: user });
     const login = await startLogin(env, x, user, "mention", `tpm_${"E".repeat(43)}`);
-    const store = pairingStore(env);
-    if (!store) throw new Error("Missing store");
     // ログインの途中の状態の期限を、過去に書き換える。
-    const taken = await store.takeLogin(login.state);
+    const taken = await store(env).takeLogin(login.state);
     if (!taken.login) throw new Error("Missing login");
-    await store.finishLogin(login.state);
-    const { processingUntil: _, ...waiting } = taken.login;
-    await store.beginLogin({ ...waiting, expires: Date.now() - 1 });
+    await store(env).finishLogin(login.state);
+    await store(env).beginLogin({ ...taken.login, expires: Date.now() - 1 });
     expect(
       appRedirect(await callback(env, x, `code=x-code&state=${login.state}`, login.cookie)),
     ).toEqual({ state: appState, error: "expired" });
@@ -384,7 +423,11 @@ describe("connecting with an X login", () => {
         ["/2/activity/subscriptions/2", "Bearer user-token"],
       ]);
       expect(x.rows.size).toBe(0);
-      expect(await pairingStore(env)?.subscriptionRecipients()).not.toContain(user);
+      expect(await recorded(env, user)).toEqual([]);
+      // 応答がなかった作成は、作られたかどうか分からないので、定期の処理が一覧で探す。429 は作られなかったと分かる。
+      expect(((await stored<string[]>(env, "unsure")) ?? []).includes(user)).toBe(
+        failure.throwOnCreate !== undefined,
+      );
     }
   });
 
@@ -397,11 +440,8 @@ describe("connecting with an X login", () => {
     const back = appRedirect(
       await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
     );
-    const store = pairingStore(env);
-    if (!store) throw new Error("Missing store");
-
     // コードが有効な間は、ルートがなくても消さない。
-    await cleanupWorkerSubscriptions(env, store, x.deps);
+    await cleanupWorkerSubscriptions(env, store(env), x.deps);
     expect(x.rows.size).toBe(1);
 
     const paired = await pairWithCode(env, x.deps, user, back.code ?? "", manager);
@@ -425,14 +465,19 @@ describe("connecting with an X login", () => {
     expect(removed.status).toBe(204);
     expect(x.rows.size).toBe(1);
 
-    // 手動の配送先がなくなれば、定期の処理が片付ける。消せなかったら記録に残し、次にやり直す。
+    // 手動の配送先がなくなれば、定期の処理が片付ける。消せなかったら記録に残し、次に試すまでの間を延ばす。
     const failing = fakeX({ me: user, failDelete: true });
     for (const [id, row] of x.rows) failing.rows.set(id, row);
-    await cleanupWorkerSubscriptions(env, store, failing.deps);
-    expect(await store.subscriptionRecipients()).toContain(user);
-    await cleanupWorkerSubscriptions(env, store, x.deps);
+    await cleanupWorkerSubscriptions(env, store(env), failing.deps);
+    expect(await recorded(env, user)).toEqual(["1"]);
+    expect(await store(env).cleanupCandidates()).not.toContain(user);
+    await cleanupWorkerSubscriptions(env, store(env), x.deps);
+    expect(x.rows.size).toBe(1);
+    // 接続を外したときの片付けは、間を待たない。
+    await releaseWorkerSubscriptions(env, store(env), user, x.deps);
     expect(x.rows.size).toBe(0);
-    expect(await store.subscriptionRecipients()).not.toContain(user);
+    expect(await recorded(env, user)).toEqual([]);
+    expect(await store(env).cleanupCandidates()).not.toContain(user);
   });
 
   test("is hidden until the Worker has the X app settings and X activity is on, and limits each source", async () => {
@@ -501,54 +546,55 @@ describe("connecting with an X login", () => {
     expect(response.status).toBe(429);
     expect(keys).toEqual(["connect:192.0.2.1"]);
   });
-
-  test("never stores the X token", async () => {
-    const user = "1414141414141414141";
-    const manager = `tpm_${"J".repeat(43)}`;
-    const env = connectEnv(user);
-    const x = fakeX({ me: user });
-    const login = await startLogin(env, x, user, "mention", manager);
-    const back = appRedirect(
-      await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
-    );
-    const store = pairingStore(env);
-    if (!store) throw new Error("Missing store");
-    z.object({ code: z.string() }).parse(back);
-    const saved = JSON.stringify([
-      await store.list(),
-      await store.subscriptionRecipients(),
-      await store.takeLogin(login.state),
-    ]);
-    expect(saved).not.toContain("user-token");
-    expect(saved).not.toContain(clientSecret);
-  });
 });
 
 describe("keeping Worker subscriptions in step with connections", () => {
-  test("a login that was only started does not keep subscriptions, but one being finished does", async () => {
+  test("keeps subscriptions only for a login whose X account was confirmed, and never while cleanup is removing them", async () => {
     const user = "1515151515151515151";
+    const manager = `tpm_${"K".repeat(43)}`;
     const env = connectEnv(user);
     const x = fakeX({
       me: user,
       existing: [{ event_type: "post.reply.create", tag: "tweetbot-worker-connect-old" }],
     });
-    const store = pairingStore(env);
-    if (!store) throw new Error("Missing store");
-    await store.recordSubscriptions(user, ["100"]);
+    await store(env).recordSubscriptions(user, ["100"]);
 
-    const started = await startLogin(env, x, user, "reply", `tpm_${"K".repeat(43)}`);
-    const taken = await store.takeLogin(started.state);
-    expect(taken.login).toBeDefined();
-    await cleanupWorkerSubscriptions(env, store, x.deps);
+    // 戻り先を開いただけ (本人を確かめる前) のログインでは、片付けを止めない。
+    const started = await startLogin(env, x, user, "reply", manager);
+    expect((await store(env).takeLogin(started.state)).login).toBeDefined();
+    expect(await store(env).cleanupCandidates()).toContain(user);
+    // 本人を確かめた後は、片付けで消さない。
+    expect(await store(env).startProcessing(started.state, Date.now() + 60_000)).toBe(true);
+    await cleanupWorkerSubscriptions(env, store(env), x.deps);
     expect(x.rows.has("100")).toBe(true);
+    await store(env).finishLogin(started.state);
 
-    await store.finishLogin(started.state);
-    await startLogin(env, x, user, "reply", `tpm_${"K".repeat(43)}`);
-    await cleanupWorkerSubscriptions(env, store, x.deps);
+    // 片付けが消している間は、接続の処理を始めない。
+    const next = await startLogin(env, x, user, "reply", manager);
+    await store(env).takeLogin(next.state);
+    expect((await store(env).beginRelease(user, Date.now() + 60_000))?.ids).toEqual(["100"]);
+    expect(await store(env).startProcessing(next.state, Date.now() + 60_000)).toBe(false);
+    await store(env).endRelease(user, false);
+    await store(env).finishLogin(next.state);
+
+    await cleanupWorkerSubscriptions(env, store(env), x.deps);
     expect(x.rows.has("100")).toBe(false);
   });
 
-  test("after a lost creation it removes only what this attempt made, not another connection's subscription", async () => {
+  test("asks the app to try again while cleanup is removing the account's subscriptions", async () => {
+    const user = "2020202020202020202";
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const login = await startLogin(env, x, user, "mention", `tpm_${"V".repeat(43)}`);
+    expect(await store(env).beginRelease(user, Date.now() + 60_000)).toBeDefined();
+    expect(
+      appRedirect(await callback(env, x, `code=x-code&state=${login.state}`, login.cookie)),
+    ).toEqual({ state: appState, error: "busy" });
+    expect(x.calls.some((call) => call.path.startsWith("/2/activity/"))).toBe(false);
+    await store(env).endRelease(user, false);
+  });
+
+  test("after a lost creation response it finds this attempt's subscription in the list, and removes only what this attempt made", async () => {
     const user = "1616161616161616161";
     const env = connectEnv(user);
     const x = fakeX({
@@ -556,7 +602,8 @@ describe("keeping Worker subscriptions in step with connections", () => {
       existing: [
         { event_type: "post.mention.create", tag: "tweetbot-worker-connect-other-device" },
       ],
-      loseResponseOn: "chat.received",
+      loseResponseOn: "dm.received",
+      failCreate: "chat.received",
     });
     const login = await startLogin(env, x, user, "mention,reply,dm", `tpm_${"L".repeat(43)}`);
     expect(
@@ -569,34 +616,126 @@ describe("keeping Worker subscriptions in step with connections", () => {
     expect(x.calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual([
       "/2/activity/subscriptions/1",
       "/2/activity/subscriptions/2",
-      "/2/activity/subscriptions/3",
     ]);
+  });
+
+  test("connects when a creation's response was lost or unreadable but the list shows it was made", async () => {
+    const user = "2525252525252525252";
+    const manager = `tpm_${"W".repeat(43)}`;
+    const env = connectEnv(user);
+    const x = fakeX({
+      me: user,
+      garbleCreateOn: "post.reply.create",
+      loseResponseOn: "dm.received",
+    });
+    const login = await startLogin(env, x, user, "reply,dm", manager);
+    const back = appRedirect(
+      await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
+    );
+    expect(back.code).toMatch(/^tpc_/);
+    expect((await recorded(env, user)).sort()).toEqual(["1", "2", "3"]);
+
+    const paired = await pairWithCode(env, x.deps, user, back.code ?? "", manager);
+    expect(paired.status).toBe(204);
+    expect((await paired.call("/disconnect", { route_id: paired.route_id })).status).toBe(204);
+    expect(x.rows.size).toBe(0);
+  });
+
+  test("uses the subscription another connection made at the same time when X answers 409", async () => {
+    const user = "2323232323232323232";
+    const env = connectEnv(user);
+    const x = fakeX({ me: user, conflictOn: "post.reply.create" });
+    const login = await startLogin(env, x, user, "reply", `tpm_${"X".repeat(43)}`);
+    const back = appRedirect(
+      await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
+    );
+    expect(back.code).toMatch(/^tpc_/);
+    expect(await recorded(env, user)).toEqual(["1"]);
+  });
+
+  test("when a creation's result stays unknown, cleanup later finds the Worker's subscription and removes it", async () => {
+    const user = "2222222222222222222";
+    const env = connectEnv(user);
+    const x = fakeX({ me: user, loseResponseOn: "chat.received", breakListOnLose: true });
+    const login = await startLogin(env, x, user, "dm", `tpm_${"Y".repeat(43)}`);
+    expect(
+      appRedirect(await callback(env, x, `code=x-code&state=${login.state}`, login.cookie)),
+    ).toEqual({ state: appState, error: "subscription_failed" });
+    // 作られた chat.received の購読は、記録にないまま X に残る。
+    expect([...x.rows.values()].map((row) => row.event_type)).toEqual(["chat.received"]);
+    expect(await recorded(env, user)).toEqual([]);
+
+    x.fixList();
+    expect(await store(env).cleanupCandidates()).toContain(user);
+    await cleanupWorkerSubscriptions(env, store(env), x.deps);
+    expect(x.rows.size).toBe(0);
+    expect(await store(env).cleanupCandidates()).not.toContain(user);
   });
 
   test("keeps a subscription it could not delete unless the list shows the others are visible", async () => {
     const user = "1717171717171717171";
     const env = connectEnv(user);
-    const store = pairingStore(env);
-    if (!store) throw new Error("Missing store");
     const hidden = fakeX({
       me: user,
       existing: [{ event_type: "post.reply.create" }],
       failDelete: true,
       hideFromList: true,
     });
-    await store.recordSubscriptions(user, ["100"]);
-    await cleanupWorkerSubscriptions(env, store, hidden.deps);
-    expect(await store.subscriptionRecipients()).toContain(user);
+    await store(env).recordSubscriptions(user, ["100"]);
+    await releaseWorkerSubscriptions(env, store(env), user, hidden.deps);
+    expect(await recorded(env, user)).toEqual(["100"]);
 
     const visible = fakeX({
       me: user,
       existing: [{ event_type: "post.reply.create" }],
       failDelete: true,
     });
-    await store.recordSubscriptions(user, ["100", "999"]);
-    await cleanupWorkerSubscriptions(env, store, visible.deps);
-    expect(await store.releasableSubscriptions(user)).toEqual(["100"]);
-    await store.forgetSubscriptions(user, ["100"]);
+    await store(env).recordSubscriptions(user, ["100", "999"]);
+    await releaseWorkerSubscriptions(env, store(env), user, visible.deps);
+    expect(await recorded(env, user)).toEqual(["100"]);
+    await store(env).forgetSubscriptions(user, ["100"]);
+  });
+
+  test("tries every recorded subscription when X answers a deletion without deleting, and waits longer before trying again", async () => {
+    const user = "2121212121212121212";
+    const env = connectEnv(user);
+    const x = fakeX({
+      me: user,
+      existing: [{ event_type: "post.reply.create" }, { event_type: "post.quote.create" }],
+      deleteReply: { data: { deleted: false } },
+    });
+    await store(env).recordSubscriptions(user, ["100", "101"]);
+    await releaseWorkerSubscriptions(env, store(env), user, x.deps);
+    expect(x.calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual([
+      "/2/activity/subscriptions/100",
+      "/2/activity/subscriptions/101",
+    ]);
+    expect(await recorded(env, user)).toEqual(["100", "101"]);
+    expect(await store(env).cleanupCandidates()).not.toContain(user);
+    const backoff = await stored<Record<string, { failures: number; next: number }>>(
+      env,
+      "cleanup",
+    );
+    expect(backoff?.[user]?.failures).toBe(1);
+    await store(env).forgetSubscriptions(user, ["100", "101"]);
+  });
+
+  test("keeps the first device's code when a second device connects the same account", async () => {
+    const user = "2424242424242424242";
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const first = `tpm_${"T".repeat(43)}`;
+    const second = `tpm_${"U".repeat(43)}`;
+    const codes: string[] = [];
+    for (const manager of [first, second]) {
+      const login = await startLogin(env, x, user, "mention", manager);
+      codes.push(
+        appRedirect(await callback(env, x, `code=x-code&state=${login.state}`, login.cookie))
+          .code ?? "",
+      );
+    }
+    expect((await pairWithCode(env, x.deps, user, codes[0] ?? "", first)).status).toBe(204);
+    expect((await pairWithCode(env, x.deps, user, codes[1] ?? "", second)).status).toBe(204);
   });
 
   test("refuses a callback without the browser cookie", async () => {
@@ -614,6 +753,7 @@ describe("keeping Worker subscriptions in step with connections", () => {
     expect(sourceKey("2001:db8:0:1::5")).toBe("2001:db8:0:1::/64");
     expect(sourceKey("2001:DB8:0000:0001:aaaa:bbbb:cccc:dddd")).toBe("2001:db8:0:1::/64");
     expect(sourceKey("::1")).toBe("0:0:0:0::/64");
+    expect(sourceKey("::ffff:192.0.2.1")).toBe("192.0.2.1");
   });
 
   test("keeps no X token or client secret anywhere in the Durable Object", async () => {
@@ -629,9 +769,7 @@ describe("keeping Worker subscriptions in step with connections", () => {
     const stub = env.PAIRING_ROUTES?.getByName("routes");
     if (!stub) throw new Error("Missing store");
     const saved = await runInDurableObject(stub, (_instance, state) =>
-      JSON.stringify(
-        ["pairing", "logins", "subscriptions"].map((key) => state.storage.kv.get(key)),
-      ),
+      JSON.stringify([...state.storage.kv.list()]),
     );
     expect(saved).not.toContain("user-token");
     expect(saved).not.toContain(clientSecret);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { discardBody } from "./body";
 import { NotificationTypes } from "./config";
 import { type ConnectConfig, connectConfig } from "./connect-config";
 import { issuePairingCode } from "./pairing";
@@ -15,6 +16,11 @@ type Store = NonNullable<ReturnType<typeof pairingStore>>;
  */
 const appCallback = "tweetbot-worker://connect";
 const loginLifetime = 10 * 60_000;
+/**
+ * 本人を確かめた後、購読を作ってコードを出すまでの期限。この間は、そのアカウントの購読を片付けで消さない。
+ * 購読を作る処理には、これより 1 分短い締め切りを付け、期限の中でコードを出し終える。
+ */
+const processingLease = 5 * 60_000;
 /** ログインを始めたブラウザに置く Cookie。`__Host-` で、この Worker のホストのパス全体だけに付く。 */
 const browserCookie = "__Host-tweetbot-connect";
 const Random = /^[A-Za-z0-9_-]{22,128}$/;
@@ -83,6 +89,9 @@ function cookieValue(request: Request): string | undefined {
  */
 export function sourceKey(address: string): string {
   if (!address.includes(":")) return address;
+  // IPv4 を IPv6 の形で書いたもの (`::ffff:192.0.2.1`) は、IPv4 として数える (/64 にまとめると、すべて同じ鍵になる)。
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(address)?.[1];
+  if (mapped !== undefined) return mapped;
   const [head = "", tail = ""] = address.toLowerCase().split("::", 2);
   const front = head === "" ? [] : head.split(":");
   const back = address.includes("::") ? (tail === "" ? [] : tail.split(":")) : [];
@@ -197,7 +206,7 @@ async function finish(
       return fail("unavailable");
     }
   } finally {
-    // 処理中の印を外し、片付けで購読を消せるようにする (コードを出したら、有効なコードが購読を守る)。
+    // 使い切りのログインを消し、処理中の印も外して、片付けで購読を消せるようにする (コードを出したら、有効なコードが購読を守る)。
     await store.finishLogin(state).catch(() => undefined);
   }
 }
@@ -232,6 +241,7 @@ async function connect(
     .catch(() => undefined);
   const token =
     exchanged?.status === 200 ? TokenReply.safeParse(await readJSON(exchanged)) : undefined;
+  await discardBody(exchanged);
   const granted = new Set(token?.success ? token.data.scope.split(" ") : []);
   if (!token?.success || !scopesFor(login.eventTypes).every((scope) => granted.has(scope)))
     return fail("unavailable");
@@ -245,10 +255,14 @@ async function connect(
     })
     .catch(() => undefined);
   const user = me?.status === 200 ? Me.safeParse(await readJSON(me)) : undefined;
+  await discardBody(me);
   if (!user?.success) return fail("unavailable");
   // アプリで選んでいたアカウントと違う X アカウントでログインしたら、つながない (通知が別のアカウントに届く)。
   if (user.data.data.id !== login.recipient || !config.allowed.has(user.data.data.id))
     return fail("wrong_account");
+  // 処理中の印は、本人を確かめた後に付ける (前に付けると、誰でも戻り先を開くだけで片付けを止められる)。
+  // 片付けがこのアカウントの購読を消している間は、消される購読を使ってしまうので、少し待ってからやり直してもらう。
+  if (!(await store.startProcessing(state, Date.now() + processingLease))) return fail("busy");
 
   if (
     !(await ensureSubscriptions({
@@ -259,6 +273,7 @@ async function connect(
       userToken: accessToken,
       bearer: config.bearer,
       attempt: (await hex(state)).slice(0, 16),
+      deadline: Date.now() + processingLease - 60_000,
       deps,
     }))
   )

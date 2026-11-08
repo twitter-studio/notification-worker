@@ -54,12 +54,16 @@ export type Login = {
   eventTypes: NotificationType[];
   redirectURI: string;
   expires: number;
+  /** X から戻った (使い切り)。 */
+  used?: boolean;
   /**
-   * X から戻って処理している間の期限。この間は、作ったばかりの購読を片付けで消さない。
-   * 始めただけのログインは守らない (外から `/connect` を繰り返すだけで、購読を消させないようにできてしまうため)。
+   * 本人を確かめた後、購読を作ってコードを出すまでの期限。この間は、そのアカウントの購読を片付けで消さない。
+   * 始めただけのログインや、本人を確かめる前のログインは守らない (外から `/connect` や戻り先を開くだけで、片付けを止められてしまうため)。
    */
   processingUntil?: number;
 };
+/** 消せなかった購読を、次に消し直す時刻。失敗が続くほど間を延ばす。 */
+type Backoff = { failures: number; next: number };
 type Reservation = { routeID: string; managementHash: string; cancelled?: boolean };
 type Code = {
   recipient: string;
@@ -143,11 +147,17 @@ export class PairingStore extends DurableObject<Env> {
     return this.ctx.storage.kv.get<State>("pairing") ?? { codes: [], routes: [] };
   }
 
+  /**
+   * 同じアカウントの前のコードを消して、新しいコードを置く。X でログインして出すコードは、同じアプリのものだけを消す
+   * (同じアカウントで 2 台をほぼ同時につないでも、先の端末のコードを消さない)。
+   */
   issue(code: Code): boolean {
     return this.ctx.storage.transactionSync(() => {
       const state = this.read();
       state.codes = state.codes.filter(
-        (entry) => entry.expires > Date.now() && entry.recipient !== code.recipient,
+        (entry) =>
+          entry.expires > Date.now() &&
+          (entry.recipient !== code.recipient || entry.managementHash !== code.managementHash),
       );
       if (state.codes.length >= 8) return false;
       state.codes.push(code);
@@ -289,6 +299,46 @@ export class PairingStore extends DurableObject<Env> {
     });
   }
 
+  private logins(): Login[] {
+    return this.ctx.storage.kv.get<Login[]>("logins") ?? [];
+  }
+
+  private subscriptions(): Record<string, string[]> {
+    return this.ctx.storage.kv.get<Record<string, string[]>>("subscriptions") ?? {};
+  }
+
+  /** 片付けがそのアカウントの購読を消している間の期限。 */
+  private releasing(): Record<string, number> {
+    return this.ctx.storage.kv.get<Record<string, number>>("releasing") ?? {};
+  }
+
+  /** 結果の分からない作成があり、一覧で探して記録に取り込む要があるアカウント。 */
+  private unsure(): string[] {
+    return this.ctx.storage.kv.get<string[]>("unsure") ?? [];
+  }
+
+  private backoff(): Record<string, Backoff> {
+    return this.ctx.storage.kv.get<Record<string, Backoff>>("cleanup") ?? {};
+  }
+
+  /**
+   * そのアカウントの購読が、使われているか、使われようとしているか。
+   * 接続したルート、使われていない有効なコード、本人を確かめて処理中のログインのどれかがあれば、消さない。
+   * 手動の配送先は Worker の `env` で見る (呼び出し側)。
+   */
+  private inUse(recipient: string, now: number): boolean {
+    const state = this.read();
+    return (
+      state.routes.some((route) => route.recipient === recipient) ||
+      state.codes.some(
+        (code) => code.recipient === recipient && code.expires > now && code.usedBy === undefined,
+      ) ||
+      this.logins().some(
+        (login) => login.recipient === recipient && (login.processingUntil ?? 0) > now,
+      )
+    );
+  }
+
   /**
    * X のログインの途中の状態を置く。期限の切れたものを除く。
    * 外から何度でも始められるので、断らずに古いものを置き換える (アカウントごとに 3 つ、全体で 16 まで)。
@@ -297,7 +347,7 @@ export class PairingStore extends DurableObject<Env> {
   beginLogin(login: Login): void {
     this.ctx.storage.transactionSync(() => {
       const now = Date.now();
-      let logins = (this.ctx.storage.kv.get<Login[]>("logins") ?? []).filter((item) =>
+      let logins = this.logins().filter((item) =>
         item.processingUntil === undefined ? item.expires > now : item.processingUntil > now,
       );
       // 処理中のログインは追い出さない。
@@ -314,33 +364,46 @@ export class PairingStore extends DurableObject<Env> {
   }
 
   /**
-   * state でログインの途中の状態を引き、使い切りで消す。期限が切れていても返し (`expired`)、アプリへ戻せるようにする。
+   * state でログインの途中の状態を引き、使い切りの印を付ける。期限が切れていても返し (`expired`)、アプリへ戻せるようにする。
    * 見つからなければ書き込まない (認証のない入口から、配送も読む Durable Object へ書き込ませない)。
    */
   takeLogin(state: string): { login?: Login; expired?: boolean } {
     return this.ctx.storage.transactionSync(() => {
-      const logins = this.ctx.storage.kv.get<Login[]>("logins") ?? [];
+      const logins = this.logins();
       const login = logins.find((item) => item.state === state);
-      // 処理中の印があれば、もう使われた state (使い切り)。
-      if (!login || login.processingUntil !== undefined) return {};
-      const now = Date.now();
-      const expired = login.expires <= now;
+      if (!login || login.used) return {};
+      const expired = login.expires <= Date.now();
       this.ctx.storage.kv.put(
         "logins",
         expired
           ? logins.filter((item) => item !== login)
-          : logins.map((item) =>
-              item === login ? { ...item, processingUntil: now + 2 * 60_000 } : item,
-            ),
+          : logins.map((item) => (item === login ? { ...item, used: true } : item)),
       );
       return { login, expired };
+    });
+  }
+
+  /**
+   * 本人を確かめた後、購読を作る前に、処理中の印を付ける。
+   * 片付けがそのアカウントの購読を消している間は付けずに false を返す (消されている購読を「ある」とみなして使わないように)。
+   */
+  startProcessing(state: string, until: number): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const logins = this.logins();
+      const login = logins.find(
+        (item) => item.state === state && item.used === true && item.processingUntil === undefined,
+      );
+      if (!login || (this.releasing()[login.recipient] ?? 0) > Date.now()) return false;
+      login.processingUntil = until;
+      this.ctx.storage.kv.put("logins", logins);
+      return true;
     });
   }
 
   /** X から戻った処理を終える (コードを出した、または失敗した)。処理中の印を消し、片付けで購読を消せるようにする。 */
   finishLogin(state: string): void {
     this.ctx.storage.transactionSync(() => {
-      const logins = this.ctx.storage.kv.get<Login[]>("logins") ?? [];
+      const logins = this.logins();
       const kept = logins.filter((item) => item.state !== state);
       if (kept.length !== logins.length) this.ctx.storage.kv.put("logins", kept);
     });
@@ -350,9 +413,34 @@ export class PairingStore extends DurableObject<Env> {
   recordSubscriptions(recipient: string, ids: string[]): void {
     if (ids.length === 0) return;
     this.ctx.storage.transactionSync(() => {
-      const all = this.ctx.storage.kv.get<Record<string, string[]>>("subscriptions") ?? {};
+      const all = this.subscriptions();
       all[recipient] = [...new Set([...(all[recipient] ?? []), ...ids])];
       this.ctx.storage.kv.put("subscriptions", all);
+    });
+  }
+
+  /** 一覧で見つけた Worker の tag の購読を記録に取り込む。一覧を読めたので、確かめの印も外す。 */
+  adoptSubscriptions(recipient: string, ids: string[]): void {
+    this.ctx.storage.transactionSync(() => {
+      if (ids.length > 0) {
+        const all = this.subscriptions();
+        all[recipient] = [...new Set([...(all[recipient] ?? []), ...ids])];
+        this.ctx.storage.kv.put("subscriptions", all);
+      }
+      const unsure = this.unsure();
+      if (unsure.includes(recipient))
+        this.ctx.storage.kv.put(
+          "unsure",
+          unsure.filter((item) => item !== recipient),
+        );
+    });
+  }
+
+  /** 作ったかどうか分からない購読が残った。定期の処理が一覧で探して、記録に取り込む。 */
+  markUnsure(recipient: string): void {
+    this.ctx.storage.transactionSync(() => {
+      const unsure = this.unsure();
+      if (!unsure.includes(recipient)) this.ctx.storage.kv.put("unsure", [...unsure, recipient]);
     });
   }
 
@@ -360,7 +448,7 @@ export class PairingStore extends DurableObject<Env> {
   forgetSubscriptions(recipient: string, ids: string[]): void {
     if (ids.length === 0) return;
     this.ctx.storage.transactionSync(() => {
-      const all = this.ctx.storage.kv.get<Record<string, string[]>>("subscriptions") ?? {};
+      const all = this.subscriptions();
       const kept = (all[recipient] ?? []).filter((id) => !ids.includes(id));
       if (kept.length > 0) all[recipient] = kept;
       else delete all[recipient];
@@ -369,32 +457,51 @@ export class PairingStore extends DurableObject<Env> {
   }
 
   /**
-   * そのアカウントのために Worker が作った購読のうち、今消してよいもの。
-   * 接続したルート、使われていない有効なコード、X から戻って処理中のログインのどれかがあれば、接続が進んでいるので消さない。
+   * そのアカウントの購読の片付けを始める。使われていなければ、消している印を付けて、記録した ID と確かめの印の有無を返す。
+   * 印を付けている間は、接続の処理を始めない (`startProcessing`)。使われているか、ほかの片付けの途中なら undefined。
    */
-  releasableSubscriptions(recipient: string): string[] {
-    const now = Date.now();
-    const state = this.read();
-    const logins = this.ctx.storage.kv.get<Login[]>("logins") ?? [];
-    if (
-      state.routes.some((route) => route.recipient === recipient) ||
-      state.codes.some(
-        (code) => code.recipient === recipient && code.expires > now && code.usedBy === undefined,
-      ) ||
-      logins.some(
-        (login) =>
-          login.recipient === recipient &&
-          login.processingUntil !== undefined &&
-          login.processingUntil > now,
-      )
-    )
-      return [];
-    return this.ctx.storage.kv.get<Record<string, string[]>>("subscriptions")?.[recipient] ?? [];
+  beginRelease(recipient: string, until: number): { ids: string[]; unsure: boolean } | undefined {
+    return this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
+      const releasing = this.releasing();
+      if (this.inUse(recipient, now) || (releasing[recipient] ?? 0) > now) return undefined;
+      releasing[recipient] = until;
+      this.ctx.storage.kv.put("releasing", releasing);
+      return {
+        ids: this.subscriptions()[recipient] ?? [],
+        unsure: this.unsure().includes(recipient),
+      };
+    });
   }
 
-  /** 購読を記録しているアカウント。定期の処理で、ルートのないまま残った購読を片付けるのに使う。 */
-  subscriptionRecipients(): string[] {
-    return Object.keys(this.ctx.storage.kv.get<Record<string, string[]>>("subscriptions") ?? {});
+  /**
+   * 片付けを終える。消し残しがあれば、定期の処理で次に試すまでの間を延ばす (5 分から倍にし、1 日まで)。
+   * X が消すのを断り続ける購読に、5 分ごとに要求を送り続けないため。
+   */
+  endRelease(recipient: string, remaining: boolean): void {
+    this.ctx.storage.transactionSync(() => {
+      const releasing = this.releasing();
+      delete releasing[recipient];
+      this.ctx.storage.kv.put("releasing", releasing);
+      const backoff = this.backoff();
+      if (remaining) {
+        const failures = (backoff[recipient]?.failures ?? 0) + 1;
+        backoff[recipient] = {
+          failures,
+          next: Date.now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 24 * 60 * 60_000),
+        };
+      } else delete backoff[recipient];
+      this.ctx.storage.kv.put("cleanup", backoff);
+    });
+  }
+
+  /** 定期の処理で片付けるアカウント。購読の記録か確かめの印があり、使われておらず、次に試す時刻が来たもの。 */
+  cleanupCandidates(): string[] {
+    const now = Date.now();
+    const backoff = this.backoff();
+    return [...new Set([...Object.keys(this.subscriptions()), ...this.unsure()])].filter(
+      (recipient) => (backoff[recipient]?.next ?? 0) <= now && !this.inUse(recipient, now),
+    );
   }
 
   updateRoute(
