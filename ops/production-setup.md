@@ -129,4 +129,41 @@ X の Webhook と購読を設定した利用者 Worker に、SQLite の Durable 
 
 DM プレビューの鍵を外すか入れ替えると、Queue に残った DM は定型の通知になります。種類を外すと、Queue に残ったその種類の通知も送りません。中継資格情報を変えると、前の値で Queue に入った通知は送りません。
 
+### X でログインして接続する
+
+接続コードを CLI で出す代わりに、Tweetbot から X でログインして接続できます ([ADR-0008](https://github.com/twitter-studio/notification-docs/blob/main/docs/adr/0008-app-driven-notification-setup.md) の段 3)。上の接続の設定 (`PAIRING_ROUTES` と `PAIRING_ADMIN_TOKEN`) に加えて、次の設定を足します。どれかが欠けているか、`ENABLE_X_ACTIVITY` が `"true"` でなければ、`/connect` は 404 になり、上の接続コードの流れだけを使えます。`GET /v1/pairing` の `x_login` で、使えるかが分かります。
+
+| 設定                     | 種類                     | 値                                                                                                                                                       |
+| ------------------------ | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `X_OAUTH2_CLIENT_ID`     | vars                     | 自分の X アプリの OAuth 2.0 の Client ID                                                                                                                 |
+| `X_OAUTH2_CLIENT_SECRET` | secret                   | 今の Webhook の CRC にも使っている Client Secret (32 文字以上)                                                                                           |
+| `ALLOWED_X_USER_IDS`     | vars                     | 接続を許す X ユーザーの数値 ID。カンマ区切り                                                                                                             |
+| `X_WEBHOOK_ID`           | vars                     | 購読を付ける Webhook の ID                                                                                                                               |
+| `X_APP_BEARER_TOKEN`     | secret                   | 同じ X アプリの App-only の Bearer Token。購読の一覧と削除に使う                                                                                         |
+| `CONNECT_LIMITER`        | Rate Limiting の binding | 接続元ごとの回数の上限。例: `"ratelimits": [{ "name": "CONNECT_LIMITER", "namespace_id": "<自分で決める数>", "simple": { "limit": 10, "period": 60 } }]` |
+
+X アプリの Callback URL に `https://<worker-domain>/oauth/callback` を足します (完全一致)。Tweetbot で URL と通知の種類を選んで接続すると、Worker は次のことを行います。
+
+1. 接続元ごとに回数を絞ります。`ALLOWED_X_USER_IDS` にない X アカウントは、持ち主の X アプリの同意画面に進めず断ります。どの ID が許可されているかは、この応答の違いから外に分かります。本人かどうかの守りは、ログインの後の確かめです。
+2. ログインを始めたブラウザに Cookie を置き、X から戻ったときに照らし合わせます。他人が始めたログインの URL を開かされて同意しても、購読もコードも作りません。
+3. X の OAuth 2.0 (PKCE) で本人を確かめ、アプリで選んでいたアカウントと違えば断ります。トークンは保存せず、`offline.access` も求めません。
+4. 選んだ種類の購読のうち、まだないものを本人のトークンで期限なしに作り、作ったらすぐ記録します (`tag` は `tweetbot-worker-connect`)。持ち主が手で作った購読はそのまま使い、記録しません。途中で失敗したら、今回作ったものを消して、アプリに失敗を返します。
+5. そのアカウントの接続コードを出してアプリへ戻します。このコードは、ログインを始めたアプリの管理キーでしか使えません。選んだ種類が、つないだ配送先の初めの種類になります。
+
+そのアカウントの接続した配送先、使われていない有効なコード、ログインの途中の状態がどれもなくなると、Worker は自分で作った購読を App-only の Bearer で消します。同じアカウントに手動の配送先があれば消しません。消せなかった購読と、つながないまま残った購読は、定期の処理 (`triggers.crons`) で消し直します。端末で通知の種類を増やしても購読は増えないので、新しい種類を受け取るには、その種類を選んで接続し直します。
+
+気をつけること:
+
+- 同じ種類の購読が期限付きであれば (購読の CLI の `start` は期限を付けられます)、Worker は新しく作らずにそれを使います。期限が来ると、その種類は届かなくなります。期限のない購読に切り替えるか、期限の前に `renew` します。
+- `CONNECT_LIMITER` の `namespace_id` は、同じ Cloudflare のアカウントのほかの Worker と重ねないでください (同じ値の binding は回数を分け合います)。回数は Cloudflare の拠点ごとに数えるので、全体での正確な上限ではありません。
+- 同じブラウザで続けて接続を始めると、前の接続の Cookie が上書きされ、前の接続は失敗します。
+
+確かめていないこと:
+
+- Workers の Free プランで Rate Limiting の binding を使えるか。
+- 本人の認可で作った購読を、App-only の Bearer で消せるか。消せない場合は、一覧で消えたと分かるまで記録に残し、定期の処理で試し続けます。
+- いいねと新しいフォロワーの購読の向き (`inbound`) は、X の OpenAPI に合わせて `filter.direction` で送ります。概要は `filter.qualifiers.direction` と同じものとしています。
+- X の Callback URL に workers.dev のホストを登録できるか、新しいフォロワーの購読に要る scope、ASWebAuthenticationSession の中で Cookie が保たれるか。
+- 使った後のトークンを取り消すと、本人の認可で作った購読も消えるか (消えないと分かるまで、取り消さない)。
+
 手動ルートを設定していない新規 Worker でも使えます。その場合は `X_RELAY_ROUTES`、`X_USER_ID`、`RELAY_TOKEN`、`X_NOTIFICATION_TYPES` を設定しません。既存の手動ルートも使えます。同じアカウントで同じ中継資格情報をすでに手動設定している端末は、二重配送を防ぐため追加できません。ペアリングは既存の購読を使うので、X の購読管理は上記の手順で行います。

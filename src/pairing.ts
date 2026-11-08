@@ -1,10 +1,15 @@
 import { z } from "zod";
 import { readBody } from "./body";
 import { NotificationTypes, RelayRouteID, RelayToken, relayEndpoint } from "./config";
+import { connectConfig } from "./connect-config";
 import { DmPreviewKey } from "./dm-preview";
+import type { X_NOTIFICATION_TYPES } from "./normalize";
 import { pairingStore } from "./pairing-store";
 import { type RelayDeps, sendToRelay } from "./relay";
 import { XUserID } from "./x-activity";
+import { releaseWorkerSubscriptions } from "./x-subscriptions";
+
+type X_NOTIFICATION_TYPE = (typeof X_NOTIFICATION_TYPES)[number];
 
 const Account = z.strictObject({ x_user_id: XUserID });
 const Connection = Account.extend({
@@ -51,6 +56,26 @@ async function hash(value: string) {
   return hex(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
 }
 
+/**
+ * アカウントの接続コード (10 分、使い切り) を出す。管理用トークンの経路と、X でログインした経路 (`/connect`) の両方から使う。
+ * 同じアカウントに新しく出すと、前のコードは使えなくなる。
+ */
+export async function issuePairingCode(
+  store: NonNullable<ReturnType<typeof pairingStore>>,
+  recipient: string,
+  binding?: { managementHash: string; eventTypes: X_NOTIFICATION_TYPE[] },
+): Promise<{ code: string; expires: number } | undefined> {
+  const code = randomCode();
+  const expires = Date.now() + 10 * 60_000;
+  const [lookup, proofKey] = await Promise.all([
+    hash(code),
+    hash(`tweetbot-pairing-proof-key-v1\n${code}`),
+  ]);
+  if (!(await store.issue({ recipient, hash: lookup, proofKey, expires, ...binding })))
+    return undefined;
+  return { code, expires };
+}
+
 export async function handlePairing(
   request: Request,
   path: string,
@@ -59,8 +84,10 @@ export async function handlePairing(
 ): Promise<Response> {
   const store = pairingStore(env);
   if (!store) return response(404);
-  // 版 2 で設定の API を足した。利用者が自分で置く Worker には古い版が残るので、アプリは呼ぶ前に版を確かめる。
-  if (path === "/v1/pairing" && request.method === "GET") return response(200, { version: 2 });
+  // 版 2 で設定の API、版 3 で X でログインして接続する入口 (`/connect`) を足した。利用者が自分で置く Worker には
+  // 古い版が残るので、アプリは呼ぶ前に版を確かめる。`x_login` は、その Worker で `/connect` を使えるか。
+  if (path === "/v1/pairing" && request.method === "GET")
+    return response(200, { version: 3, x_login: connectConfig(env) !== undefined });
   if (request.method !== "POST") return response(405);
   const auth = request.headers.get("Authorization") ?? "";
   const issue = path === "/v1/pairing/codes";
@@ -123,20 +150,16 @@ export async function handlePairing(
   if (issue) {
     const parsed = Account.safeParse(json);
     if (!parsed.success) return response(422);
-    const code = randomCode();
-    const expires = Date.now() + 10 * 60_000;
-    const [lookup, proofKey] = await Promise.all([
-      hash(code),
-      hash(`tweetbot-pairing-proof-key-v1\n${code}`),
-    ]);
-    if (!(await store.issue({ recipient: parsed.data.x_user_id, hash: lookup, proofKey, expires })))
-      return response(429);
-    return response(201, { code, expires_at: new Date(expires).toISOString() });
+    const issued = await issuePairingCode(store, parsed.data.x_user_id);
+    if (!issued) return response(429);
+    return response(201, { code: issued.code, expires_at: new Date(issued.expires).toISOString() });
   }
   if (admin) {
     const parsed = Route.safeParse(json);
     if (!parsed.success) return response(422);
-    await store.disconnect(parsed.data.route_id);
+    const released = await store.disconnect(parsed.data.route_id);
+    if (released !== undefined)
+      await releaseWorkerSubscriptions(env, store, released, deps).catch(() => undefined);
     return response(204);
   }
   const managementHash = await hash(auth.slice(7));
@@ -168,7 +191,10 @@ export async function handlePairing(
   const parsed = Route.safeParse(json);
   if (!parsed.success) return response(422);
   if (path === "/v1/pairing/disconnect") {
-    await store.disconnect(parsed.data.route_id, managementHash);
+    const released = await store.disconnect(parsed.data.route_id, managementHash);
+    // 購読を消せなくても、外すことは止めない (消せなかった ID は記録に残り、定期の処理でやり直す)。
+    if (released !== undefined)
+      await releaseWorkerSubscriptions(env, store, released, deps).catch(() => undefined);
     return response(204);
   }
   if (path !== "/v1/pairing/test") return response(404);

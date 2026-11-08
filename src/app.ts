@@ -1,5 +1,6 @@
 import { readBody } from "./body";
 import { ConfigError, isEnabled, publicRelayTrialExpired, relayConfig } from "./config";
+import { handleConnect } from "./connect";
 import { dmPreviewKeyID, sealDmPreview } from "./dm-preview";
 import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
 import { handlePairing } from "./pairing";
@@ -253,6 +254,9 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
 
 export async function handle(request: Request, env: Env, deps: AppDeps): Promise<Response> {
   const { pathname } = new URL(request.url);
+  if (pathname === "/connect" || pathname === "/oauth/callback") {
+    return handleConnect(request, env, deps).catch(() => problem(503, "Service Unavailable"));
+  }
   if (pathname === "/v1/pairing" || pathname.startsWith("/v1/pairing/")) {
     return handlePairing(request, pathname, env, deps).catch(() =>
       problem(503, "Service Unavailable"),
