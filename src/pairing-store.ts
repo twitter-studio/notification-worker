@@ -156,10 +156,13 @@ export class PairingStore extends DurableObject<Env> {
 
   /**
    * 同じアカウントの前のコードを消して、新しいコードを置く。X でログインして出すコードは、同じアプリのものだけを消す
-   * (同じアカウントで 2 台をほぼ同時につないでも、先の端末のコードを消さない)。
+   * (同じアカウントで 2 台をほぼ同時につないでも、先の端末のコードを消さない)。出せなければ false。
    */
   issue(code: Code): boolean {
     return this.ctx.storage.transactionSync(() => {
+      // 片付けがそのアカウントの購読を消している間は出さない。出したコードでつないだ端末が、消されている購読を当てにする。
+      // 片付けは、有効なコードがあれば始まらない (`inUse`) ので、コードが出た後に消し始めることはない。
+      if ((this.releasing()[code.recipient] ?? 0) > Date.now()) return false;
       const state = this.read();
       state.codes = state.codes.filter(
         (entry) =>

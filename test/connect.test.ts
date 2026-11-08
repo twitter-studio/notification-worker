@@ -3,7 +3,11 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { handle } from "../src/app";
 import { sourceKey } from "../src/connect";
 import { deliveryTargets, pairingStore } from "../src/pairing-store";
-import { cleanupWorkerSubscriptions, releaseWorkerSubscriptions } from "../src/x-subscriptions";
+import {
+  cleanupWorkerSubscriptions,
+  ensureSubscriptions,
+  releaseWorkerSubscriptions,
+} from "../src/x-subscriptions";
 import { testEnv } from "./helpers";
 
 const admin = `tpa_${"A".repeat(43)}`;
@@ -39,6 +43,8 @@ function fakeX(options: {
   /** 応答をなくした後、一覧も読めなくする。 */
   breakListOnLose?: boolean;
   failDelete?: boolean;
+  /** 消す要求に応えない (時間切れ)。 */
+  throwOnDelete?: boolean;
   /** 消さずに、この本文を 200 で返す。 */
   deleteReply?: unknown;
   hideFromList?: boolean;
@@ -117,6 +123,7 @@ function fakeX(options: {
       return Response.json({ data: { subscription: { subscription_id: id } } });
     }
     if (url.pathname.startsWith("/2/activity/subscriptions/") && request.method === "DELETE") {
+      if (options.throwOnDelete) throw new Error("timeout");
       if (options.failDelete) return Response.json({}, { status: 503 });
       if (options.deleteReply !== undefined) return Response.json(options.deleteReply);
       rows.delete(url.pathname.split("/").at(-1) ?? "");
@@ -826,15 +833,73 @@ describe("keeping Worker subscriptions in step with connections", () => {
     await store(env).takeLogin(first.state);
     await store(env).takeLogin(second.state);
     // 印が切れる前に、戻しのために延ばす。
-    expect(await store(env).startProcessing(first.state, Date.now() + 50)).toBe(true);
+    expect(await store(env).startProcessing(first.state, Date.now() + 1_000)).toBe(true);
     expect(await store(env).extendProcessing(first.state, Date.now() + 60_000)).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
     expect(await store(env).startProcessing(second.state, Date.now() + 60_000)).toBe(false);
     // 切れた印は延ばさない (ほかの接続がもう始まっているかもしれない)。
     await store(env).finishLogin(first.state);
     expect(await store(env).startProcessing(second.state, Date.now() + 1)).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(await store(env).extendProcessing(second.state, Date.now() + 60_000)).toBe(false);
+  });
+
+  test("does not remove what it made when the processing mark has already run out", async () => {
+    const user = "3535353535353535353";
+    const env = connectEnv(user);
+    const x = fakeX({ me: user, failCreate: "chat.received" });
+    const made = await ensureSubscriptions({
+      store: store(env),
+      recipient: user,
+      types: ["dm"],
+      webhookID,
+      userToken: "user-token",
+      bearer: "app-bearer",
+      workerID: await store(env).workerID(),
+      attempt: "a".repeat(16),
+      deadline: Date.now() + 60_000,
+      extendLease: async () => false,
+      deps: x.deps,
+    });
+    expect(made).toBe(false);
+    expect(x.calls.some((call) => call.method === "DELETE")).toBe(false);
+    // 作ったものは記録に残り、使われていなければ片付けが消す。
+    expect(await recorded(env, user)).toEqual(["1"]);
+  });
+
+  test("counts only what it sent toward slowing down cleanup", async () => {
+    const user = "3636363636363636363";
+    const env = connectEnv(user);
+    const backoff = async () =>
+      (await stored<Record<string, { failures: number; next: number }>>(env, "cleanup"))?.[user];
+    await store(env).recordSubscriptions(user, ["100"]);
+
+    // 時間がなく送らなかったものは、失敗と数えず、5 分後にやり直す。
+    const idle = fakeX({ me: user, existing: [{ event_type: "post.reply.create" }] });
+    await releaseWorkerSubscriptions(env, store(env), user, idle.deps, 0);
+    expect(idle.calls).toHaveLength(0);
+    expect((await backoff())?.failures).toBe(0);
+    expect((await backoff())?.next).toBeLessThanOrEqual(Date.now() + 5 * 60_000);
+
+    // 送って時間切れになったものは、失敗と数える。
+    const silent = fakeX({
+      me: user,
+      existing: [{ event_type: "post.reply.create" }],
+      throwOnDelete: true,
+    });
+    await releaseWorkerSubscriptions(env, store(env), user, silent.deps);
+    expect((await backoff())?.failures).toBe(1);
+
+    // 消し損ないと確かめの印の待ちが重なったら、早い方 (5 分後) にやり直す。
+    await store(env).markUnsure(user);
+    const failing = fakeX({
+      me: user,
+      existing: [{ event_type: "post.reply.create" }],
+      failDelete: true,
+    });
+    await releaseWorkerSubscriptions(env, store(env), user, failing.deps);
+    expect((await backoff())?.failures).toBe(2);
+    expect((await backoff())?.next).toBeLessThan(Date.now() + 15 * 60_000);
   });
 
   test("skips cleanup when the manual routes setting is broken", async () => {
@@ -845,6 +910,26 @@ describe("keeping Worker subscriptions in step with connections", () => {
     await cleanupWorkerSubscriptions(env, store(env), x.deps);
     expect(x.calls).toHaveLength(0);
     expect(await recorded(env, user)).toEqual(["100"]);
+  });
+
+  test("does not issue an owner's code while cleanup is removing the account's subscriptions", async () => {
+    const user = "3434343434343434343";
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const issue = () =>
+      handle(
+        new Request("https://worker.test/v1/pairing/codes", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${admin}` },
+          body: JSON.stringify({ x_user_id: user }),
+        }),
+        env,
+        x.deps,
+      );
+    expect(await store(env).beginRelease(user, Date.now() + 60_000)).toBeDefined();
+    expect((await issue()).status).toBe(429);
+    await store(env).endRelease(user, { failed: false });
+    expect((await issue()).status).toBe(201);
   });
 
   test("does not push out a login that came back from X while a stranger keeps starting logins", async () => {

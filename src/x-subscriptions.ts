@@ -259,21 +259,25 @@ export async function ensureSubscriptions(options: {
       .extendLease(Date.now() + created.length * callTimeout + 60_000)
       .catch(() => false);
     if (!extended) return false;
-    const removed = await deleteSubscriptions(created, userToken, deps);
-    await store.forgetSubscriptions(recipient, removed).catch(() => undefined);
+    const { deleted } = await deleteSubscriptions(created, userToken, deps);
+    await store.forgetSubscriptions(recipient, deleted).catch(() => undefined);
     return false;
   }
 }
 
-/** 購読を消す。`deleted: true` が返って消えたと分かった ID を返す。404 は、トークンからは見えないだけのこともあるので含めない。 */
+/**
+ * 購読を消す。`deleted: true` が返って消えたと分かった ID と、締め切りで送らなかった ID を返す。
+ * 404 は、トークンからは見えないだけのこともあるので、消えたものに含めない。
+ */
 export async function deleteSubscriptions(
   ids: readonly string[],
   token: string,
   deps: RelayDeps,
-  deadline?: number,
-): Promise<string[]> {
+  deadline = Number.POSITIVE_INFINITY,
+): Promise<{ deleted: string[]; unsent: string[] }> {
   const deleted: string[] = [];
-  for (const id of ids) {
+  for (const [index, id] of ids.entries()) {
+    if (Date.now() >= deadline) return { deleted, unsent: ids.slice(index) };
     if (!SubscriptionID.safeParse(id).success) continue;
     const response = await call(deps, "DELETE", `/2/activity/subscriptions/${id}`, token, {
       deadline,
@@ -282,7 +286,7 @@ export async function deleteSubscriptions(
     await discardBody(response);
     if (gone) deleted.push(id);
   }
-  return deleted;
+  return { deleted, unsent: [] };
 }
 
 /** 定期の処理で、片付けにかけてよい時間。 */
@@ -309,10 +313,14 @@ export async function releaseWorkerSubscriptions(
   const deadline = Date.now() + budget;
   let failed = true;
   let retryAt: number | undefined;
+  // 締め切りで送らなかったものは、X に断られたのではないので、失敗と数えずに次の定期の処理でやり直す。
+  // 送って時間切れになったものは失敗と数える (X が応えない間に、5 分ごとに要求を送り続けないため)。
+  let unsentAny = false;
   try {
     let ids = release.ids;
     let listFailed = false;
-    if (release.unsure) {
+    if (release.unsure && Date.now() >= deadline) unsentAny = true;
+    else if (release.unsure) {
       // Webhook では絞らない。Webhook を付け替えた後や、設定が欠けていても、この Worker の tag の購読を拾う。
       const workerID = await store.workerID();
       const listedAt = Date.now();
@@ -323,23 +331,21 @@ export async function releaseWorkerSubscriptions(
         ids = [...new Set([...ids, ...workerRows(rows, workerID)])];
       }
     }
-    const deleted = await deleteSubscriptions(ids, bearer, deps, deadline);
+    const { deleted, unsent } = await deleteSubscriptions(ids, bearer, deps, deadline);
+    if (unsent.length > 0) unsentAny = true;
+    const tried = ids.filter((id) => !unsent.includes(id));
     let gone = deleted;
-    if (deleted.length < ids.length) {
+    if (deleted.length < tried.length) {
       // 消せなかったものは、Webhook で絞らない一覧に記録した ID のどれかが見えるときだけ、見えないものを消えたとみなす。
       // どれも見えないときは、Bearer から見えないのか消えたのかが分からないので、記録に残す。
       const rows = await listSubscriptions(recipient, bearer, deps, { deadline });
       const visible = new Set((rows ?? []).map((row) => row.subscription_id));
       if (ids.some((id) => visible.has(id)))
-        gone = ids.filter((id) => deleted.includes(id) || !visible.has(id));
+        gone = tried.filter((id) => deleted.includes(id) || !visible.has(id));
     }
     await store.forgetSubscriptions(recipient, gone);
-    failed = listFailed || gone.length < ids.length;
-    // 締め切りで試せなかったものは、X に断られたのではないので、失敗と数えずに次の定期の処理でやり直す。
-    if (failed && Date.now() >= deadline) {
-      failed = false;
-      retryAt = Math.min(retryAt ?? Number.POSITIVE_INFINITY, Date.now() + 5 * 60_000);
-    }
+    failed = listFailed || gone.length < tried.length;
+    if (unsentAny) retryAt = Math.min(retryAt ?? Number.POSITIVE_INFINITY, Date.now() + 5 * 60_000);
   } finally {
     await store.endRelease(recipient, { failed, retryAt }).catch(() => undefined);
   }
