@@ -187,8 +187,8 @@ export async function ensureSubscriptions(options: {
   workerID: string;
   attempt: string;
   deadline: number;
-  /** 戻しを始める前に、処理中の印をこの時刻まで延ばす。 */
-  extendLease: (until: number) => Promise<void>;
+  /** 戻しを始める前に、処理中の印をこの時刻まで延ばす。印が切れていて延ばせなければ false。 */
+  extendLease: (until: number) => Promise<boolean>;
   deps: RelayDeps;
 }): Promise<boolean> {
   const { store, recipient, types, webhookID, userToken, bearer, workerID, deadline, deps } =
@@ -253,9 +253,12 @@ export async function ensureSubscriptions(options: {
     // 戻すときは、作るのに使えた本人のトークンで消す (App-only の Bearer で消せるかは、まだ確かめていない)。
     // 締め切りは付けない (締め切りで打ち切った後も、作ったものは消しておく)。処理中の印が切れた後なら、片付けと同じ ID を
     // 消し合うことがあるが、どちらも消すだけなので害はない。印は、消し終えるまで延ばしておく。
-    await options
+    // 印が切れていたら消さない。同じアカウントのほかの接続が、これから消す購読を使い始めているかもしれない。
+    // 作ったものは記録に残っているので、使われていなければ片付けが消す。
+    const extended = await options
       .extendLease(Date.now() + created.length * callTimeout + 60_000)
-      .catch(() => undefined);
+      .catch(() => false);
+    if (!extended) return false;
     const removed = await deleteSubscriptions(created, userToken, deps);
     await store.forgetSubscriptions(recipient, removed).catch(() => undefined);
     return false;
@@ -332,6 +335,11 @@ export async function releaseWorkerSubscriptions(
     }
     await store.forgetSubscriptions(recipient, gone);
     failed = listFailed || gone.length < ids.length;
+    // 締め切りで試せなかったものは、X に断られたのではないので、失敗と数えずに次の定期の処理でやり直す。
+    if (failed && Date.now() >= deadline) {
+      failed = false;
+      retryAt = Math.min(retryAt ?? Number.POSITIVE_INFINITY, Date.now() + 5 * 60_000);
+    }
   } finally {
     await store.endRelease(recipient, { failed, retryAt }).catch(() => undefined);
   }
@@ -367,8 +375,9 @@ export async function cleanupWorkerSubscriptions(
     0,
     limit,
   )) {
+    // 残りが少なければ始めない (試せずに終わる)。次の定期の処理に回す。
     const left = runDeadline - Date.now();
-    if (left <= 0) break;
+    if (left < 30_000) break;
     await releaseWorkerSubscriptions(env, store, recipient, deps, left).catch(() => undefined);
   }
 }

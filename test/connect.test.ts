@@ -825,11 +825,16 @@ describe("keeping Worker subscriptions in step with connections", () => {
     const second = await startLogin(env, x, user, "mention", `tpm_${"9".repeat(43)}`);
     await store(env).takeLogin(first.state);
     await store(env).takeLogin(second.state);
-    // 印がすぐ切れるところで、戻しのために延ばす。
-    expect(await store(env).startProcessing(first.state, Date.now() + 1)).toBe(true);
-    await store(env).extendProcessing(first.state, Date.now() + 60_000);
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    // 印が切れる前に、戻しのために延ばす。
+    expect(await store(env).startProcessing(first.state, Date.now() + 50)).toBe(true);
+    expect(await store(env).extendProcessing(first.state, Date.now() + 60_000)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 60));
     expect(await store(env).startProcessing(second.state, Date.now() + 60_000)).toBe(false);
+    // 切れた印は延ばさない (ほかの接続がもう始まっているかもしれない)。
+    await store(env).finishLogin(first.state);
+    expect(await store(env).startProcessing(second.state, Date.now() + 1)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await store(env).extendProcessing(second.state, Date.now() + 60_000)).toBe(false);
   });
 
   test("skips cleanup when the manual routes setting is broken", async () => {

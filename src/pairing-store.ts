@@ -432,15 +432,19 @@ export class PairingStore extends DurableObject<Env> {
    * 戻し (作った購読の削除) を始める前に、処理中の印を延ばす。印が切れて同じアカウントのほかの接続が始まり、
    * これから消す購読を「ある」とみなして使わないように。
    */
-  extendProcessing(state: string, until: number): void {
-    this.ctx.storage.transactionSync(() => {
+  extendProcessing(state: string, until: number): boolean {
+    return this.ctx.storage.transactionSync(() => {
       const logins = this.logins();
       const login = logins.find(
         (item) => item.state === state && item.processingUntil !== undefined,
       );
-      if (!login || (login.processingUntil ?? 0) >= until) return;
-      login.processingUntil = until;
-      this.ctx.storage.kv.put("logins", logins);
+      // 印が切れていたら延ばさない (同じアカウントのほかの接続が、もう始まっているかもしれない)。
+      if (!login || (login.processingUntil ?? 0) <= Date.now()) return false;
+      if ((login.processingUntil ?? 0) < until) {
+        login.processingUntil = until;
+        this.ctx.storage.kv.put("logins", logins);
+      }
+      return true;
     });
   }
 
@@ -540,8 +544,9 @@ export class PairingStore extends DurableObject<Env> {
 
   /**
    * 片付けを終える。消せなかったもの (`failed`) があれば、定期の処理で次に試すまでの間を延ばす (5 分から倍にし、1 日まで)。
-   * X が消すのを断り続ける購読に、5 分ごとに要求を送り続けないため。確かめの印を外せる時刻を待つだけなら (`retryAt`)、
-   * 失敗とは数えず、その時刻まで待つ。
+   * X が消すのを断り続ける購読に、5 分ごとに要求を送り続けないため。確かめの印を外せる時刻を待つだけのときや、
+   * 時間が足りずに試せなかったときは (`retryAt`)、失敗とは数えず、その時刻にやり直す。消せなかったものもあるときは、
+   * 早い方にやり直す (印を外せない間は、また `retryAt` が返るだけ)。
    */
   endRelease(recipient: string, outcome: { failed: boolean; retryAt?: number | undefined }): void {
     this.ctx.storage.transactionSync(() => {
@@ -553,13 +558,16 @@ export class PairingStore extends DurableObject<Env> {
         const failures = (backoff[recipient]?.failures ?? 0) + 1;
         backoff[recipient] = {
           failures,
-          next: Math.max(
+          next: Math.min(
             Date.now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 24 * 60 * 60_000),
-            outcome.retryAt ?? 0,
+            outcome.retryAt ?? Number.POSITIVE_INFINITY,
           ),
         };
       } else if (outcome.retryAt !== undefined)
-        backoff[recipient] = { failures: 0, next: outcome.retryAt };
+        backoff[recipient] = {
+          failures: backoff[recipient]?.failures ?? 0,
+          next: outcome.retryAt,
+        };
       else delete backoff[recipient];
       this.ctx.storage.kv.put("cleanup", backoff);
     });
