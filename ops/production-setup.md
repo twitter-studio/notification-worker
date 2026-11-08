@@ -146,7 +146,7 @@ DM プレビューの鍵を外すか入れ替えると、Queue に残った DM �
 
 X アプリの Callback URL に `https://<worker-domain>/oauth/callback` を足します (完全一致)。Tweetbot で URL と通知の種類を選んで接続すると、Worker は次のことを行います。
 
-1. 接続元ごとに回数を絞ります。`ALLOWED_X_USER_IDS` にない X アカウントは、持ち主の X アプリの同意画面に進めず断ります。どの ID が許可されているかは、この応答の違いから外に分かります。本人かどうかの守りは、ログインの後の確かめです。
+1. 接続元ごとに回数を絞ります。上限を超えたときと、引数が合わないとき (アプリと Worker の版が違い、Worker の知らない種類を求められたなど) は、X へは何も求めず、アプリへ戻して知らせます (`rate_limited`、`invalid_request`)。どのアプリが始めたか分からない要求は、文字のページで断ります。`ALLOWED_X_USER_IDS` にない X アカウントは、持ち主の X アプリの同意画面に進めず断ります。どの ID が許可されているかは、この応答の違いから外に分かります。本人かどうかの守りは、ログインの後の確かめです。
 2. ログインを始めたブラウザに Cookie を置き、X から戻ったときに照らし合わせます。他人が始めたログインの URL を開かされて同意しても、購読もコードも作りません。
 3. X の OAuth 2.0 (PKCE) で本人を確かめ、アプリで選んでいたアカウントと違えば断ります。トークンは保存せず、`offline.access` も求めません。
 4. 選んだ種類の購読のうち、まだないものを本人のトークンで期限なしに作り、作ったらすぐ記録します。`tag` は `tweetbot-worker-connect-<Worker の印>-<試みの印>` です (Worker の印は、その Worker の Durable Object に初めて置く乱数。49 文字で、X の `tag` の上限の 200 文字に収まります)。持ち主が手で作った購読はそのまま使い、記録しません。同じ Worker のほかの接続が作った購読も、そのまま使って記録します。作った結果が分からなかった (応答がない、読めない、5xx) ときは一覧し直して確かめ、同じ購読があると言われた (409) ときは一覧の購読を使います。途中で失敗したら、今回作ったものを消して、アプリに失敗を返します。購読を作ってコードを出すまでは、4 分で打ち切ります。
@@ -165,7 +165,7 @@ X アプリの Callback URL に `https://<worker-domain>/oauth/callback` を足�
 - Workers の Free プランで Rate Limiting の binding を使えるか。
 - 本人の認可で作った購読を、App-only の Bearer で消せるか。消せない場合は、一覧で消えたと分かるまで記録に残し、定期の処理で試し続けます。
 - いいねと新しいフォロワーの購読の向き (`inbound`) は、X の OpenAPI に合わせて `filter.direction` で送ります。概要は `filter.qualifiers.direction` と同じものとしています。
-- X の Callback URL に workers.dev のホストを登録できるか、新しいフォロワーの購読に要る scope、ASWebAuthenticationSession の中で Cookie が保たれるか。
+- 新しいフォロワーの購読に要る scope。X の Callback URL に workers.dev のホストを登録できること、ASWebAuthenticationSession の中で Cookie が保たれること (Worker は Cookie の合わない戻りを断るので、接続できたことから分かります) は、実機で確かめました ([記録](https://github.com/twitter-studio/notification-docs/blob/main/docs/operations/2026-11-08-worker-x-login-device-test.md))。
 - 使った後のトークンを取り消すと、本人の認可で作った購読も消えるか (消えないと分かるまで、取り消さない)。
 
 手動ルートを設定していない新規 Worker でも使えます。その場合は `X_RELAY_ROUTES`、`X_USER_ID`、`RELAY_TOKEN`、`X_NOTIFICATION_TYPES` を設定しません。既存の手動ルートも使えます。同じアカウントで同じ中継資格情報をすでに手動設定している端末は、二重配送を防ぐため追加できません。ペアリングは既存の購読を使うので、X の購読管理は上記の手順で行います。

@@ -428,15 +428,21 @@ describe("connecting with an X login", () => {
     const user = "1212121212121212121";
     const env = connectEnv(user);
     const x = fakeX({ me: user });
-    const login = await startLogin(env, x, user, "mention", `tpm_${"E".repeat(43)}`);
-    // ログインの途中の状態の期限を、過去に書き換える。
-    const taken = await store(env).takeLogin(login.state);
-    if (!taken.login) throw new Error("Missing login");
-    await store(env).finishLogin(login.state);
-    await store(env).beginLogin({ ...taken.login, expires: Date.now() - 1 });
-    expect(
-      appRedirect(await callback(env, x, `code=x-code&state=${login.state}`, login.cookie)),
-    ).toEqual({ state: appState, error: "expired" });
+    // 接続元の上限を超えていても、期限切れを伝える (上限が戻るのを待っても、つながらない)。
+    const limited = connectEnv(user, {
+      CONNECT_LIMITER: { limit: async () => ({ success: false }) },
+    });
+    for (const returning of [env, limited]) {
+      const login = await startLogin(env, x, user, "mention", `tpm_${"E".repeat(43)}`);
+      // ログインの途中の状態の期限を、過去に書き換える。
+      const taken = await store(env).takeLogin(login.state);
+      if (!taken.login) throw new Error("Missing login");
+      await store(env).finishLogin(login.state);
+      await store(env).beginLogin({ ...taken.login, expires: Date.now() - 1 });
+      expect(
+        appRedirect(await callback(returning, x, `code=x-code&state=${login.state}`, login.cookie)),
+      ).toEqual({ state: appState, error: "expired" });
+    }
     expect(x.calls).toHaveLength(0);
   });
 
@@ -549,7 +555,11 @@ describe("connecting with an X login", () => {
     expect(await version.json()).toEqual({ version: 3, x_login: true });
 
     const env = connectEnv("2");
-    expect((await startLogin(env, x, "2", "poll", manager)).started.status).toBe(400);
+    // 引数が合わなくても、始めたアプリが分かればアプリへ戻す。分からなければ、文字のページで断る。
+    expect(appRedirect((await startLogin(env, x, "2", "poll", manager)).started)).toEqual({
+      state: appState,
+      error: "invalid_request",
+    });
     expect(
       (
         await handle(
@@ -585,6 +595,81 @@ describe("connecting with an X login", () => {
     );
     expect(response.status).toBe(429);
     expect(keys).toEqual(["connect:192.0.2.1"]);
+    expect(appRedirect((await startLogin(limited, x, "2", "mention", manager)).started)).toEqual({
+      state: appState,
+      error: "rate_limited",
+    });
+    expect(x.calls).toHaveLength(0);
+  });
+
+  test("returns a refused start to the app only when the request names exactly one app state", async () => {
+    const env = connectEnv("2");
+    const x = fakeX({ me: "2" });
+    const open = (query: string) =>
+      handle(new Request(`https://worker.test/connect?${query}`), env, x.deps);
+    const managementHash = await toHex(`tpm_${"H".repeat(43)}`);
+    const base = `x_user_id=2&types=mention&management_hash=${managementHash}`;
+
+    // Worker の知らない引数は、版の違いとしてアプリへ戻す。
+    expect(appRedirect(await open(`${base}&app_state=${appState}&extra=1`))).toEqual({
+      state: appState,
+      error: "invalid_request",
+    });
+    // app_state が 2 つあるか、形が合わなければ、どのログインのものか分からないので戻さない。
+    for (const query of [
+      `${base}&extra=1&app_state=${appState}&app_state=${"T".repeat(43)}`,
+      `${base}&extra=1&app_state=short`,
+    ]) {
+      const response = await open(query);
+      expect(response.status).toBe(400);
+      expect(response.headers.get("Location")).toBeNull();
+    }
+    expect(x.calls).toHaveLength(0);
+  });
+
+  test("returns a callback over the source limit to the app without asking X for a token", async () => {
+    const user = "2020202020202020202";
+    const x = fakeX({ me: user });
+    const login = await startLogin(connectEnv(user), x, user, "mention", `tpm_${"L".repeat(43)}`);
+    const limited = connectEnv(user, {
+      CONNECT_LIMITER: { limit: async () => ({ success: false }) },
+    });
+
+    // ログインを始めたブラウザでなければ、上限を超えたことだけを返し、アプリへは戻さない。
+    const stranger = await callback(
+      limited,
+      x,
+      `code=x-code&state=${login.state}`,
+      `__Host-tweetbot-connect=${"Z".repeat(43)}`,
+    );
+    expect(stranger.status).toBe(429);
+    expect(stranger.headers.get("Location")).toBeNull();
+
+    // 始めたアプリが分からない戻りも、上限を超えたことだけを返す。
+    for (const query of ["code=x-code&state=short", `code=x-code&state=${"U".repeat(43)}`]) {
+      const response = await callback(limited, x, query, "");
+      expect(response.status).toBe(429);
+      expect(response.headers.get("Location")).toBeNull();
+    }
+
+    // X で許可しなかったことは、上限を超えていてもそのまま伝える (やり直し方が違う)。
+    const refused = await startLogin(connectEnv(user), x, user, "mention", `tpm_${"L".repeat(43)}`);
+    expect(
+      appRedirect(
+        await callback(limited, x, `error=access_denied&state=${refused.state}`, refused.cookie),
+      ),
+    ).toEqual({ state: appState, error: "denied" });
+
+    const other = await startLogin(connectEnv(user), x, user, "mention", `tpm_${"L".repeat(43)}`);
+    const response = await callback(limited, x, `code=x-code&state=${other.state}`, other.cookie);
+    expect(appRedirect(response)).toEqual({ state: appState, error: "rate_limited" });
+    expect(x.calls).toHaveLength(0);
+    // ログインは使い切り。上限が戻っても、同じ戻り先からはつながない。
+    expect(
+      (await callback(connectEnv(user), x, `code=x-code&state=${other.state}`, other.cookie))
+        .status,
+    ).toBe(400);
+    expect(await recorded(connectEnv(user), user)).toEqual([]);
   });
 });
 
