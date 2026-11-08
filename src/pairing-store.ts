@@ -98,9 +98,9 @@ export function applyRouteChanges(
   // 鍵を外す・種類を減らすだけの変更は数えない。上限に達した後でも、受け取るものを絞れるようにする。
   const current = new Set(route.eventTypes ?? defaultNotificationTypes);
   const narrowing =
-    changes.token === undefined &&
-    typeof changes.dmPreviewKey !== "string" &&
-    (changes.eventTypes ?? []).every((type) => current.has(type));
+    next.token === route.token &&
+    (next.dmPreviewKey === undefined || next.dmPreviewKey === route.dmPreviewKey) &&
+    (next.eventTypes ?? defaultNotificationTypes).every((type) => current.has(type));
   if (!narrowing) {
     const windowEndsAt = route.settingsWindowEndsAt ?? 0;
     const windowOpen = windowEndsAt > now;

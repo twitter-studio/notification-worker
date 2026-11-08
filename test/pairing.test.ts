@@ -460,7 +460,7 @@ describe("applyRouteChanges", () => {
       route: { eventTypes: ["like"], settingsWrites: 1, settingsWindowEndsAt: 1_200_000 },
     });
     expect(
-      applyRouteChanges(limited, [], none, { eventTypes: ["mention"] }, 599_999),
+      applyRouteChanges(limited, [], none, { eventTypes: ["mention"], token: relayToken }, 599_999),
     ).toMatchObject({
       kind: "changed",
       route: { settingsWrites: 30, settingsWindowEndsAt: 600_000 },
