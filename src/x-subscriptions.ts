@@ -190,6 +190,8 @@ export async function ensureSubscriptions(options: {
     await store.recordSubscriptions(recipient, workerRows(existing));
     for (const spec of [...new Set(types)].flatMap((type) => specs[type])) {
       if (existing.some((row) => covers(row, spec))) continue;
+      // 締め切りの後は送らない。送っていないので、作られていないと分かる。
+      if (Date.now() >= deadline) throw new Error("deadline");
       // 作る前に、確かめの印を残す。要求を送った後に処理が打ち切られても (アプリを閉じて接続が切れたなど)、
       // 定期の処理が一覧で探して記録に取り込める。印は片付けが一覧を読んだときに外す (処理中の接続がないと分かっているとき)。
       if (!marked) {
@@ -236,7 +238,8 @@ export async function ensureSubscriptions(options: {
     return true;
   } catch {
     // 戻すときは、作るのに使えた本人のトークンで消す (App-only の Bearer で消せるかは、まだ確かめていない)。
-    // 締め切りは付けない (締め切りで打ち切った後も、作ったものは消しておく)。
+    // 締め切りは付けない (締め切りで打ち切った後も、作ったものは消しておく)。処理中の印が切れた後なら、片付けと同じ ID を
+    // 消し合うことがあるが、どちらも消すだけなので害はない。
     const removed = await deleteSubscriptions(created, userToken, deps);
     await store.forgetSubscriptions(recipient, removed).catch(() => undefined);
     return false;
@@ -263,39 +266,40 @@ export async function deleteSubscriptions(
   return deleted;
 }
 
-/** 片付けの間、そのアカウントの接続を始めない期限。消す処理には、これより 1 分短い締め切りを付ける。 */
-const releaseLease = 5 * 60_000;
+/** 定期の処理で、片付けにかけてよい時間。 */
+export const cleanupBudget = 4 * 60_000;
 
 /**
  * アカウントの購読が使われていなければ (接続したルート、有効なコード、処理中の接続、手動の配送先のどれもない)、
  * Worker が作った購読を消す。消えたと分かったものだけを記録から外し、残りは定期の処理でやり直す。
- * 結果の分からない作成があったアカウントは、先に Worker の tag の購読を一覧で探して記録に取り込む。
+ * 購読を作り始めたアカウントは、先に Worker の tag の購読を一覧で探して記録に取り込む。
+ * `budget` の後は要求を出さない。片付けの印は、それより 1 分長く付け、その間はそのアカウントの接続を始めない。
  */
 export async function releaseWorkerSubscriptions(
   env: Env,
   store: Store,
   recipient: string,
   deps: RelayDeps,
+  budget = cleanupBudget,
 ): Promise<void> {
   const bearer = env.X_APP_BEARER_TOKEN ?? "";
   if (bearer.length === 0) return;
   if (xRelayTargets(env, true).some((target) => target.recipient === recipient)) return;
-  const release = await store.beginRelease(recipient, Date.now() + releaseLease);
+  const release = await store.beginRelease(recipient, Date.now() + budget + 60_000);
   if (release === undefined) return;
-  const deadline = Date.now() + releaseLease - 60_000;
+  const deadline = Date.now() + budget;
   let remaining = true;
   try {
     let ids = release.ids;
     let unsure = release.unsure;
     if (unsure) {
-      const rows = await listSubscriptions(recipient, bearer, deps, {
-        webhookID: env.X_WEBHOOK_ID,
-        deadline,
-      });
+      // Webhook では絞らない。Webhook を付け替えた後や、設定が欠けていても、Worker の tag の購読を拾う
+      // (同じ X アプリを、X でログインする Worker 2 つで使わない。手順書に書く)。
+      const listedAt = Date.now();
+      const rows = await listSubscriptions(recipient, bearer, deps, { deadline });
       if (rows !== undefined) {
-        await store.adoptSubscriptions(recipient, workerRows(rows));
+        unsure = !(await store.adoptSubscriptions(recipient, workerRows(rows), listedAt));
         ids = [...new Set([...ids, ...workerRows(rows)])];
-        unsure = false;
       }
     }
     const deleted = await deleteSubscriptions(ids, bearer, deps, deadline);
@@ -325,7 +329,11 @@ export async function cleanupWorkerSubscriptions(
   deps: RelayDeps,
   limit = 3,
 ): Promise<void> {
-  const recipients = await store.cleanupCandidates();
+  // 手動の配送先のあるアカウントは消さないので、1 回の枠を使わないよう、先に除く。
+  const manual = new Set(xRelayTargets(env, true).map((target) => target.recipient));
+  const recipients = (await store.cleanupCandidates()).filter(
+    (recipient) => !manual.has(recipient),
+  );
   const start = recipients.length === 0 ? 0 : Math.floor(Math.random() * recipients.length);
   for (const recipient of [...recipients.slice(start), ...recipients.slice(0, start)].slice(
     0,

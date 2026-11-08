@@ -1,5 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { handle } from "../src/app";
 import { sourceKey } from "../src/connect";
 import { deliveryTargets, pairingStore } from "../src/pairing-store";
@@ -156,6 +156,27 @@ async function stored<T>(env: Env, key: string): Promise<T | undefined> {
 async function recorded(env: Env, user: string): Promise<string[]> {
   return (await stored<Record<string, string[]>>(env, "subscriptions"))?.[user] ?? [];
 }
+
+/** 購読を作り始めた (確かめの印を付けた) アカウントか。 */
+async function unsure(env: Env, user: string): Promise<boolean> {
+  return (await stored<Record<string, number>>(env, "unsure"))?.[user] !== undefined;
+}
+
+/** 確かめの印を、外せるだけ古くする (X の一覧が追いつくのを待った後にする)。 */
+async function ageUnsure(env: Env, user: string) {
+  const stub = env.PAIRING_ROUTES?.getByName("routes");
+  if (!stub) throw new Error("Missing store");
+  await runInDurableObject(stub, (_instance, state) => {
+    const marks = state.storage.kv.get<Record<string, number>>("unsure") ?? {};
+    state.storage.kv.put("unsure", { ...marks, [user]: Date.now() - 2 * 60 * 60_000 });
+  });
+}
+
+// テストの途中で失敗しても、次のテストに保存した状態を残さない。
+afterEach(async () => {
+  const stub = testEnv().PAIRING_ROUTES?.getByName("routes");
+  if (stub) await runInDurableObject(stub, (_instance, state) => state.storage.deleteAll());
+});
 
 function connectEnv(user: string, overrides: Partial<Env> = {}): Env {
   return testEnv({
@@ -424,10 +445,14 @@ describe("connecting with an X login", () => {
       ]);
       expect(x.rows.size).toBe(0);
       expect(await recorded(env, user)).toEqual([]);
-      // 作り始めたアカウントは、片付けが一覧で探すまで確かめの印を残す。
-      expect((await stored<string[]>(env, "unsure")) ?? []).toContain(user);
+      // 作り始めたアカウントは、片付けが一覧で探すまで確かめの印を残す。印を付けた直後の一覧では外さない
+      // (X の一覧に出るのが遅れることがある)。
+      expect(await unsure(env, user)).toBe(true);
       await cleanupWorkerSubscriptions(env, store(env), x.deps);
-      expect((await stored<string[]>(env, "unsure")) ?? []).not.toContain(user);
+      expect(await unsure(env, user)).toBe(true);
+      await ageUnsure(env, user);
+      await releaseWorkerSubscriptions(env, store(env), user, x.deps);
+      expect(await unsure(env, user)).toBe(false);
     }
   });
 
@@ -669,6 +694,11 @@ describe("keeping Worker subscriptions in step with connections", () => {
     expect(await store(env).cleanupCandidates()).toContain(user);
     await cleanupWorkerSubscriptions(env, store(env), x.deps);
     expect(x.rows.size).toBe(0);
+    // 印を付けてから時間がたつまでは、後から一覧に出る購読のために印を残す。
+    expect(await unsure(env, user)).toBe(true);
+    await ageUnsure(env, user);
+    await releaseWorkerSubscriptions(env, store(env), user, x.deps);
+    expect(await unsure(env, user)).toBe(false);
     expect(await store(env).cleanupCandidates()).not.toContain(user);
   });
 
@@ -718,6 +748,74 @@ describe("keeping Worker subscriptions in step with connections", () => {
     );
     expect(backoff?.[user]?.failures).toBe(1);
     await store(env).forgetSubscriptions(user, ["100", "101"]);
+  });
+
+  test("finds the Worker's subscriptions under any webhook when the Worker's webhook setting changed", async () => {
+    const user = "2626262626262626262";
+    const env = connectEnv(user, { X_WEBHOOK_ID: "" });
+    const x = fakeX({
+      me: user,
+      existing: [
+        { event_type: "post.reply.create", tag: "tweetbot-worker-connect-lost" },
+        { event_type: "post.quote.create" },
+      ],
+    });
+    await store(env).markUnsure(user);
+    await ageUnsure(env, user);
+    await releaseWorkerSubscriptions(env, store(env), user, x.deps);
+    expect([...x.rows.keys()]).toEqual(["101"]);
+    expect(await unsure(env, user)).toBe(false);
+  });
+
+  test("does not spend cleanup turns on accounts that a manual route uses", async () => {
+    const manualUser = "2727272727272727272";
+    const user = "2828282828282828282";
+    const env = connectEnv(user, {
+      X_RELAY_ROUTES: JSON.stringify({
+        [manualUser]: [{ relay_token: `tsr_${"P".repeat(43)}`, route_id: crypto.randomUUID() }],
+      }),
+    });
+    const x = fakeX({ me: user, existing: [{ event_type: "post.reply.create" }] });
+    await store(env).recordSubscriptions(manualUser, ["900"]);
+    await store(env).recordSubscriptions(user, ["100"]);
+    // 始める位置を、手動の配送先のアカウント (先に記録した方) に固定する。
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    await cleanupWorkerSubscriptions(env, store(env), x.deps, 1);
+    vi.restoreAllMocks();
+    expect(x.rows.size).toBe(0);
+    expect(await recorded(env, manualUser)).toEqual(["900"]);
+  });
+
+  test("does not push out a login that came back from X while a stranger keeps starting logins", async () => {
+    const user = "2929292929292929292";
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const manager = `tpm_${"Z".repeat(43)}`;
+    const login = await startLogin(env, x, user, "mention", manager);
+    expect((await store(env).takeLogin(login.state)).login).toBeDefined();
+    for (let count = 0; count < 4; count += 1) await startLogin(env, x, user, "mention", manager);
+    expect(await store(env).startProcessing(login.state, Date.now() + 60_000)).toBe(true);
+  });
+
+  test("keeps at most four X-login codes for an account", async () => {
+    const user = "3030303030303030303";
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const managers = ["1", "2", "3", "4", "5"].map((letter) => `tpm_${letter.repeat(43)}`);
+    const codes: string[] = [];
+    for (const manager of managers) {
+      const login = await startLogin(env, x, user, "mention", manager);
+      codes.push(
+        appRedirect(await callback(env, x, `code=x-code&state=${login.state}`, login.cookie))
+          .code ?? "",
+      );
+    }
+    expect((await pairWithCode(env, x.deps, user, codes[0] ?? "", managers[0] ?? "")).status).toBe(
+      401,
+    );
+    expect((await pairWithCode(env, x.deps, user, codes[4] ?? "", managers[4] ?? "")).status).toBe(
+      204,
+    );
   });
 
   test("keeps the first device's code when a second device connects the same account", async () => {

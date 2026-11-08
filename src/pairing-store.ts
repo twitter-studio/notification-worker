@@ -64,6 +64,13 @@ export type Login = {
 };
 /** 消せなかった購読を、次に消し直す時刻。失敗が続くほど間を延ばす。 */
 type Backoff = { failures: number; next: number };
+/**
+ * 確かめの印を付けてから、一覧で探して印を外せるまでの時間。X の一覧に作った購読が出るまでの遅れを確かめていないので、
+ * 長めに取る (印を付けた直後の一覧に出ていなくても、印を外さない)。
+ */
+const unsureSettle = 60 * 60_000;
+/** X でログインして出すコードの、アカウントごとの数。1 つのアカウントにつなげるルートの数と揃える。 */
+const loginCodesPerAccount = 4;
 type Reservation = { routeID: string; managementHash: string; cancelled?: boolean };
 type Code = {
   recipient: string;
@@ -159,6 +166,14 @@ export class PairingStore extends DurableObject<Env> {
           entry.expires > Date.now() &&
           (entry.recipient !== code.recipient || entry.managementHash !== code.managementHash),
       );
+      // 管理キーを変えて X のログインを繰り返し、全体の枠を 1 つのアカウントで埋めないよう、古いものから消す。
+      if (code.managementHash !== undefined) {
+        const bound = state.codes.filter(
+          (entry) => entry.recipient === code.recipient && entry.managementHash !== undefined,
+        );
+        const excess = bound.slice(0, Math.max(0, bound.length - (loginCodesPerAccount - 1)));
+        state.codes = state.codes.filter((entry) => !excess.includes(entry));
+      }
       if (state.codes.length >= 8) return false;
       state.codes.push(code);
       this.ctx.storage.kv.put("pairing", state);
@@ -312,9 +327,9 @@ export class PairingStore extends DurableObject<Env> {
     return this.ctx.storage.kv.get<Record<string, number>>("releasing") ?? {};
   }
 
-  /** 結果の分からない作成があり、一覧で探して記録に取り込む要があるアカウント。 */
-  private unsure(): string[] {
-    return this.ctx.storage.kv.get<string[]>("unsure") ?? [];
+  /** 購読を作り始めたアカウントと、その時刻。一覧で探して記録に取り込むまで残す。 */
+  private unsure(): Record<string, number> {
+    return this.ctx.storage.kv.get<Record<string, number>>("unsure") ?? {};
   }
 
   private backoff(): Record<string, Backoff> {
@@ -350,12 +365,15 @@ export class PairingStore extends DurableObject<Env> {
       let logins = this.logins().filter((item) =>
         item.processingUntil === undefined ? item.expires > now : item.processingUntil > now,
       );
-      // 処理中のログインは追い出さない。
-      const waiting = logins.filter((item) => item.processingUntil === undefined);
+      // 処理中のログインは追い出さない。X から戻ったログイン (本人を確かめている途中) は、待っているものがないときだけ追い出す
+      // (`finishLogin` で消えるが、処理が打ち切られると期限まで残るので、全体の数には上限を付ける)。
+      const waiting = logins.filter((item) => item.processingUntil === undefined && !item.used);
       const same = waiting.filter((item) => item.recipient === login.recipient);
       if (same.length >= 3) logins = logins.filter((item) => item !== same[0]);
       if (logins.length >= 16) {
-        const oldest = logins.find((item) => item.processingUntil === undefined);
+        const oldest =
+          logins.find((item) => item.processingUntil === undefined && !item.used) ??
+          logins.find((item) => item.processingUntil === undefined);
         logins = logins.filter((item) => item !== oldest);
       }
       logins.push(login);
@@ -420,30 +438,31 @@ export class PairingStore extends DurableObject<Env> {
   }
 
   /**
-   * 片付けの間 (`beginRelease` の後) に、一覧で見つけた Worker の tag の購読を記録に取り込み、確かめの印を外す。
-   * 片付けの間は接続の処理が動いていないので、ここで読んだ一覧には、作りかけの購読が残っていない。
+   * 片付けの間 (`beginRelease` の後) に、一覧で見つけた Worker の tag の購読を記録に取り込む。
+   * 印を付けてから `unsureSettle` たって読み始めた一覧なら、確かめの印を外す (片付けの間は接続の処理が動いていないので、
+   * その一覧には作りかけの購読が出ている)。印が外れたら true。
    */
-  adoptSubscriptions(recipient: string, ids: string[]): void {
-    this.ctx.storage.transactionSync(() => {
+  adoptSubscriptions(recipient: string, ids: string[], listedAt: number): boolean {
+    return this.ctx.storage.transactionSync(() => {
       if (ids.length > 0) {
         const all = this.subscriptions();
         all[recipient] = [...new Set([...(all[recipient] ?? []), ...ids])];
         this.ctx.storage.kv.put("subscriptions", all);
       }
       const unsure = this.unsure();
-      if (unsure.includes(recipient))
-        this.ctx.storage.kv.put(
-          "unsure",
-          unsure.filter((item) => item !== recipient),
-        );
+      const markedAt = unsure[recipient];
+      if (markedAt === undefined) return true;
+      if (markedAt + unsureSettle > listedAt) return false;
+      delete unsure[recipient];
+      this.ctx.storage.kv.put("unsure", unsure);
+      return true;
     });
   }
 
   /** 購読を作り始める。作ったかどうか分からない購読が残りうるので、片付けで一覧を探して記録に取り込むまで印を残す。 */
   markUnsure(recipient: string): void {
     this.ctx.storage.transactionSync(() => {
-      const unsure = this.unsure();
-      if (!unsure.includes(recipient)) this.ctx.storage.kv.put("unsure", [...unsure, recipient]);
+      this.ctx.storage.kv.put("unsure", { ...this.unsure(), [recipient]: Date.now() });
     });
   }
 
@@ -472,7 +491,7 @@ export class PairingStore extends DurableObject<Env> {
       this.ctx.storage.kv.put("releasing", releasing);
       return {
         ids: this.subscriptions()[recipient] ?? [],
-        unsure: this.unsure().includes(recipient),
+        unsure: this.unsure()[recipient] !== undefined,
       };
     });
   }
@@ -502,9 +521,9 @@ export class PairingStore extends DurableObject<Env> {
   cleanupCandidates(): string[] {
     const now = Date.now();
     const backoff = this.backoff();
-    return [...new Set([...Object.keys(this.subscriptions()), ...this.unsure()])].filter(
-      (recipient) => (backoff[recipient]?.next ?? 0) <= now && !this.inUse(recipient, now),
-    );
+    return [
+      ...new Set([...Object.keys(this.subscriptions()), ...Object.keys(this.unsure())]),
+    ].filter((recipient) => (backoff[recipient]?.next ?? 0) <= now && !this.inUse(recipient, now));
   }
 
   updateRoute(

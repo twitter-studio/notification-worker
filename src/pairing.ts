@@ -60,6 +60,11 @@ async function hash(value: string) {
  * アカウントの接続コード (10 分、使い切り) を出す。管理用トークンの経路と、X でログインした経路 (`/connect`) の両方から使う。
  * 同じアカウントに新しく出すと、前のコードは使えなくなる。X でログインして出したコードは、同じアプリが出し直したときだけ使えなくなる。
  */
+/**
+ * 外す要求の中で、購読の片付けにかける時間。X が遅くても、アプリの要求を待たせない。残りは定期の処理が片付ける。
+ */
+const releaseInRequest = 20_000;
+
 export async function issuePairingCode(
   store: NonNullable<ReturnType<typeof pairingStore>>,
   recipient: string,
@@ -159,7 +164,9 @@ export async function handlePairing(
     if (!parsed.success) return response(422);
     const released = await store.disconnect(parsed.data.route_id);
     if (released !== undefined)
-      await releaseWorkerSubscriptions(env, store, released, deps).catch(() => undefined);
+      await releaseWorkerSubscriptions(env, store, released, deps, releaseInRequest).catch(
+        () => undefined,
+      );
     return response(204);
   }
   const managementHash = await hash(auth.slice(7));
@@ -194,7 +201,9 @@ export async function handlePairing(
     const released = await store.disconnect(parsed.data.route_id, managementHash);
     // 購読を消せなくても、外すことは止めない (消せなかった ID は記録に残り、定期の処理でやり直す)。
     if (released !== undefined)
-      await releaseWorkerSubscriptions(env, store, released, deps).catch(() => undefined);
+      await releaseWorkerSubscriptions(env, store, released, deps, releaseInRequest).catch(
+        () => undefined,
+      );
     return response(204);
   }
   if (path !== "/v1/pairing/test") return response(404);
