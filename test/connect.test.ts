@@ -33,8 +33,9 @@ function fakeX(options: {
   loseResponseOn?: string;
   /** 作った後、読めない本文 (200 の `{}`) を返す種類。 */
   garbleCreateOn?: string;
-  /** ほかの接続が同じ時に作ったとして、Worker の tag の購読を置いて 409 を返す種類。 */
+  /** ほかの接続が同じ時に作ったとして、`conflictTag` の購読を置いて 409 を返す種類。 */
   conflictOn?: string;
+  conflictTag?: string;
   /** 応答をなくした後、一覧も読めなくする。 */
   breakListOnLose?: boolean;
   failDelete?: boolean;
@@ -106,7 +107,7 @@ function fakeX(options: {
       if (sent.event_type === options.conflictOn) {
         rows.set(`${next++}`, {
           event_type: sent.event_type,
-          tag: "tweetbot-worker-connect-other",
+          ...(options.conflictTag ? { tag: options.conflictTag } : {}),
         });
         return Response.json({}, { status: 409 });
       }
@@ -151,6 +152,11 @@ async function stored<T>(env: Env, key: string): Promise<T | undefined> {
   const stub = env.PAIRING_ROUTES?.getByName("routes");
   if (!stub) throw new Error("Missing store");
   return runInDurableObject(stub, (_instance, state) => state.storage.kv.get<T>(key));
+}
+
+/** この Worker が作った購読の tag の頭。 */
+async function ownTag(env: Env): Promise<string> {
+  return `tweetbot-worker-connect-${await store(env).workerID()}`;
 }
 
 async function recorded(env: Env, user: string): Promise<string[]> {
@@ -315,7 +321,9 @@ describe("connecting with an X login", () => {
       { event_type: "post.reply.create", filter: { user_id: user }, webhook_id: webhookID },
     ]);
     expect(
-      sent.every((body) => /^tweetbot-worker-connect-[a-f0-9]{16}$/.test(String(body.tag))),
+      sent.every((body) =>
+        /^tweetbot-worker-connect-[a-f0-9]{8}-[a-f0-9]{16}$/.test(String(body.tag)),
+      ),
     ).toBe(true);
     expect(creations.every((call) => call.authorization === "Bearer user-token")).toBe(true);
     expect(
@@ -599,7 +607,7 @@ describe("keeping Worker subscriptions in step with connections", () => {
     await store(env).takeLogin(next.state);
     expect((await store(env).beginRelease(user, Date.now() + 60_000))?.ids).toEqual(["100"]);
     expect(await store(env).startProcessing(next.state, Date.now() + 60_000)).toBe(false);
-    await store(env).endRelease(user, false);
+    await store(env).endRelease(user, { failed: false });
     await store(env).finishLogin(next.state);
 
     await cleanupWorkerSubscriptions(env, store(env), x.deps);
@@ -616,7 +624,7 @@ describe("keeping Worker subscriptions in step with connections", () => {
       appRedirect(await callback(env, x, `code=x-code&state=${login.state}`, login.cookie)),
     ).toEqual({ state: appState, error: "busy" });
     expect(x.calls.some((call) => call.path.startsWith("/2/activity/"))).toBe(false);
-    await store(env).endRelease(user, false);
+    await store(env).endRelease(user, { failed: false });
   });
 
   test("after a lost creation response it finds this attempt's subscription in the list, and removes only what this attempt made", async () => {
@@ -624,9 +632,7 @@ describe("keeping Worker subscriptions in step with connections", () => {
     const env = connectEnv(user);
     const x = fakeX({
       me: user,
-      existing: [
-        { event_type: "post.mention.create", tag: "tweetbot-worker-connect-other-device" },
-      ],
+      existing: [{ event_type: "post.mention.create", tag: `${await ownTag(env)}-other-device` }],
       loseResponseOn: "dm.received",
       failCreate: "chat.received",
     });
@@ -669,7 +675,11 @@ describe("keeping Worker subscriptions in step with connections", () => {
   test("uses the subscription another connection made at the same time when X answers 409", async () => {
     const user = "2323232323232323232";
     const env = connectEnv(user);
-    const x = fakeX({ me: user, conflictOn: "post.reply.create" });
+    const x = fakeX({
+      me: user,
+      conflictOn: "post.reply.create",
+      conflictTag: `${await ownTag(env)}-other`,
+    });
     const login = await startLogin(env, x, user, "reply", `tpm_${"X".repeat(43)}`);
     const back = appRedirect(
       await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
@@ -694,8 +704,13 @@ describe("keeping Worker subscriptions in step with connections", () => {
     expect(await store(env).cleanupCandidates()).toContain(user);
     await cleanupWorkerSubscriptions(env, store(env), x.deps);
     expect(x.rows.size).toBe(0);
-    // 印を付けてから時間がたつまでは、後から一覧に出る購読のために印を残す。
+    // 印を付けてから時間がたつまでは、後から一覧に出る購読のために印を残す。待つだけなので、失敗とは数えない。
     expect(await unsure(env, user)).toBe(true);
+    const waiting = (
+      await stored<Record<string, { failures: number; next: number }>>(env, "cleanup")
+    )?.[user];
+    expect(waiting?.failures).toBe(0);
+    expect(waiting?.next).toBeGreaterThan(Date.now() + 50 * 60_000);
     await ageUnsure(env, user);
     await releaseWorkerSubscriptions(env, store(env), user, x.deps);
     expect(await unsure(env, user)).toBe(false);
@@ -750,20 +765,22 @@ describe("keeping Worker subscriptions in step with connections", () => {
     await store(env).forgetSubscriptions(user, ["100", "101"]);
   });
 
-  test("finds the Worker's subscriptions under any webhook when the Worker's webhook setting changed", async () => {
+  test("finds this Worker's subscriptions under any webhook, and leaves another Worker's", async () => {
     const user = "2626262626262626262";
     const env = connectEnv(user, { X_WEBHOOK_ID: "" });
     const x = fakeX({
       me: user,
       existing: [
-        { event_type: "post.reply.create", tag: "tweetbot-worker-connect-lost" },
+        { event_type: "post.reply.create", tag: `${await ownTag(env)}-lost` },
         { event_type: "post.quote.create" },
+        // 同じ X アプリを使うほかの Worker が作った購読。
+        { event_type: "post.mention.create", tag: "tweetbot-worker-connect-ffffffff-1234" },
       ],
     });
     await store(env).markUnsure(user);
     await ageUnsure(env, user);
     await releaseWorkerSubscriptions(env, store(env), user, x.deps);
-    expect([...x.rows.keys()]).toEqual(["101"]);
+    expect([...x.rows.keys()]).toEqual(["101", "102"]);
     expect(await unsure(env, user)).toBe(false);
   });
 
@@ -798,6 +815,31 @@ describe("keeping Worker subscriptions in step with connections", () => {
     expect(await store(env).startProcessing(second.state, Date.now() + 60_000)).toBe(false);
     await store(env).finishLogin(first.state);
     expect(await store(env).startProcessing(second.state, Date.now() + 60_000)).toBe(true);
+  });
+
+  test("keeps a connection marked as processing while it removes what it made", async () => {
+    const user = "3232323232323232323";
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const first = await startLogin(env, x, user, "mention", `tpm_${"8".repeat(43)}`);
+    const second = await startLogin(env, x, user, "mention", `tpm_${"9".repeat(43)}`);
+    await store(env).takeLogin(first.state);
+    await store(env).takeLogin(second.state);
+    // 印がすぐ切れるところで、戻しのために延ばす。
+    expect(await store(env).startProcessing(first.state, Date.now() + 1)).toBe(true);
+    await store(env).extendProcessing(first.state, Date.now() + 60_000);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await store(env).startProcessing(second.state, Date.now() + 60_000)).toBe(false);
+  });
+
+  test("skips cleanup when the manual routes setting is broken", async () => {
+    const user = "3333333333333333334";
+    const env = connectEnv(user, { X_RELAY_ROUTES: "{" });
+    const x = fakeX({ me: user, existing: [{ event_type: "post.reply.create" }] });
+    await store(env).recordSubscriptions(user, ["100"]);
+    await cleanupWorkerSubscriptions(env, store(env), x.deps);
+    expect(x.calls).toHaveLength(0);
+    expect(await recorded(env, user)).toEqual(["100"]);
   });
 
   test("does not push out a login that came back from X while a stranger keeps starting logins", async () => {

@@ -428,6 +428,38 @@ export class PairingStore extends DurableObject<Env> {
     });
   }
 
+  /**
+   * 戻し (作った購読の削除) を始める前に、処理中の印を延ばす。印が切れて同じアカウントのほかの接続が始まり、
+   * これから消す購読を「ある」とみなして使わないように。
+   */
+  extendProcessing(state: string, until: number): void {
+    this.ctx.storage.transactionSync(() => {
+      const logins = this.logins();
+      const login = logins.find(
+        (item) => item.state === state && item.processingUntil !== undefined,
+      );
+      if (!login || (login.processingUntil ?? 0) >= until) return;
+      login.processingUntil = until;
+      this.ctx.storage.kv.put("logins", logins);
+    });
+  }
+
+  /**
+   * この Worker の印。Worker が作った購読の tag に入れ、同じ X アプリを使うほかの Worker の購読と見分ける。
+   * 初めて使うときに作る。
+   */
+  workerID(): string {
+    return this.ctx.storage.transactionSync(() => {
+      const saved = this.ctx.storage.kv.get<string>("worker_id");
+      if (saved !== undefined) return saved;
+      const id = Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+      this.ctx.storage.kv.put("worker_id", id);
+      return id;
+    });
+  }
+
   /** X から戻った処理を終える (コードを出した、または失敗した)。処理中の印を消し、片付けで購読を消せるようにする。 */
   finishLogin(state: string): void {
     this.ctx.storage.transactionSync(() => {
@@ -450,9 +482,9 @@ export class PairingStore extends DurableObject<Env> {
   /**
    * 片付けの間 (`beginRelease` の後) に、一覧で見つけた Worker の tag の購読を記録に取り込む。
    * 印を付けてから `unsureSettle` たって読み始めた一覧なら、確かめの印を外す (片付けの間は接続の処理が動いていないので、
-   * その一覧には作りかけの購読が出ている)。印が外れたら true。
+   * その一覧には作りかけの購読が出ている)。印が残ったら、外せるようになる時刻を返す。
    */
-  adoptSubscriptions(recipient: string, ids: string[], listedAt: number): boolean {
+  adoptSubscriptions(recipient: string, ids: string[], listedAt: number): number | undefined {
     return this.ctx.storage.transactionSync(() => {
       if (ids.length > 0) {
         const all = this.subscriptions();
@@ -461,11 +493,11 @@ export class PairingStore extends DurableObject<Env> {
       }
       const unsure = this.unsure();
       const markedAt = unsure[recipient];
-      if (markedAt === undefined) return true;
-      if (markedAt + unsureSettle > listedAt) return false;
+      if (markedAt === undefined) return undefined;
+      if (markedAt + unsureSettle > listedAt) return markedAt + unsureSettle;
       delete unsure[recipient];
       this.ctx.storage.kv.put("unsure", unsure);
-      return true;
+      return undefined;
     });
   }
 
@@ -507,22 +539,28 @@ export class PairingStore extends DurableObject<Env> {
   }
 
   /**
-   * 片付けを終える。消し残しがあれば、定期の処理で次に試すまでの間を延ばす (5 分から倍にし、1 日まで)。
-   * X が消すのを断り続ける購読に、5 分ごとに要求を送り続けないため。
+   * 片付けを終える。消せなかったもの (`failed`) があれば、定期の処理で次に試すまでの間を延ばす (5 分から倍にし、1 日まで)。
+   * X が消すのを断り続ける購読に、5 分ごとに要求を送り続けないため。確かめの印を外せる時刻を待つだけなら (`retryAt`)、
+   * 失敗とは数えず、その時刻まで待つ。
    */
-  endRelease(recipient: string, remaining: boolean): void {
+  endRelease(recipient: string, outcome: { failed: boolean; retryAt?: number | undefined }): void {
     this.ctx.storage.transactionSync(() => {
       const releasing = this.releasing();
       delete releasing[recipient];
       this.ctx.storage.kv.put("releasing", releasing);
       const backoff = this.backoff();
-      if (remaining) {
+      if (outcome.failed) {
         const failures = (backoff[recipient]?.failures ?? 0) + 1;
         backoff[recipient] = {
           failures,
-          next: Date.now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 24 * 60 * 60_000),
+          next: Math.max(
+            Date.now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 24 * 60 * 60_000),
+            outcome.retryAt ?? 0,
+          ),
         };
-      } else delete backoff[recipient];
+      } else if (outcome.retryAt !== undefined)
+        backoff[recipient] = { failures: 0, next: outcome.retryAt };
+      else delete backoff[recipient];
       this.ctx.storage.kv.put("cleanup", backoff);
     });
   }

@@ -272,8 +272,10 @@ async function connect(
       webhookID: config.webhookID,
       userToken: accessToken,
       bearer: config.bearer,
+      workerID: await store.workerID(),
       attempt: (await hex(state)).slice(0, 16),
       deadline: Date.now() + processingLease - 60_000,
+      extendLease: (until) => store.extendProcessing(state, until),
       deps,
     }))
   )

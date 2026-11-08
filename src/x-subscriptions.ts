@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { discardBody, readBody } from "./body";
-import { xRelayTargets } from "./config";
+import { ConfigError, xRelayTargets } from "./config";
 import type { X_NOTIFICATION_TYPES } from "./normalize";
 import type { pairingStore } from "./pairing-store";
 import type { RelayDeps } from "./relay";
@@ -23,10 +23,19 @@ const specs: Record<NotificationType, Spec[]> = {
 };
 
 /**
- * Worker が作った購読に付ける tag の頭。後ろに試みごとの印を付ける。
- * 記録をなくしても一覧から Worker が作ったものを見分けられ、結果の分からない作成を拾い直すときに、今回の試みのものだけを拾える。
+ * Worker が作った購読に付ける tag の頭。後ろに Worker の印と試みごとの印を付ける (`tweetbot-worker-connect-<Worker>-<試み>`)。
+ * 記録をなくしても一覧からこの Worker が作ったものを見分けられ (同じ X アプリを使うほかの Worker の購読には触れない)、
+ * 結果の分からない作成を拾い直すときに、今回の試みのものだけを拾える。
  */
 export const workerTag = "tweetbot-worker-connect";
+
+/** この Worker が作った購読の tag の頭。 */
+function workerPrefix(workerID: string): string {
+  return `${workerTag}-${workerID}-`;
+}
+
+/** 外への要求を 1 回で打ち切る時間。 */
+const callTimeout = 10_000;
 
 /**
  * 選んだ種類の購読に要る scope。`users.read` は本人の ID を確かめるために常に要る。
@@ -99,7 +108,7 @@ async function call(
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       redirect: "manual",
-      signal: AbortSignal.timeout(Math.min(10_000, left)),
+      signal: AbortSignal.timeout(Math.min(callTimeout, left)),
     })
     .catch(() => undefined);
 }
@@ -154,10 +163,10 @@ async function listSubscriptions(
   return undefined;
 }
 
-/** Worker が作った購読 (tag が `workerTag` で始まる) の ID。 */
-function workerRows(rows: readonly Subscription[]): string[] {
+/** この Worker が作った購読 (tag が `workerPrefix` で始まる) の ID。 */
+function workerRows(rows: readonly Subscription[], workerID: string): string[] {
   return rows
-    .filter((row) => row.tag?.startsWith(workerTag) === true)
+    .filter((row) => row.tag?.startsWith(workerPrefix(workerID)) === true)
     .map((row) => row.subscription_id);
 }
 
@@ -175,19 +184,23 @@ export async function ensureSubscriptions(options: {
   webhookID: string;
   userToken: string;
   bearer: string;
+  workerID: string;
   attempt: string;
   deadline: number;
+  /** 戻しを始める前に、処理中の印をこの時刻まで延ばす。 */
+  extendLease: (until: number) => Promise<void>;
   deps: RelayDeps;
 }): Promise<boolean> {
-  const { store, recipient, types, webhookID, userToken, bearer, deadline, deps } = options;
-  const tag = `${workerTag}-${options.attempt}`;
+  const { store, recipient, types, webhookID, userToken, bearer, workerID, deadline, deps } =
+    options;
+  const tag = `${workerPrefix(workerID)}${options.attempt}`;
   const created: string[] = [];
   const list = () => listSubscriptions(recipient, bearer, deps, { webhookID, deadline });
   let marked = false;
   try {
     let existing = await list();
     if (existing === undefined) return false;
-    await store.recordSubscriptions(recipient, workerRows(existing));
+    await store.recordSubscriptions(recipient, workerRows(existing, workerID));
     for (const spec of [...new Set(types)].flatMap((type) => specs[type])) {
       if (existing.some((row) => covers(row, spec))) continue;
       // 締め切りの後は送らない。送っていないので、作られていないと分かる。
@@ -228,7 +241,7 @@ export async function ensureSubscriptions(options: {
         for (const row of again)
           if (row.tag === tag && !created.includes(row.subscription_id))
             created.push(row.subscription_id);
-        await store.recordSubscriptions(recipient, workerRows(again));
+        await store.recordSubscriptions(recipient, workerRows(again, workerID));
         existing = again;
         if (again.some((row) => covers(row, spec))) continue;
       }
@@ -239,7 +252,10 @@ export async function ensureSubscriptions(options: {
   } catch {
     // 戻すときは、作るのに使えた本人のトークンで消す (App-only の Bearer で消せるかは、まだ確かめていない)。
     // 締め切りは付けない (締め切りで打ち切った後も、作ったものは消しておく)。処理中の印が切れた後なら、片付けと同じ ID を
-    // 消し合うことがあるが、どちらも消すだけなので害はない。
+    // 消し合うことがあるが、どちらも消すだけなので害はない。印は、消し終えるまで延ばしておく。
+    await options
+      .extendLease(Date.now() + created.length * callTimeout + 60_000)
+      .catch(() => undefined);
     const removed = await deleteSubscriptions(created, userToken, deps);
     await store.forgetSubscriptions(recipient, removed).catch(() => undefined);
     return false;
@@ -288,18 +304,20 @@ export async function releaseWorkerSubscriptions(
   const release = await store.beginRelease(recipient, Date.now() + budget + 60_000);
   if (release === undefined) return;
   const deadline = Date.now() + budget;
-  let remaining = true;
+  let failed = true;
+  let retryAt: number | undefined;
   try {
     let ids = release.ids;
-    let unsure = release.unsure;
-    if (unsure) {
-      // Webhook では絞らない。Webhook を付け替えた後や、設定が欠けていても、Worker の tag の購読を拾う
-      // (同じ X アプリを、X でログインする Worker 2 つで使わない。手順書に書く)。
+    let listFailed = false;
+    if (release.unsure) {
+      // Webhook では絞らない。Webhook を付け替えた後や、設定が欠けていても、この Worker の tag の購読を拾う。
+      const workerID = await store.workerID();
       const listedAt = Date.now();
       const rows = await listSubscriptions(recipient, bearer, deps, { deadline });
-      if (rows !== undefined) {
-        unsure = !(await store.adoptSubscriptions(recipient, workerRows(rows), listedAt));
-        ids = [...new Set([...ids, ...workerRows(rows)])];
+      if (rows === undefined) listFailed = true;
+      else {
+        retryAt = await store.adoptSubscriptions(recipient, workerRows(rows, workerID), listedAt);
+        ids = [...new Set([...ids, ...workerRows(rows, workerID)])];
       }
     }
     const deleted = await deleteSubscriptions(ids, bearer, deps, deadline);
@@ -313,9 +331,9 @@ export async function releaseWorkerSubscriptions(
         gone = ids.filter((id) => deleted.includes(id) || !visible.has(id));
     }
     await store.forgetSubscriptions(recipient, gone);
-    remaining = unsure || gone.length < ids.length;
+    failed = listFailed || gone.length < ids.length;
   } finally {
-    await store.endRelease(recipient, remaining).catch(() => undefined);
+    await store.endRelease(recipient, { failed, retryAt }).catch(() => undefined);
   }
 }
 
@@ -330,14 +348,27 @@ export async function cleanupWorkerSubscriptions(
   limit = 3,
 ): Promise<void> {
   // 手動の配送先のあるアカウントは消さないので、1 回の枠を使わないよう、先に除く。
-  const manual = new Set(xRelayTargets(env, true).map((target) => target.recipient));
+  // 設定が壊れていて手動の配送先を読めなければ、どのアカウントを消してよいか分からないので、片付けない。
+  let manual: Set<string>;
+  try {
+    manual = new Set(xRelayTargets(env, true).map((target) => target.recipient));
+  } catch (error) {
+    if (!(error instanceof ConfigError)) throw error;
+    console.error(JSON.stringify({ event: "invalid_configuration", setting: error.setting }));
+    return;
+  }
   const recipients = (await store.cleanupCandidates()).filter(
     (recipient) => !manual.has(recipient),
   );
   const start = recipients.length === 0 ? 0 : Math.floor(Math.random() * recipients.length);
+  // 1 回の定期の処理で、締め切りを分け合う (次の 5 分ごとの処理と重ねない)。
+  const runDeadline = Date.now() + cleanupBudget;
   for (const recipient of [...recipients.slice(start), ...recipients.slice(0, start)].slice(
     0,
     limit,
-  ))
-    await releaseWorkerSubscriptions(env, store, recipient, deps).catch(() => undefined);
+  )) {
+    const left = runDeadline - Date.now();
+    if (left <= 0) break;
+    await releaseWorkerSubscriptions(env, store, recipient, deps, left).catch(() => undefined);
+  }
 }

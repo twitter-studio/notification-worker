@@ -57,14 +57,14 @@ async function hash(value: string) {
 }
 
 /**
- * アカウントの接続コード (10 分、使い切り) を出す。管理用トークンの経路と、X でログインした経路 (`/connect`) の両方から使う。
- * 同じアカウントに新しく出すと、前のコードは使えなくなる。X でログインして出したコードは、同じアプリが出し直したときだけ使えなくなる。
- */
-/**
  * 外す要求の中で、購読の片付けにかける時間。X が遅くても、アプリの要求を待たせない。残りは定期の処理が片付ける。
  */
 const releaseInRequest = 20_000;
 
+/**
+ * アカウントの接続コード (10 分、使い切り) を出す。管理用トークンの経路と、X でログインした経路 (`/connect`) の両方から使う。
+ * 同じアカウントに新しく出すと、前のコードは使えなくなる。X でログインして出したコードは、同じアプリが出し直したときだけ使えなくなる。
+ */
 export async function issuePairingCode(
   store: NonNullable<ReturnType<typeof pairingStore>>,
   recipient: string,
