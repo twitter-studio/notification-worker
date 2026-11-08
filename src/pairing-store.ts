@@ -41,12 +41,49 @@ export type StoredRoute = PairingRoute & {
   settingsWrites?: number;
   settingsWindowEndsAt?: number;
 };
+/** X のログインの途中の状態。verifier は PKCE のもので、Worker の外へ出さない。 */
+export type Login = {
+  state: string;
+  verifier: string;
+  /** ログインを始めたブラウザに置いた Cookie のハッシュ。別のブラウザで終えたログイン (罠のリンク) を断る。 */
+  browserHash: string;
+  /** ログインを始めたアプリの管理キーのハッシュ。出すコードをこれに結び付ける。 */
+  managementHash: string;
+  appState: string;
+  recipient: string;
+  eventTypes: NotificationType[];
+  redirectURI: string;
+  expires: number;
+  /** X から戻った (使い切り)。 */
+  used?: boolean;
+  /**
+   * 本人を確かめた後、購読を作ってコードを出すまでの期限。この間は、そのアカウントの購読を片付けで消さない。
+   * 始めただけのログインや、本人を確かめる前のログインは守らない (外から `/connect` や戻り先を開くだけで、片付けを止められてしまうため)。
+   */
+  processingUntil?: number;
+};
+/** 消せなかった購読を、次に消し直す時刻。失敗が続くほど間を延ばす。 */
+type Backoff = { failures: number; next: number };
+/**
+ * 確かめの印を付けてから、一覧で探して印を外せるまでの時間。X の一覧に作った購読が出るまでの遅れを確かめていないので、
+ * 長めに取る (印を付けた直後の一覧に出ていなくても、印を外さない)。
+ */
+const unsureSettle = 60 * 60_000;
+/** X でログインして出すコードの、アカウントごとの数。1 つのアカウントにつなげるルートの数と揃える。 */
+const loginCodesPerAccount = 4;
 type Reservation = { routeID: string; managementHash: string; cancelled?: boolean };
 type Code = {
   recipient: string;
   hash: string;
   proofKey: string;
   expires: number;
+  /**
+   * X でログインして出したコードは、ログインを始めたアプリの管理キーでしか使えない (アプリの PKCE)。
+   * コードがカスタムスキームやログから漏れても、管理キーを持たない人はルートを足せない。
+   */
+  managementHash?: string;
+  /** X でログインしたときに選んだ種類。つないだルートの初めの種類にする (購読を作った種類と揃える)。 */
+  eventTypes?: NotificationType[];
   usedBy?: Reservation;
   reservations?: Reservation[];
 };
@@ -117,12 +154,29 @@ export class PairingStore extends DurableObject<Env> {
     return this.ctx.storage.kv.get<State>("pairing") ?? { codes: [], routes: [] };
   }
 
+  /**
+   * 同じアカウントの前のコードを消して、新しいコードを置く。X でログインして出すコードは、同じアプリのものだけを消す
+   * (同じアカウントで 2 台をほぼ同時につないでも、先の端末のコードを消さない)。出せなければ false。
+   */
   issue(code: Code): boolean {
     return this.ctx.storage.transactionSync(() => {
+      // 片付けがそのアカウントの購読を消している間は出さない。出したコードでつないだ端末が、消されている購読を当てにする。
+      // 片付けは、有効なコードがあれば始まらない (`inUse`) ので、コードが出た後に消し始めることはない。
+      if ((this.releasing()[code.recipient] ?? 0) > Date.now()) return false;
       const state = this.read();
       state.codes = state.codes.filter(
-        (entry) => entry.expires > Date.now() && entry.recipient !== code.recipient,
+        (entry) =>
+          entry.expires > Date.now() &&
+          (entry.recipient !== code.recipient || entry.managementHash !== code.managementHash),
       );
+      // 管理キーを変えて X のログインを繰り返し、全体の枠を 1 つのアカウントで埋めないよう、古いものから消す。
+      if (code.managementHash !== undefined) {
+        const bound = state.codes.filter(
+          (entry) => entry.recipient === code.recipient && entry.managementHash !== undefined,
+        );
+        const excess = bound.slice(0, Math.max(0, bound.length - (loginCodesPerAccount - 1)));
+        state.codes = state.codes.filter((entry) => !excess.includes(entry));
+      }
       if (state.codes.length >= 8) return false;
       state.codes.push(code);
       this.ctx.storage.kv.put("pairing", state);
@@ -143,6 +197,7 @@ export class PairingStore extends DurableObject<Env> {
       );
       if (
         !code ||
+        (code.managementHash !== undefined && code.managementHash !== managementHash) ||
         (code.usedBy &&
           (code.usedBy.routeID !== routeID || code.usedBy.managementHash !== managementHash))
       )
@@ -183,6 +238,7 @@ export class PairingStore extends DurableObject<Env> {
             item.managementHash === route.managementHash &&
             !item.cancelled,
         ) ||
+        (code.managementHash !== undefined && code.managementHash !== route.managementHash) ||
         (code.usedBy !== undefined &&
           (code.usedBy.managementHash !== route.managementHash ||
             code.usedBy.routeID !== route.routeID))
@@ -196,6 +252,8 @@ export class PairingStore extends DurableObject<Env> {
           existing.token !== route.token
         )
           return "conflict";
+        // X でログインして接続し直したら、選んだ種類を当てる (購読を作った種類と揃える)。
+        if (code.eventTypes !== undefined) existing.eventTypes = code.eventTypes;
       } else {
         if (code.usedBy !== undefined) return "invalid";
         const manual = xRelayTargets(this.env, true);
@@ -215,7 +273,9 @@ export class PairingStore extends DurableObject<Env> {
           new Set([...all.map((item) => item.recipient), route.recipient]).size > 8
         )
           return "conflict";
-        state.routes.push(route);
+        state.routes.push(
+          code.eventTypes === undefined ? route : { ...route, eventTypes: code.eventTypes },
+        );
       }
       code.usedBy = { managementHash: route.managementHash, routeID: route.routeID };
       this.ctx.storage.kv.put("pairing", state);
@@ -223,15 +283,20 @@ export class PairingStore extends DurableObject<Env> {
     });
   }
 
-  disconnect(routeID: string, managementHash?: string): void {
-    this.ctx.storage.transactionSync(() => {
+  /**
+   * ルートを外す。外したルートのアカウントに、接続したルートがもう残っていなければ、そのアカウントを返す。
+   * 呼び出し側は、手動の配送先もなければ、Worker が作った購読を消す。
+   */
+  disconnect(routeID: string, managementHash?: string): string | undefined {
+    return this.ctx.storage.transactionSync(() => {
       const state = this.read();
-      const routes = state.routes.filter(
+      const removed = state.routes.filter(
         (route) =>
-          route.routeID !== routeID ||
-          (managementHash !== undefined && route.managementHash !== managementHash),
+          route.routeID === routeID &&
+          (managementHash === undefined || route.managementHash === managementHash),
       );
-      let changed = routes.length !== state.routes.length;
+      const routes = state.routes.filter((route) => !removed.includes(route));
+      let changed = removed.length > 0;
       for (const code of state.codes) {
         for (const reservation of code.reservations ?? []) {
           if (
@@ -245,7 +310,279 @@ export class PairingStore extends DurableObject<Env> {
         }
       }
       if (changed) this.ctx.storage.kv.put("pairing", { ...state, routes });
+      const recipient = removed[0]?.recipient;
+      return recipient !== undefined && !routes.some((route) => route.recipient === recipient)
+        ? recipient
+        : undefined;
     });
+  }
+
+  private logins(): Login[] {
+    return this.ctx.storage.kv.get<Login[]>("logins") ?? [];
+  }
+
+  private subscriptions(): Record<string, string[]> {
+    return this.ctx.storage.kv.get<Record<string, string[]>>("subscriptions") ?? {};
+  }
+
+  /** 片付けがそのアカウントの購読を消している間の期限。 */
+  private releasing(): Record<string, number> {
+    return this.ctx.storage.kv.get<Record<string, number>>("releasing") ?? {};
+  }
+
+  /** 購読を作り始めたアカウントと、その時刻。一覧で探して記録に取り込むまで残す。 */
+  private unsure(): Record<string, number> {
+    return this.ctx.storage.kv.get<Record<string, number>>("unsure") ?? {};
+  }
+
+  private backoff(): Record<string, Backoff> {
+    return this.ctx.storage.kv.get<Record<string, Backoff>>("cleanup") ?? {};
+  }
+
+  /**
+   * そのアカウントの購読が、使われているか、使われようとしているか。
+   * 接続したルート、使われていない有効なコード、本人を確かめて処理中のログインのどれかがあれば、消さない。
+   * 手動の配送先は Worker の `env` で見る (呼び出し側)。
+   */
+  private inUse(recipient: string, now: number): boolean {
+    const state = this.read();
+    return (
+      state.routes.some((route) => route.recipient === recipient) ||
+      state.codes.some(
+        (code) => code.recipient === recipient && code.expires > now && code.usedBy === undefined,
+      ) ||
+      this.logins().some(
+        (login) => login.recipient === recipient && (login.processingUntil ?? 0) > now,
+      )
+    );
+  }
+
+  /**
+   * X のログインの途中の状態を置く。期限の切れたものを除く。
+   * 外から何度でも始められるので、断らずに古いものを置き換える (アカウントごとに 3 つ、全体で 16 まで)。
+   * 断ると、他人が枠を埋めるだけで持ち主がログインできなくなる。
+   */
+  beginLogin(login: Login): void {
+    this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
+      let logins = this.logins().filter((item) =>
+        item.processingUntil === undefined ? item.expires > now : item.processingUntil > now,
+      );
+      // 処理中のログインは追い出さない。X から戻ったログイン (本人を確かめている途中) は、待っているものがないときだけ追い出す
+      // (`finishLogin` で消えるが、処理が打ち切られると期限まで残るので、全体の数には上限を付ける)。
+      const waiting = logins.filter((item) => item.processingUntil === undefined && !item.used);
+      const same = waiting.filter((item) => item.recipient === login.recipient);
+      if (same.length >= 3) logins = logins.filter((item) => item !== same[0]);
+      if (logins.length >= 16) {
+        const oldest =
+          logins.find((item) => item.processingUntil === undefined && !item.used) ??
+          logins.find((item) => item.processingUntil === undefined);
+        logins = logins.filter((item) => item !== oldest);
+      }
+      logins.push(login);
+      this.ctx.storage.kv.put("logins", logins);
+    });
+  }
+
+  /**
+   * state でログインの途中の状態を引き、使い切りの印を付ける。期限が切れていても返し (`expired`)、アプリへ戻せるようにする。
+   * 見つからなければ書き込まない (認証のない入口から、配送も読む Durable Object へ書き込ませない)。
+   */
+  takeLogin(state: string): { login?: Login; expired?: boolean } {
+    return this.ctx.storage.transactionSync(() => {
+      const logins = this.logins();
+      const login = logins.find((item) => item.state === state);
+      if (!login || login.used) return {};
+      const expired = login.expires <= Date.now();
+      this.ctx.storage.kv.put(
+        "logins",
+        expired
+          ? logins.filter((item) => item !== login)
+          : logins.map((item) => (item === login ? { ...item, used: true } : item)),
+      );
+      return { login, expired };
+    });
+  }
+
+  /**
+   * 本人を確かめた後、購読を作る前に、処理中の印を付ける。次のときは付けずに false を返す。
+   * - 片付けがそのアカウントの購読を消している (消されている購読を「ある」とみなして使わないように)。
+   * - 同じアカウントのほかの接続が処理中 (後の接続が先の接続の作った購読を使った後、先の接続が失敗して戻すと、
+   *   使われている購読まで消してしまう)。
+   */
+  startProcessing(state: string, until: number): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
+      const logins = this.logins();
+      const login = logins.find(
+        (item) => item.state === state && item.used === true && item.processingUntil === undefined,
+      );
+      if (
+        !login ||
+        (this.releasing()[login.recipient] ?? 0) > now ||
+        logins.some(
+          (item) => item.recipient === login.recipient && (item.processingUntil ?? 0) > now,
+        )
+      )
+        return false;
+      login.processingUntil = until;
+      this.ctx.storage.kv.put("logins", logins);
+      return true;
+    });
+  }
+
+  /**
+   * 戻し (作った購読の削除) を始める前に、処理中の印を延ばす。印が切れて同じアカウントのほかの接続が始まり、
+   * これから消す購読を「ある」とみなして使わないように。
+   */
+  extendProcessing(state: string, until: number): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const logins = this.logins();
+      const login = logins.find(
+        (item) => item.state === state && item.processingUntil !== undefined,
+      );
+      // 印が切れていたら延ばさない (同じアカウントのほかの接続が、もう始まっているかもしれない)。
+      if (!login || (login.processingUntil ?? 0) <= Date.now()) return false;
+      if ((login.processingUntil ?? 0) < until) {
+        login.processingUntil = until;
+        this.ctx.storage.kv.put("logins", logins);
+      }
+      return true;
+    });
+  }
+
+  /**
+   * この Worker の印。Worker が作った購読の tag に入れ、同じ X アプリを使うほかの Worker の購読と見分ける。
+   * 初めて使うときに作る。
+   */
+  workerID(): string {
+    return this.ctx.storage.transactionSync(() => {
+      const saved = this.ctx.storage.kv.get<string>("worker_id");
+      if (saved !== undefined) return saved;
+      const id = Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+      this.ctx.storage.kv.put("worker_id", id);
+      return id;
+    });
+  }
+
+  /** X から戻った処理を終える (コードを出した、または失敗した)。処理中の印を消し、片付けで購読を消せるようにする。 */
+  finishLogin(state: string): void {
+    this.ctx.storage.transactionSync(() => {
+      const logins = this.logins();
+      const kept = logins.filter((item) => item.state !== state);
+      if (kept.length !== logins.length) this.ctx.storage.kv.put("logins", kept);
+    });
+  }
+
+  /** Worker が作った購読の ID を、作ったらすぐ覚える。持ち主が手で作った購読は覚えず、消さない。 */
+  recordSubscriptions(recipient: string, ids: string[]): void {
+    if (ids.length === 0) return;
+    this.ctx.storage.transactionSync(() => {
+      const all = this.subscriptions();
+      all[recipient] = [...new Set([...(all[recipient] ?? []), ...ids])];
+      this.ctx.storage.kv.put("subscriptions", all);
+    });
+  }
+
+  /**
+   * 片付けの間 (`beginRelease` の後) に、一覧で見つけた Worker の tag の購読を記録に取り込む。
+   * 印を付けてから `unsureSettle` たって読み始めた一覧なら、確かめの印を外す (片付けの間は接続の処理が動いていないので、
+   * その一覧には作りかけの購読が出ている)。印が残ったら、外せるようになる時刻を返す。
+   */
+  adoptSubscriptions(recipient: string, ids: string[], listedAt: number): number | undefined {
+    return this.ctx.storage.transactionSync(() => {
+      if (ids.length > 0) {
+        const all = this.subscriptions();
+        all[recipient] = [...new Set([...(all[recipient] ?? []), ...ids])];
+        this.ctx.storage.kv.put("subscriptions", all);
+      }
+      const unsure = this.unsure();
+      const markedAt = unsure[recipient];
+      if (markedAt === undefined) return undefined;
+      if (markedAt + unsureSettle > listedAt) return markedAt + unsureSettle;
+      delete unsure[recipient];
+      this.ctx.storage.kv.put("unsure", unsure);
+      return undefined;
+    });
+  }
+
+  /** 購読を作り始める。作ったかどうか分からない購読が残りうるので、片付けで一覧を探して記録に取り込むまで印を残す。 */
+  markUnsure(recipient: string): void {
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.kv.put("unsure", { ...this.unsure(), [recipient]: Date.now() });
+    });
+  }
+
+  /** 消せた購読だけを記録から外す。 */
+  forgetSubscriptions(recipient: string, ids: string[]): void {
+    if (ids.length === 0) return;
+    this.ctx.storage.transactionSync(() => {
+      const all = this.subscriptions();
+      const kept = (all[recipient] ?? []).filter((id) => !ids.includes(id));
+      if (kept.length > 0) all[recipient] = kept;
+      else delete all[recipient];
+      this.ctx.storage.kv.put("subscriptions", all);
+    });
+  }
+
+  /**
+   * そのアカウントの購読の片付けを始める。使われていなければ、消している印を付けて、記録した ID と確かめの印の有無を返す。
+   * 印を付けている間は、接続の処理を始めない (`startProcessing`)。使われているか、ほかの片付けの途中なら undefined。
+   */
+  beginRelease(recipient: string, until: number): { ids: string[]; unsure: boolean } | undefined {
+    return this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
+      const releasing = this.releasing();
+      if (this.inUse(recipient, now) || (releasing[recipient] ?? 0) > now) return undefined;
+      releasing[recipient] = until;
+      this.ctx.storage.kv.put("releasing", releasing);
+      return {
+        ids: this.subscriptions()[recipient] ?? [],
+        unsure: this.unsure()[recipient] !== undefined,
+      };
+    });
+  }
+
+  /**
+   * 片付けを終える。消せなかったもの (`failed`) があれば、定期の処理で次に試すまでの間を延ばす (5 分から倍にし、1 日まで)。
+   * X が消すのを断り続ける購読に、5 分ごとに要求を送り続けないため。確かめの印を外せる時刻を待つだけのときや、
+   * 時間が足りずに試せなかったときは (`retryAt`)、失敗とは数えず、その時刻にやり直す。消せなかったものもあるときは、
+   * 早い方にやり直す (印を外せない間は、また `retryAt` が返るだけ)。
+   */
+  endRelease(recipient: string, outcome: { failed: boolean; retryAt?: number | undefined }): void {
+    this.ctx.storage.transactionSync(() => {
+      const releasing = this.releasing();
+      delete releasing[recipient];
+      this.ctx.storage.kv.put("releasing", releasing);
+      const backoff = this.backoff();
+      if (outcome.failed) {
+        const failures = (backoff[recipient]?.failures ?? 0) + 1;
+        backoff[recipient] = {
+          failures,
+          next: Math.min(
+            Date.now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 24 * 60 * 60_000),
+            outcome.retryAt ?? Number.POSITIVE_INFINITY,
+          ),
+        };
+      } else if (outcome.retryAt !== undefined)
+        backoff[recipient] = {
+          failures: backoff[recipient]?.failures ?? 0,
+          next: outcome.retryAt,
+        };
+      else delete backoff[recipient];
+      this.ctx.storage.kv.put("cleanup", backoff);
+    });
+  }
+
+  /** 定期の処理で片付けるアカウント。購読の記録か確かめの印があり、使われておらず、次に試す時刻が来たもの。 */
+  cleanupCandidates(): string[] {
+    const now = Date.now();
+    const backoff = this.backoff();
+    return [
+      ...new Set([...Object.keys(this.subscriptions()), ...Object.keys(this.unsure())]),
+    ].filter((recipient) => (backoff[recipient]?.next ?? 0) <= now && !this.inUse(recipient, now));
   }
 
   updateRoute(

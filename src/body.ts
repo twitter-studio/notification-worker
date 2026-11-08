@@ -30,3 +30,11 @@ export async function readBody(
   }
   return body;
 }
+
+/**
+ * 残った本文を捨てる。読み始めた本文はロックされていて、`cancel()` が reject するので、握りつぶす
+ * (読み終えた後に呼んでも、処理を止めない)。
+ */
+export async function discardBody(response: Response | undefined): Promise<void> {
+  await response?.body?.cancel().catch(() => {});
+}

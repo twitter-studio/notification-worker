@@ -20,7 +20,13 @@
     // X の Webhook の入口 (POST /webhooks/x)。実際の接続と費用の承認を得て設定するまで "false" のまま。
     "ENABLE_X_ACTIVITY": "false",
     // OAuth認可した本人のXユーザーID。有効化する前に自分のIDを設定。
-    "X_USER_ID": ""
+    "X_USER_ID": "",
+    // X でログインして接続する (ADR-0008 の段 3) ときの、自分の X アプリの OAuth 2.0 の Client ID。空なら /connect を出さない。
+    "X_OAUTH2_CLIENT_ID": "",
+    // X でログインして接続してよい X ユーザーの数値 ID。カンマ区切り。
+    "ALLOWED_X_USER_IDS": "",
+    // 接続のときに作る購読を付ける Webhook の ID。
+    "X_WEBHOOK_ID": ""
   },
   "queues": {
     "producers": [{ "binding": "X_EVENTS", "queue": "notification-x-events" }],
