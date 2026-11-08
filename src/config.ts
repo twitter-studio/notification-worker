@@ -21,15 +21,18 @@ export type RelayConfig = {
 };
 
 const RELAY_TOKEN = /^tsr_[A-Za-z0-9_-]{43}$/;
+export const RelayToken = z.string().regex(RELAY_TOKEN);
 export const RelayRouteID = z.uuid().transform((value) => value.toLowerCase());
-const NotificationTypes = z.array(z.enum(X_NOTIFICATION_TYPES)).max(X_NOTIFICATION_TYPES.length);
-const defaultNotificationTypes = ["mention", "reply"] as const;
+export const NotificationTypes = z
+  .array(z.enum(X_NOTIFICATION_TYPES))
+  .max(X_NOTIFICATION_TYPES.length);
+export const defaultNotificationTypes = ["mention", "reply"] as const;
 const XRelayRoutes = z.record(
   XUserID,
   z
     .array(
       z.strictObject({
-        relay_token: z.string().regex(RELAY_TOKEN),
+        relay_token: RelayToken,
         route_id: RelayRouteID,
         event_types: NotificationTypes.optional(),
         dm_preview_key: DmPreviewKey.optional().catch(undefined),
@@ -124,17 +127,7 @@ export function xRelayTargets(env: Env, allowPairingOnly = false): XRelayTarget[
   }
 
   const failure = new ConfigError("X_RELAY_ROUTES");
-  if (env.X_RELAY_ROUTES.length > 5_000) throw failure;
-  let value: unknown;
-  try {
-    value = JSON.parse(env.X_RELAY_ROUTES);
-  } catch {
-    throw failure;
-  }
-  const routes = XRelayRoutes.safeParse(value);
-  if (!routes.success) throw failure;
-  const entries = Object.entries(routes.data);
-  if (entries.length === 0 || entries.length > 8) throw failure;
+  const entries = xRelayRouteEntries(env.X_RELAY_ROUTES);
   const endpoint = relayEndpoint(env.RELAY_URL);
   const routeIDs = new Set<string>();
   const previewKeyCounts = new Map<string, number>();
@@ -162,6 +155,33 @@ export function xRelayTargets(env: Env, allowPairingOnly = false): XRelayTarget[
       };
     });
   });
+}
+
+function xRelayRouteEntries(value: string) {
+  const failure = new ConfigError("X_RELAY_ROUTES");
+  if (value.length > 5_000) throw failure;
+  let json: unknown;
+  try {
+    json = JSON.parse(value);
+  } catch {
+    throw failure;
+  }
+  const routes = XRelayRoutes.safeParse(json);
+  if (!routes.success) throw failure;
+  const entries = Object.entries(routes.data);
+  if (entries.length === 0 || entries.length > 8) throw failure;
+  return entries;
+}
+
+/**
+ * 手動の配送先に書かれた DM プレビューの鍵を、重なりを除く前の値で返す。
+ * `xRelayTargets` は重なった鍵を外して返すので、ペアリングの鍵との重なりはこちらで数える。
+ */
+export function manualDmPreviewKeys(env: Env): string[] {
+  if (usesPublicRelayTrial(env) || env.X_RELAY_ROUTES === undefined) return [];
+  return xRelayRouteEntries(env.X_RELAY_ROUTES).flatMap(([, targets]) =>
+    targets.flatMap(({ dm_preview_key }) => (dm_preview_key === undefined ? [] : [dm_preview_key])),
+  );
 }
 
 export function relayEndpoint(origin: string | undefined): URL {

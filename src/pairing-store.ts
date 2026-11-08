@@ -1,7 +1,46 @@
 import { DurableObject } from "cloudflare:workers";
-import { relayEndpoint, type XRelayTarget, xRelayTargets } from "./config";
+import {
+  defaultNotificationTypes,
+  manualDmPreviewKeys,
+  relayEndpoint,
+  type XRelayTarget,
+  xRelayTargets,
+} from "./config";
+import type { X_NOTIFICATION_TYPES } from "./normalize";
 
-type PairingRoute = { recipient: string; routeID: string; token: string; managementHash: string };
+type NotificationType = (typeof X_NOTIFICATION_TYPES)[number];
+type PairingRoute = {
+  recipient: string;
+  routeID: string;
+  token: string;
+  managementHash: string;
+  eventTypes?: NotificationType[];
+  dmPreviewKey?: string;
+};
+/** アプリに返すルートの設定。鍵の値は返さない (端末はもう持っていて、応答から鍵が漏れる経路を増やさない)。 */
+export type RouteSettings = { event_types: readonly NotificationType[]; dm_preview: boolean };
+export type RouteChanges = {
+  eventTypes?: NotificationType[];
+  dmPreviewKey?: string | null;
+  token?: string;
+};
+
+function routeSettings(route: PairingRoute): RouteSettings {
+  return {
+    event_types: route.eventTypes ?? defaultNotificationTypes,
+    dm_preview: route.dmPreviewKey !== undefined,
+  };
+}
+
+/** ルートごとに、この時間のうちに書き換えられる回数。アプリの不具合で書き続けても、配送が読む Durable Object を詰まらせない。 */
+const settingsWindow = 10 * 60_000;
+const settingsWritesPerWindow = 30;
+
+export type StoredRoute = PairingRoute & {
+  nextTestAt?: number;
+  settingsWrites?: number;
+  settingsWindowEndsAt?: number;
+};
 type Reservation = { routeID: string; managementHash: string; cancelled?: boolean };
 type Code = {
   recipient: string;
@@ -11,13 +50,66 @@ type Code = {
   usedBy?: Reservation;
   reservations?: Reservation[];
 };
-type State = { codes: Code[]; routes: (PairingRoute & { nextTestAt?: number })[] };
+type State = { codes: Code[]; routes: StoredRoute[] };
 
 declare global {
   interface Env {
     PAIRING_ROUTES?: DurableObjectNamespace<PairingStore>;
     PAIRING_ADMIN_TOKEN?: string;
   }
+}
+
+/** 手動の配送先のうち、ルートの変更と重なりを比べるもの。鍵は重なりを除く前の値。 */
+type ManualRoutes = { tokens: { recipient: string; token: string }[]; dmPreviewKeys: string[] };
+
+/**
+ * ルートに変更を当てた結果を決める。保存はしない。
+ * Durable Object の中の `env` と時刻はテストから変えられないので、重なりと回数の判定をここに切り出して試す。
+ */
+export function applyRouteChanges(
+  route: StoredRoute,
+  others: StoredRoute[],
+  manual: ManualRoutes,
+  changes: RouteChanges,
+  now: number,
+):
+  | { kind: "conflict" }
+  | { kind: "limited" }
+  | { kind: "unchanged" }
+  | { kind: "changed"; route: StoredRoute } {
+  // 生の値どうしで比べる。管理キーで認証した後の Durable Object の中の比較で、値は 256 ビットの乱数なので、時間の差から値は探れない。
+  // 同じアカウントで同じ資格情報を2つ持つと、同じ端末に二重に届く。鍵が重なると、どの端末の鍵か決まらない。
+  if (
+    (changes.token !== undefined &&
+      [...manual.tokens, ...others].some(
+        (item) => item.recipient === route.recipient && item.token === changes.token,
+      )) ||
+    (typeof changes.dmPreviewKey === "string" &&
+      (manual.dmPreviewKeys.includes(changes.dmPreviewKey) ||
+        others.some((item) => item.dmPreviewKey === changes.dmPreviewKey)))
+  )
+    return { kind: "conflict" };
+  const next: StoredRoute = { ...route };
+  if (changes.token !== undefined) next.token = changes.token;
+  if (changes.eventTypes !== undefined) next.eventTypes = [...new Set(changes.eventTypes)];
+  if (changes.dmPreviewKey === null) delete next.dmPreviewKey;
+  else if (changes.dmPreviewKey !== undefined) next.dmPreviewKey = changes.dmPreviewKey;
+  if (JSON.stringify(next) === JSON.stringify(route)) return { kind: "unchanged" };
+  // 鍵を外す・種類を減らすだけの変更は数えない。上限に達した後でも、受け取るものを絞れるようにする。
+  const current = new Set(route.eventTypes ?? defaultNotificationTypes);
+  const narrowing =
+    next.token === route.token &&
+    (next.dmPreviewKey === undefined || next.dmPreviewKey === route.dmPreviewKey) &&
+    (next.eventTypes ?? defaultNotificationTypes).every((type) => current.has(type));
+  if (!narrowing) {
+    const windowEndsAt = route.settingsWindowEndsAt ?? 0;
+    const windowOpen = windowEndsAt > now;
+    const writes = windowOpen ? (route.settingsWrites ?? 0) : 0;
+    if (writes >= settingsWritesPerWindow) return { kind: "limited" };
+    next.settingsWrites = writes + 1;
+    next.settingsWindowEndsAt = windowOpen ? windowEndsAt : now + settingsWindow;
+  }
+  return { kind: "changed", route: next };
 }
 
 export class PairingStore extends DurableObject<Env> {
@@ -68,10 +160,12 @@ export class PairingStore extends DurableObject<Env> {
     });
   }
 
-  list(): { x_user_id: string; route_id: string }[] {
-    return this.read().routes.map(({ recipient, routeID }) => ({
-      x_user_id: recipient,
-      route_id: routeID,
+  /** 管理者の一覧。端末が自分で選んだ種類と、DM プレビューの有無も出し、DM を受け取っている端末を外せるようにする。 */
+  list(): ({ x_user_id: string; route_id: string } & RouteSettings)[] {
+    return this.read().routes.map((route) => ({
+      x_user_id: route.recipient,
+      route_id: route.routeID,
+      ...routeSettings(route),
     }));
   }
 
@@ -154,6 +248,39 @@ export class PairingStore extends DurableObject<Env> {
     });
   }
 
+  updateRoute(
+    routeID: string,
+    managementHash: string,
+    changes: RouteChanges,
+  ): { kind: "missing" | "conflict" | "limited" } | { kind: "updated"; settings: RouteSettings } {
+    return this.ctx.storage.transactionSync(() => {
+      const state = this.read();
+      const index = state.routes.findIndex(
+        (item) => item.routeID === routeID && item.managementHash === managementHash,
+      );
+      const route = state.routes[index];
+      if (!route) return { kind: "missing" };
+      const result = applyRouteChanges(
+        route,
+        state.routes.filter((item) => item !== route),
+        {
+          tokens: xRelayTargets(this.env, true).map((item) => ({
+            recipient: item.recipient,
+            token: item.config.token,
+          })),
+          dmPreviewKeys: manualDmPreviewKeys(this.env),
+        },
+        changes,
+        Date.now(),
+      );
+      if (result.kind === "unchanged") return { kind: "updated", settings: routeSettings(route) };
+      if (result.kind === "conflict" || result.kind === "limited") return { kind: result.kind };
+      state.routes[index] = result.route;
+      this.ctx.storage.kv.put("pairing", state);
+      return { kind: "updated", settings: routeSettings(result.route) };
+    });
+  }
+
   reserveTest(
     routeID: string,
     managementHash: string,
@@ -172,11 +299,13 @@ export class PairingStore extends DurableObject<Env> {
     });
   }
 
-  targets(): Pick<PairingRoute, "recipient" | "routeID" | "token">[] {
-    return this.read().routes.map(({ recipient, routeID, token }) => ({
+  targets(): Omit<PairingRoute, "managementHash">[] {
+    return this.read().routes.map(({ recipient, routeID, token, eventTypes, dmPreviewKey }) => ({
       recipient,
       routeID,
       token,
+      ...(eventTypes === undefined ? {} : { eventTypes }),
+      ...(dmPreviewKey === undefined ? {} : { dmPreviewKey }),
     }));
   }
 }
@@ -198,7 +327,14 @@ export async function deliveryTargets(env: Env): Promise<XRelayTarget[]> {
   if (!paired?.length) return manual;
   const endpoint = relayEndpoint(env.RELAY_URL);
   const accounts = new Set(manual.map((item) => item.recipient));
-  for (const { recipient, routeID, token } of paired) {
+  // 手動の鍵は重なりを除く前の値で数える。重なった鍵は、手動とペアリングのどちらのルートでも使わない。
+  const keyCounts = new Map<string, number>();
+  for (const key of [...manualDmPreviewKeys(env), ...paired.map((item) => item.dmPreviewKey)])
+    if (key !== undefined) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+  for (const target of manual)
+    if (target.dmPreviewKey !== undefined && keyCounts.get(target.dmPreviewKey) !== 1)
+      target.dmPreviewKey = undefined;
+  for (const { recipient, routeID, token, eventTypes, dmPreviewKey } of paired) {
     const sameRecipient = manual.filter((item) => item.recipient === recipient);
     if (
       manual.some((item) => item.routeID === routeID) ||
@@ -212,7 +348,9 @@ export async function deliveryTargets(env: Env): Promise<XRelayTarget[]> {
       recipient,
       routeID,
       config: { endpoint, token },
-      eventTypes: ["mention", "reply"],
+      eventTypes: eventTypes ?? defaultNotificationTypes,
+      dmPreviewKey:
+        dmPreviewKey !== undefined && keyCounts.get(dmPreviewKey) === 1 ? dmPreviewKey : undefined,
     });
   }
   return manual;
