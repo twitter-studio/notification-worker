@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { readBody } from "./body";
-import { RelayRouteID, relayEndpoint } from "./config";
+import { NotificationTypes, RelayRouteID, RelayToken, relayEndpoint } from "./config";
+import { DmPreviewKey } from "./dm-preview";
 import { pairingStore } from "./pairing-store";
 import { type RelayDeps, sendToRelay } from "./relay";
 import { XUserID } from "./x-activity";
@@ -8,7 +9,7 @@ import { XUserID } from "./x-activity";
 const Account = z.strictObject({ x_user_id: XUserID });
 const Connection = Account.extend({
   route_id: RelayRouteID,
-  relay_token: z.string().regex(/^tsr_[A-Za-z0-9_-]{43}$/),
+  relay_token: RelayToken,
   code: z.string().regex(/^tpc_[A-Za-z0-9_-]{43}$/),
 });
 const Hex = z.string().regex(/^[a-f0-9]{64}$/);
@@ -19,6 +20,12 @@ const Challenge = Account.extend({
   management_hash: Hex,
 });
 const Route = z.strictObject({ route_id: RelayRouteID });
+// 読むための API を別に作らず、変える項目のない要求を読み取りにする。アプリは同じ呼び出しで、今の値を読んでから変えられる。
+const Settings = Route.extend({
+  event_types: NotificationTypes.optional(),
+  dm_preview_key: DmPreviewKey.nullable().optional(),
+  relay_token: RelayToken.optional(),
+});
 
 function response(status: number, data?: unknown) {
   const headers = { "Cache-Control": "no-store" };
@@ -52,7 +59,8 @@ export async function handlePairing(
 ): Promise<Response> {
   const store = pairingStore(env);
   if (!store) return response(404);
-  if (path === "/v1/pairing" && request.method === "GET") return response(200, { version: 1 });
+  // 版 2 で設定の API を足した。利用者が自分で置く Worker には古い版が残るので、アプリは呼ぶ前に版を確かめる。
+  if (path === "/v1/pairing" && request.method === "GET") return response(200, { version: 2 });
   if (request.method !== "POST") return response(405);
   const auth = request.headers.get("Authorization") ?? "";
   const issue = path === "/v1/pairing/codes";
@@ -143,6 +151,19 @@ export async function handlePairing(
       managementHash,
     });
     return response(result === "connected" ? 204 : result === "invalid" ? 401 : 409);
+  }
+  if (path === "/v1/pairing/settings") {
+    const parsed = Settings.safeParse(json);
+    if (!parsed.success) return response(422);
+    const { route_id, event_types, dm_preview_key, relay_token } = parsed.data;
+    const result = await store.updateRoute(route_id, managementHash, {
+      ...(event_types === undefined ? {} : { eventTypes: event_types }),
+      ...(dm_preview_key === undefined ? {} : { dmPreviewKey: dm_preview_key }),
+      ...(relay_token === undefined ? {} : { token: relay_token }),
+    });
+    if (result.kind !== "updated")
+      return response(result.kind === "missing" ? 404 : result.kind === "limited" ? 429 : 409);
+    return response(200, result.settings);
   }
   const parsed = Route.safeParse(json);
   if (!parsed.success) return response(422);

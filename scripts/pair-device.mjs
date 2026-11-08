@@ -40,9 +40,17 @@ try {
     const { routes } = await response.json();
     if (!Array.isArray(routes)) throw new Error();
     for (const route of routes) {
-      if (!/^[1-9][0-9]{0,18}$/.test(route.x_user_id) || !/^[a-f0-9-]{36}$/.test(route.route_id))
+      if (
+        !/^[1-9][0-9]{0,18}$/.test(route.x_user_id) ||
+        !/^[a-f0-9-]{36}$/.test(route.route_id) ||
+        !Array.isArray(route.event_types) ||
+        !route.event_types.every((type) => /^[a-z]{2,10}$/.test(type)) ||
+        typeof route.dm_preview !== "boolean"
+      )
         throw new Error();
-      process.stdout.write(`${route.x_user_id} ${route.route_id}\n`);
+      const types = route.event_types.length ? route.event_types.join(",") : "-";
+      const preview = route.dm_preview ? "dm-preview" : "-";
+      process.stdout.write(`${route.x_user_id} ${route.route_id} ${types} ${preview}\n`);
     }
   } else if (action === "revoke" && response.status === 204) {
     process.stdout.write("Connection removed.\n");
