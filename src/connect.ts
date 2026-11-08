@@ -261,7 +261,7 @@ async function connect(
   if (user.data.data.id !== login.recipient || !config.allowed.has(user.data.data.id))
     return fail("wrong_account");
   // 処理中の印は、本人を確かめた後に付ける (前に付けると、誰でも戻り先を開くだけで片付けを止められる)。
-  // 片付けがこのアカウントの購読を消している間は、消される購読を使ってしまうので、少し待ってからやり直してもらう。
+  // 片付けがこのアカウントの購読を消している間や、同じアカウントのほかの接続が処理中の間は、少し待ってからやり直してもらう。
   if (!(await store.startProcessing(state, Date.now() + processingLease))) return fail("busy");
 
   if (

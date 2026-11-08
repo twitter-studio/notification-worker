@@ -786,6 +786,20 @@ describe("keeping Worker subscriptions in step with connections", () => {
     expect(await recorded(env, manualUser)).toEqual(["900"]);
   });
 
+  test("finishes one connection for an account at a time", async () => {
+    const user = "3131313131313131313";
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const first = await startLogin(env, x, user, "mention", `tpm_${"6".repeat(43)}`);
+    const second = await startLogin(env, x, user, "mention", `tpm_${"7".repeat(43)}`);
+    await store(env).takeLogin(first.state);
+    await store(env).takeLogin(second.state);
+    expect(await store(env).startProcessing(first.state, Date.now() + 60_000)).toBe(true);
+    expect(await store(env).startProcessing(second.state, Date.now() + 60_000)).toBe(false);
+    await store(env).finishLogin(first.state);
+    expect(await store(env).startProcessing(second.state, Date.now() + 60_000)).toBe(true);
+  });
+
   test("does not push out a login that came back from X while a stranger keeps starting logins", async () => {
     const user = "2929292929292929292";
     const env = connectEnv(user);

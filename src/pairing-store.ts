@@ -402,16 +402,26 @@ export class PairingStore extends DurableObject<Env> {
   }
 
   /**
-   * 本人を確かめた後、購読を作る前に、処理中の印を付ける。
-   * 片付けがそのアカウントの購読を消している間は付けずに false を返す (消されている購読を「ある」とみなして使わないように)。
+   * 本人を確かめた後、購読を作る前に、処理中の印を付ける。次のときは付けずに false を返す。
+   * - 片付けがそのアカウントの購読を消している (消されている購読を「ある」とみなして使わないように)。
+   * - 同じアカウントのほかの接続が処理中 (後の接続が先の接続の作った購読を使った後、先の接続が失敗して戻すと、
+   *   使われている購読まで消してしまう)。
    */
   startProcessing(state: string, until: number): boolean {
     return this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
       const logins = this.logins();
       const login = logins.find(
         (item) => item.state === state && item.used === true && item.processingUntil === undefined,
       );
-      if (!login || (this.releasing()[login.recipient] ?? 0) > Date.now()) return false;
+      if (
+        !login ||
+        (this.releasing()[login.recipient] ?? 0) > now ||
+        logins.some(
+          (item) => item.recipient === login.recipient && (item.processingUntil ?? 0) > now,
+        )
+      )
+        return false;
       login.processingUntil = until;
       this.ctx.storage.kv.put("logins", logins);
       return true;
