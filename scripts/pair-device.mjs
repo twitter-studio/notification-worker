@@ -39,18 +39,18 @@ try {
   } else if (list && response.status === 200) {
     const { routes } = await response.json();
     if (!Array.isArray(routes)) throw new Error();
+    const types = ["mention", "reply", "retweet", "quote", "like", "follow", "dm"];
     for (const route of routes) {
-      if (
-        !/^[1-9][0-9]{0,18}$/.test(route.x_user_id) ||
-        !/^[a-f0-9-]{36}$/.test(route.route_id) ||
-        !Array.isArray(route.event_types) ||
-        !route.event_types.every((type) => /^[a-z]{2,10}$/.test(type)) ||
-        typeof route.dm_preview !== "boolean"
-      )
+      if (!/^[1-9][0-9]{0,18}$/.test(route.x_user_id) || !/^[a-f0-9-]{36}$/.test(route.route_id))
         throw new Error();
-      const types = route.event_types.length ? route.event_types.join(",") : "-";
-      const preview = route.dm_preview ? "dm-preview" : "-";
-      process.stdout.write(`${route.x_user_id} ${route.route_id} ${types} ${preview}\n`);
+      // 版 1 の Worker は種類と DM プレビューを返さない。一覧は外す配送先を確かめるのに使うので、止めずに ? を出す。
+      const listed =
+        Array.isArray(route.event_types) &&
+        route.event_types.every((type) => typeof type === "string" && types.includes(type));
+      const eventTypes = listed ? route.event_types.join(",") || "-" : "?";
+      const preview =
+        typeof route.dm_preview === "boolean" ? (route.dm_preview ? "dm-preview" : "-") : "?";
+      process.stdout.write(`${route.x_user_id} ${route.route_id} ${eventTypes} ${preview}\n`);
     }
   } else if (action === "revoke" && response.status === 204) {
     process.stdout.write("Connection removed.\n");

@@ -36,7 +36,7 @@ function routeSettings(route: PairingRoute): RouteSettings {
 const settingsWindow = 10 * 60_000;
 const settingsWritesPerWindow = 30;
 
-type StoredRoute = PairingRoute & {
+export type StoredRoute = PairingRoute & {
   nextTestAt?: number;
   settingsWrites?: number;
   settingsWindowEndsAt?: number;
@@ -57,6 +57,59 @@ declare global {
     PAIRING_ROUTES?: DurableObjectNamespace<PairingStore>;
     PAIRING_ADMIN_TOKEN?: string;
   }
+}
+
+/** 手動の配送先のうち、ルートの変更と重なりを比べるもの。鍵は重なりを除く前の値。 */
+type ManualRoutes = { tokens: { recipient: string; token: string }[]; dmPreviewKeys: string[] };
+
+/**
+ * ルートに変更を当てた結果を決める。保存はしない。
+ * Durable Object の中の `env` と時刻はテストから変えられないので、重なりと回数の判定をここに切り出して試す。
+ */
+export function applyRouteChanges(
+  route: StoredRoute,
+  others: StoredRoute[],
+  manual: ManualRoutes,
+  changes: RouteChanges,
+  now: number,
+):
+  | { kind: "conflict" }
+  | { kind: "limited" }
+  | { kind: "unchanged" }
+  | { kind: "changed"; route: StoredRoute } {
+  // 生の値どうしで比べる。管理キーで認証した後の Durable Object の中の比較で、値は 256 ビットの乱数なので、時間の差から値は探れない。
+  // 同じアカウントで同じ資格情報を2つ持つと、同じ端末に二重に届く。鍵が重なると、どの端末の鍵か決まらない。
+  if (
+    (changes.token !== undefined &&
+      [...manual.tokens, ...others].some(
+        (item) => item.recipient === route.recipient && item.token === changes.token,
+      )) ||
+    (typeof changes.dmPreviewKey === "string" &&
+      (manual.dmPreviewKeys.includes(changes.dmPreviewKey) ||
+        others.some((item) => item.dmPreviewKey === changes.dmPreviewKey)))
+  )
+    return { kind: "conflict" };
+  const next: StoredRoute = { ...route };
+  if (changes.token !== undefined) next.token = changes.token;
+  if (changes.eventTypes !== undefined) next.eventTypes = [...new Set(changes.eventTypes)];
+  if (changes.dmPreviewKey === null) delete next.dmPreviewKey;
+  else if (changes.dmPreviewKey !== undefined) next.dmPreviewKey = changes.dmPreviewKey;
+  if (JSON.stringify(next) === JSON.stringify(route)) return { kind: "unchanged" };
+  // 鍵を外す・種類を減らすだけの変更は数えない。上限に達した後でも、受け取るものを絞れるようにする。
+  const current = new Set(route.eventTypes ?? defaultNotificationTypes);
+  const narrowing =
+    changes.token === undefined &&
+    typeof changes.dmPreviewKey !== "string" &&
+    (changes.eventTypes ?? []).every((type) => current.has(type));
+  if (!narrowing) {
+    const windowEndsAt = route.settingsWindowEndsAt ?? 0;
+    const windowOpen = windowEndsAt > now;
+    const writes = windowOpen ? (route.settingsWrites ?? 0) : 0;
+    if (writes >= settingsWritesPerWindow) return { kind: "limited" };
+    next.settingsWrites = writes + 1;
+    next.settingsWindowEndsAt = windowOpen ? windowEndsAt : now + settingsWindow;
+  }
+  return { kind: "changed", route: next };
 }
 
 export class PairingStore extends DurableObject<Env> {
@@ -207,40 +260,24 @@ export class PairingStore extends DurableObject<Env> {
       );
       const route = state.routes[index];
       if (!route) return { kind: "missing" };
-      const others = state.routes.filter((item) => item !== route);
-      // 生の値どうしで比べる。管理キーで認証した後の Durable Object の中の比較で、値は 256 ビットの乱数なので、時間の差から値は探れない。
-      // 同じアカウントで同じ資格情報を2つ持つと、同じ端末に二重に届く。鍵が重なると、どの端末の鍵か決まらない。
-      if (
-        (changes.token !== undefined &&
-          [
-            ...xRelayTargets(this.env, true).map((item) => ({
-              recipient: item.recipient,
-              token: item.config.token,
-            })),
-            ...others,
-          ].some((item) => item.recipient === route.recipient && item.token === changes.token)) ||
-        (typeof changes.dmPreviewKey === "string" &&
-          (manualDmPreviewKeys(this.env).includes(changes.dmPreviewKey) ||
-            others.some((item) => item.dmPreviewKey === changes.dmPreviewKey)))
-      )
-        return { kind: "conflict" };
-      const next: StoredRoute = { ...route };
-      if (changes.token !== undefined) next.token = changes.token;
-      if (changes.eventTypes !== undefined) next.eventTypes = [...new Set(changes.eventTypes)];
-      if (changes.dmPreviewKey === null) delete next.dmPreviewKey;
-      else if (changes.dmPreviewKey !== undefined) next.dmPreviewKey = changes.dmPreviewKey;
-      if (JSON.stringify(next) === JSON.stringify(route))
-        return { kind: "updated", settings: routeSettings(route) };
-      const now = Date.now();
-      const windowEndsAt = route.settingsWindowEndsAt ?? 0;
-      const windowOpen = windowEndsAt > now;
-      const writes = windowOpen ? (route.settingsWrites ?? 0) : 0;
-      if (writes >= settingsWritesPerWindow) return { kind: "limited" };
-      next.settingsWrites = writes + 1;
-      next.settingsWindowEndsAt = windowOpen ? windowEndsAt : now + settingsWindow;
-      state.routes[index] = next;
+      const result = applyRouteChanges(
+        route,
+        state.routes.filter((item) => item !== route),
+        {
+          tokens: xRelayTargets(this.env, true).map((item) => ({
+            recipient: item.recipient,
+            token: item.config.token,
+          })),
+          dmPreviewKeys: manualDmPreviewKeys(this.env),
+        },
+        changes,
+        Date.now(),
+      );
+      if (result.kind === "unchanged") return { kind: "updated", settings: routeSettings(route) };
+      if (result.kind === "conflict" || result.kind === "limited") return { kind: result.kind };
+      state.routes[index] = result.route;
       this.ctx.storage.kv.put("pairing", state);
-      return { kind: "updated", settings: routeSettings(next) };
+      return { kind: "updated", settings: routeSettings(result.route) };
     });
   }
 

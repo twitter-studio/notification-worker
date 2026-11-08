@@ -1,7 +1,7 @@
-import { expect, test } from "vitest";
+import { describe, expect, onTestFinished, test } from "vitest";
 import { z } from "zod";
 import { handle } from "../src/app";
-import { deliveryTargets } from "../src/pairing-store";
+import { applyRouteChanges, deliveryTargets, type StoredRoute } from "../src/pairing-store";
 import { handleXQueue, relayBinding } from "../src/x-queue";
 import { fakeRelay, testEnv } from "./helpers";
 
@@ -129,10 +129,13 @@ test("pairs only the selected account once, tests its relay, and removes just th
   expect(relay.sent).toHaveLength(1);
 });
 
-test("pairing is opt-in and disabled during a relay trial", async () => {
+test("pairing is opt-in, reports the settings version, and is disabled during a relay trial", async () => {
   const request = new Request("https://worker.test/v1/pairing");
   const { deps } = fakeRelay();
   expect((await handle(request, testEnv(), deps)).status).toBe(404);
+  const enabled = await handle(request, testEnv({ PAIRING_ADMIN_TOKEN: admin }), deps);
+  expect(enabled.status).toBe(200);
+  expect(await enabled.json()).toEqual({ version: 2 });
   expect(
     (
       await handle(
@@ -189,7 +192,11 @@ test("a paired route's owner can read and change its types, DM preview key, and 
     return route_id;
   };
   const route_id = await pair(user, manager, relayToken);
+  onTestFinished(() => call("/disconnect", manager, { route_id }).then(() => undefined));
   const otherRoute = await pair(otherUser, otherManager, `tsr_${"F".repeat(43)}`);
+  onTestFinished(() =>
+    call("/disconnect", otherManager, { route_id: otherRoute }).then(() => undefined),
+  );
   const settings = async (body: Record<string, unknown>, token = manager) => {
     const response = await call("/settings", token, { route_id, ...body });
     return {
@@ -243,6 +250,9 @@ test("a paired route's owner can read and change its types, DM preview key, and 
   const sameAccountToken = `tsr_${"H".repeat(43)}`;
   const sameAccountManager = `tpm_${"H".repeat(43)}`;
   const sameAccountRoute = await pair(user, sameAccountManager, sameAccountToken);
+  onTestFinished(() =>
+    call("/disconnect", sameAccountManager, { route_id: sameAccountRoute }).then(() => undefined),
+  );
   expect((await settings({ relay_token: env.RELAY_TOKEN })).status).toBe(409);
   expect((await settings({ event_types: ["like"], relay_token: sameAccountToken })).status).toBe(
     409,
@@ -283,11 +293,6 @@ test("a paired route's owner can read and change its types, DM preview key, and 
   expect(relay.sent).toHaveLength(0);
   expect((await call("/test", manager, { route_id })).status).toBe(202);
   expect(relay.sent.at(-1)).toMatchObject({ authorization: `Bearer ${rotated}` });
-
-  // Durable Object の保存は同じファイルのテストで引き継がれるので、足したルートを外しておく。
-  await call("/disconnect", manager, { route_id });
-  await call("/disconnect", otherManager, { route_id: otherRoute });
-  await call("/disconnect", sameAccountManager, { route_id: sameAccountRoute });
 });
 
 test("a DM preview key that any other route also has is used by none of them", async () => {
@@ -321,6 +326,7 @@ test("a DM preview key that any other route also has is used by none of them", a
   expect(
     (await call("", manager, { x_user_id: user, route_id, relay_token: relayToken, code })).status,
   ).toBe(204);
+  onTestFinished(() => call("/disconnect", manager, { route_id }).then(() => undefined));
   const key = `${"K".repeat(42)}A`;
   expect((await call("/settings", manager, { route_id, dm_preview_key: key })).status).toBe(200);
 
@@ -347,11 +353,9 @@ test("a DM preview key that any other route also has is used by none of them", a
   expect(shared[manualRoute]).toBeUndefined();
   const duplicatedManually = await keys(withManualKey(key, key));
   expect(duplicatedManually[route_id]).toBeUndefined();
-
-  await call("/disconnect", manager, { route_id });
 });
 
-test("settings writes are limited per route, but reads and unchanged writes are free", async () => {
+test("settings writes are limited per route, but reads, unchanged writes, and narrowing are free", async () => {
   const env = testEnv({ PAIRING_ADMIN_TOKEN: admin });
   const limitToken = `tsr_${"L".repeat(43)}`;
   const limitManager = `tpm_${"L".repeat(43)}`;
@@ -385,19 +389,85 @@ test("settings writes are limited per route, but reads and unchanged writes are 
     (await call("", limitManager, { x_user_id: user, route_id, relay_token: limitToken, code }))
       .status,
   ).toBe(204);
+  onTestFinished(() => call("/disconnect", limitManager, { route_id }).then(() => undefined));
+  const settings = (body: Record<string, unknown>) =>
+    call("/settings", limitManager, { route_id, ...body });
 
+  // 種類を入れ替える書き換えは、減らすだけの変更ではないので数える。
   for (let index = 0; index < 30; index += 1) {
-    const event_types = index % 2 === 0 ? ["mention"] : ["reply"];
-    expect((await call("/settings", limitManager, { route_id, event_types })).status).toBe(200);
-    expect((await call("/settings", limitManager, { route_id, event_types })).status).toBe(200);
-    expect((await call("/settings", limitManager, { route_id })).status).toBe(200);
+    const event_types = index % 2 === 0 ? ["like"] : ["reply"];
+    expect((await settings({ event_types })).status).toBe(200);
+    expect((await settings({ event_types })).status).toBe(200);
+    expect((await settings({})).status).toBe(200);
   }
-  expect((await call("/settings", limitManager, { route_id, event_types: ["like"] })).status).toBe(
-    429,
-  );
-  expect(await (await call("/settings", limitManager, { route_id })).json()).toEqual({
-    event_types: ["reply"],
-    dm_preview: false,
+  expect((await settings({ event_types: ["mention"] })).status).toBe(429);
+  expect((await settings({ event_types: [], dm_preview_key: null })).status).toBe(200);
+  expect(await (await settings({})).json()).toEqual({ event_types: [], dm_preview: false });
+});
+
+describe("applyRouteChanges", () => {
+  const route: StoredRoute = {
+    recipient: user,
+    routeID: "00000000-0000-4000-a000-000000000001",
+    token: relayToken,
+    managementHash: "a".repeat(64),
+  };
+  const none = { tokens: [], dmPreviewKeys: [] };
+  const key = `${"K".repeat(42)}A`;
+
+  test("refuses a key that a manual route has, even when the manual routes repeat it", () => {
+    expect(
+      applyRouteChanges(
+        route,
+        [],
+        { tokens: [], dmPreviewKeys: [key, key] },
+        { dmPreviewKey: key },
+        0,
+      ),
+    ).toEqual({ kind: "conflict" });
   });
-  await call("/disconnect", limitManager, { route_id });
+
+  test("refuses a credential that a manual route of the same account has, but not another account's", () => {
+    const token = `tsr_${"M".repeat(43)}`;
+    expect(
+      applyRouteChanges(
+        route,
+        [],
+        { tokens: [{ recipient: user, token }], dmPreviewKeys: [] },
+        { token },
+        0,
+      ),
+    ).toEqual({ kind: "conflict" });
+    expect(
+      applyRouteChanges(
+        route,
+        [],
+        { tokens: [{ recipient: otherUser, token }], dmPreviewKeys: [] },
+        { token },
+        0,
+      ).kind,
+    ).toBe("changed");
+  });
+
+  test("counts writes in a ten-minute window and starts again after it closes", () => {
+    const limited: StoredRoute = { ...route, settingsWrites: 30, settingsWindowEndsAt: 600_000 };
+    expect(applyRouteChanges(limited, [], none, { eventTypes: ["like"] }, 599_999)).toEqual({
+      kind: "limited",
+    });
+    const reopened = applyRouteChanges(limited, [], none, { eventTypes: ["like"] }, 600_000);
+    expect(reopened).toMatchObject({
+      kind: "changed",
+      route: { eventTypes: ["like"], settingsWrites: 1, settingsWindowEndsAt: 1_200_000 },
+    });
+    expect(
+      applyRouteChanges(limited, [], none, { eventTypes: ["mention"] }, 599_999),
+    ).toMatchObject({
+      kind: "changed",
+      route: { settingsWrites: 30, settingsWindowEndsAt: 600_000 },
+    });
+    const typed: StoredRoute = { ...limited, eventTypes: ["reply", "mention"] };
+    expect(
+      applyRouteChanges(typed, [], none, { eventTypes: ["reply", "mention", "reply"] }, 0),
+    ).toEqual({ kind: "unchanged" });
+  });
 });
