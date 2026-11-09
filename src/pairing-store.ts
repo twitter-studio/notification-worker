@@ -65,6 +65,15 @@ export type Login = {
    */
   processingUntil?: number;
 };
+/** `/setup` の X のログインの途中の状態。verifier は PKCE のもので、Worker の外へ出さない。 */
+export type SetupLogin = {
+  state: string;
+  verifier: string;
+  /** ログインを始めたブラウザに置いた Cookie のハッシュ。別のブラウザで終えたログイン (罠のリンク) を断る。 */
+  browserHash: string;
+  redirectURI: string;
+  expires: number;
+};
 /** 消せなかった購読を、次に消し直す時刻。失敗が続くほど間を延ばす。 */
 type Backoff = { failures: number; next: number };
 /**
@@ -423,6 +432,47 @@ export class PairingStore extends DurableObject<Env> {
       );
       return { login, expired };
     });
+  }
+
+  /**
+   * `/setup` の X のログインの途中の状態を置く。期限の切れたものを除き、8 つを超えたら古いものから置き換える
+   * (外から何度でも始められるので、断ると、他人が枠を埋めるだけで持ち主が設定できなくなる)。
+   * 接続のログイン (`logins`) とは分けて置く: アカウントにも購読の片付けにも関わらないため。
+   */
+  beginSetup(login: SetupLogin): void {
+    this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
+      const logins = (this.ctx.storage.kv.get<SetupLogin[]>("setup_logins") ?? []).filter(
+        (item) => item.expires > now,
+      );
+      this.ctx.storage.kv.put("setup_logins", [...logins.slice(-7), login]);
+    });
+  }
+
+  /**
+   * state で `/setup` のログインを引き、消す (使い切り)。期限が切れていても返す (`expired`)。
+   * 見つからなければ書き込まない (`/oauth/callback` は、接続のログインの戻りでもあるため)。
+   */
+  takeSetup(state: string): { login?: SetupLogin; expired?: boolean } {
+    return this.ctx.storage.transactionSync(() => {
+      const logins = this.ctx.storage.kv.get<SetupLogin[]>("setup_logins") ?? [];
+      const login = logins.find((item) => item.state === state);
+      if (!login) return {};
+      this.ctx.storage.kv.put(
+        "setup_logins",
+        logins.filter((item) => item !== login),
+      );
+      return { login, expired: login.expires <= Date.now() };
+    });
+  }
+
+  /** `/setup` で用意した、この Worker の Webhook の ID。 */
+  webhookID(): string | undefined {
+    return this.ctx.storage.kv.get<string>("webhook_id");
+  }
+
+  saveWebhookID(id: string): void {
+    this.ctx.storage.kv.put("webhook_id", id);
   }
 
   /**

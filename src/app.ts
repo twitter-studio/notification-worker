@@ -6,6 +6,7 @@ import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
 import { handlePairing } from "./pairing";
 import { deliveryTargets } from "./pairing-store";
 import { MAX_SUBREQUESTS, type RelayDeps, type RelayOutcome, sendToRelay } from "./relay";
+import { handleCallback, handleSetup } from "./setup";
 import { recordObservation } from "./telemetry";
 import { MIN_SECRET_LENGTH, verifyMockSignature } from "./verify";
 import { normalizeXEvent, verifyXSignature, xCRC } from "./x-activity";
@@ -254,8 +255,14 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
 
 export async function handle(request: Request, env: Env, deps: AppDeps): Promise<Response> {
   const { pathname } = new URL(request.url);
-  if (pathname === "/connect" || pathname === "/oauth/callback") {
+  if (pathname === "/connect") {
     return handleConnect(request, env, deps).catch(() => problem(503, "Service Unavailable"));
+  }
+  if (pathname === "/oauth/callback") {
+    return handleCallback(request, env, deps).catch(() => problem(503, "Service Unavailable"));
+  }
+  if (pathname === "/setup") {
+    return handleSetup(request, env).catch(() => problem(503, "Service Unavailable"));
   }
   if (pathname === "/v1/pairing" || pathname.startsWith("/v1/pairing/")) {
     return handlePairing(request, pathname, env, deps).catch(() =>

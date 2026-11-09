@@ -92,7 +92,7 @@ export async function handlePairing(
   // 版 2 で設定の API、版 3 で X でログインして接続する入口 (`/connect`) を足した。利用者が自分で置く Worker には
   // 古い版が残るので、アプリは呼ぶ前に版を確かめる。`x_login` は、その Worker で `/connect` を使えるか。
   if (path === "/v1/pairing" && request.method === "GET")
-    return response(200, { version: 3, x_login: connectConfig(env) !== undefined });
+    return response(200, { version: 3, x_login: (await connectConfig(env, store)) !== undefined });
   if (request.method !== "POST") return response(405);
   const auth = request.headers.get("Authorization") ?? "";
   const issue = path === "/v1/pairing/codes";

@@ -38,7 +38,7 @@ const text = {
   },
 } as const;
 
-function html(value: string): string {
+export function html(value: string): string {
   return value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")

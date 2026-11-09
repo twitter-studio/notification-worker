@@ -28,7 +28,7 @@ const processingLease = 5 * 60_000;
 const browserCookie = "__Host-tweetbot-connect";
 /** 確かめのページを開いたブラウザに置く Cookie。「続ける」のフォームの値と照らし合わせる。 */
 const confirmCookie = "__Host-tweetbot-confirm";
-const Random = /^[A-Za-z0-9_-]{22,128}$/;
+export const Random = /^[A-Za-z0-9_-]{22,128}$/;
 const TokenReply = z.object({
   access_token: z.string().min(1).max(4096),
   token_type: z.string().regex(/^bearer$/i),
@@ -72,26 +72,26 @@ function refuse(params: URLSearchParams, status: number, message: string, error:
     : text(status, message);
 }
 
-function base64URL(bytes: Uint8Array): string {
+export function base64URL(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes))
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replace(/=+$/, "");
 }
 
-function random(): string {
+export function random(): string {
   return base64URL(crypto.getRandomValues(new Uint8Array(32)));
 }
 
-async function sha256(value: string): Promise<Uint8Array> {
+export async function sha256(value: string): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
 }
 
-async function hex(value: string): Promise<string> {
+export async function hex(value: string): Promise<string> {
   return Array.from(await sha256(value), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function cookieValue(request: Request, cookie: string): string | undefined {
+export function cookieValue(request: Request, cookie: string): string | undefined {
   for (const part of (request.headers.get("Cookie") ?? "").split(";")) {
     const [name, value] = part.trim().split("=", 2);
     if (name === cookie && value !== undefined && Random.test(value)) return value;
@@ -132,8 +132,8 @@ export async function handleConnect(
   env: Env,
   deps: RelayDeps,
 ): Promise<Response> {
-  const config = connectConfig(env);
   const store = pairingStore(env);
+  const config = await connectConfig(env, store);
   if (!config || !store) return text(404, "Not Found");
   const url = new URL(request.url);
   const method = url.pathname === "/connect" ? ["GET", "POST"] : ["GET"];
@@ -350,17 +350,19 @@ async function finish(
   }
 }
 
-async function connect(
+/**
+ * 認可コードをトークンに換え、ログインした本人の X ユーザー ID を読む。求めた scope がそろわなければ undefined。
+ * 認可コードは 30 秒で切れるので、戻ってきたらすぐに換える。トークンは保存しない。
+ * 使った後にトークンを取り消さない: 取り消すと本人の認可で作った購読も消えるかを、確かめられていないため (トークンは 2 時間で切れる)。
+ */
+export async function identify(
   code: string,
-  state: string,
-  login: NonNullable<Awaited<ReturnType<Store["takeLogin"]>>["login"]>,
-  config: ConnectConfig,
-  store: Store,
+  redirectURI: string,
+  verifier: string,
+  scopes: readonly string[],
+  config: { clientID: string; clientSecret: string },
   deps: RelayDeps,
-  fail: (error: string) => Response,
-): Promise<Response> {
-  // 認可コードは 30 秒で切れるので、ここで換える。トークンは保存しない。
-  // 使った後にトークンを取り消さない: 取り消すと本人の認可で作った購読も消えるかを、確かめられていないため (トークンは 2 時間で切れる)。
+): Promise<{ accessToken: string; userID: string } | undefined> {
   const exchanged = await deps
     .fetch("https://api.x.com/2/oauth2/token", {
       method: "POST",
@@ -371,8 +373,8 @@ async function connect(
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code,
-        redirect_uri: login.redirectURI,
-        code_verifier: login.verifier,
+        redirect_uri: redirectURI,
+        code_verifier: verifier,
       }),
       redirect: "manual",
       signal: AbortSignal.timeout(10_000),
@@ -382,8 +384,7 @@ async function connect(
     exchanged?.status === 200 ? TokenReply.safeParse(await readJSON(exchanged)) : undefined;
   await discardBody(exchanged);
   const granted = new Set(token?.success ? token.data.scope.split(" ") : []);
-  if (!token?.success || !scopesFor(login.eventTypes).every((scope) => granted.has(scope)))
-    return fail("unavailable");
+  if (!token?.success || !scopes.every((scope) => granted.has(scope))) return undefined;
   const accessToken = token.data.access_token;
 
   const me = await deps
@@ -395,10 +396,31 @@ async function connect(
     .catch(() => undefined);
   const user = me?.status === 200 ? Me.safeParse(await readJSON(me)) : undefined;
   await discardBody(me);
-  if (!user?.success) return fail("unavailable");
+  if (!user?.success) return undefined;
+  return { accessToken, userID: user.data.data.id };
+}
+
+async function connect(
+  code: string,
+  state: string,
+  login: NonNullable<Awaited<ReturnType<Store["takeLogin"]>>["login"]>,
+  config: ConnectConfig,
+  store: Store,
+  deps: RelayDeps,
+  fail: (error: string) => Response,
+): Promise<Response> {
+  const identified = await identify(
+    code,
+    login.redirectURI,
+    login.verifier,
+    scopesFor(login.eventTypes),
+    config,
+    deps,
+  );
+  if (!identified) return fail("unavailable");
+  const { accessToken, userID } = identified;
   // アプリで選んでいたアカウントと違う X アカウントでログインしたら、つながない (通知が別のアカウントに届く)。
-  if (user.data.data.id !== login.recipient || !config.allowed.has(user.data.data.id))
-    return fail("wrong_account");
+  if (userID !== login.recipient || !config.allowed.has(userID)) return fail("wrong_account");
   // 処理中の印は、本人を確かめた後に付ける (前に付けると、誰でも戻り先を開くだけで片付けを止められる)。
   // 片付けがこのアカウントの購読を消している間や、同じアカウントのほかの接続が処理中の間は、少し待ってからやり直してもらう。
   if (!(await store.startProcessing(state, Date.now() + processingLease))) return fail("busy");
