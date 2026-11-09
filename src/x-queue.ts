@@ -136,7 +136,15 @@ export async function handleXQueue(
       };
       const outcome = await sendToRelay(target.config, event, deps, { remaining: 3 });
       recordObservation({ kind: "delivery", type: parsed.data.event.type, outcome: outcome.kind });
-      if (outcome.kind === "accepted" || outcome.kind === "duplicate") {
+      // 資格情報が使えない (401、403) ときと、中継が受けない (413、415、422 など) ときは、やり直しても通らないので捨てる
+      // (notification-service の ADR-0007、ADR-0009)。やり直すと、認証の通らない要求を中継へ繰り返し送る。利用者は
+      // delivery の記録 (unauthorized) で気づき、RELAY_TOKEN を入れ替える。
+      if (
+        outcome.kind === "accepted" ||
+        outcome.kind === "duplicate" ||
+        outcome.kind === "unauthorized" ||
+        outcome.kind === "rejected"
+      ) {
         message.ack();
         continue;
       }
