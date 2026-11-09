@@ -136,7 +136,15 @@ export async function handleXQueue(
       };
       const outcome = await sendToRelay(target.config, event, deps, { remaining: 3 });
       recordObservation({ kind: "delivery", type: parsed.data.event.type, outcome: outcome.kind });
-      if (outcome.kind === "accepted" || outcome.kind === "duplicate") {
+      // 中継が資格情報を断った (401) ときは、やり直しても通らないので捨てる (notification-service の ADR-0007)。やり直すと、
+      // 認証の通らない要求を中継へ繰り返し送る。利用者は delivery の記録 (unauthorized) で気づき、中継の資格情報を入れ替える。
+      // 403 は捨てない: 中継は返さず、Cloudflare の edge の保護から一時的に来ることがある。rejected も捨てない: 中継が
+      // 受けない答え (413、415、422) のほかに、やり直す一覧にない 5xx (501、52x など) も入る。
+      if (
+        outcome.kind === "accepted" ||
+        outcome.kind === "duplicate" ||
+        (outcome.kind === "unauthorized" && outcome.status === 401)
+      ) {
         message.ack();
         continue;
       }
