@@ -166,7 +166,7 @@ test("a fresh Worker can have no manual routes when pairing is enabled", async (
   await expect(deliveryTargets(env)).rejects.toThrow();
 });
 
-test("Deploy to Cloudflare のボタンが置く空の値は、手動の配送先がないものとして扱う", async () => {
+test("手で置いた空の値は、手動の配送先がないものとして扱う", async () => {
   const env = testEnv({
     PAIRING_ADMIN_TOKEN: admin,
     X_USER_ID: "",

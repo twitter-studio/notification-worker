@@ -15,20 +15,19 @@
   // デプロイのとき、wrangler が「Preview URLs も有効にしては」と警告するが、無視してよい。
   "preview_urls": false,
   "vars": {
-    // 運営の通知の中継 API の URL (https、パスなし)。アプリの設定の画面に出る URL を入れる。
+    // 運営の通知の中継 API の URL (https、パスなし)。端末を登録した中継と同じにする (本番は https://notification-service-production.zunda-dev.workers.dev)。
     "RELAY_URL": "https://relay.example.invalid",
     // 模擬のイベントの入口 (POST /webhooks/mock)。試すときだけ "true" にし、MOCK_WEBHOOK_SECRET を置く。
     "ENABLE_MOCK_EVENTS": "false",
     // X の Webhook の入口 (POST /webhooks/x)。実際の接続と費用の承認を得て設定するまで "false" のまま。
     "ENABLE_X_ACTIVITY": "false",
-    // OAuth認可した本人のXユーザーID。有効化する前に自分のIDを設定。
-    "X_USER_ID": "",
     // X でログインして接続する (ADR-0008 の段 3) ときの、自分の X アプリの OAuth 2.0 の Client ID。空なら /connect を出さない。
     "X_OAUTH2_CLIENT_ID": "",
     // X でログインして接続してよい X ユーザーの数値 ID。カンマ区切り。
-    "ALLOWED_X_USER_IDS": "",
-    // 接続のときに作る購読を付ける Webhook の ID。空なら、`/setup` で用意した Webhook を使う。
-    "X_WEBHOOK_ID": ""
+    "ALLOWED_X_USER_IDS": ""
+    // 任意の変数は置かない (ボタンの配置の画面がどれも必須の欄にするため。#59)。要るときに足す:
+    // X_USER_ID: 手で配送先を設定するときの、OAuth 認可した本人の X ユーザー ID。
+    // X_WEBHOOK_ID: 接続のときに作る購読を付ける Webhook の ID。なければ、`/setup` で用意した Webhook を使う。
   },
   "queues": {
     "producers": [{ "binding": "X_EVENTS", "queue": "notification-x-events" }],

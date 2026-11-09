@@ -39,7 +39,7 @@ URLはこのCLIでは `https://<Worker名>.<サブドメイン>.workers.dev/webh
 
 ## 2. 無効状態で配置・監視する
 
-`wrangler.local.jsonc`でWorker名、アカウント、Queue名（producer/consumerの両方）、`RELAY_URL`、`X_USER_ID`を設定する。URLはアプリに出た運営APIのhttps originを正確に写す。中継資格情報が送られる先なので、第三者のURLを入力しない。X/mockの両入口はfalseに保つ。公開fetch・Cron・ログの秘匿設定・preview無効も設定例から引き継ぐ。
+`wrangler.local.jsonc`でWorker名、アカウント、Queue名（producer/consumerの両方）、`RELAY_URL`を設定し、`vars`に`X_USER_ID`を足す（設定の例には置いていない。#59）。`RELAY_URL`は、Tweetbotが端末を登録した運営APIのhttps originと同じにする。中継資格情報が送られる先なので、第三者のURLを入力しない。X/mockの両入口はfalseに保つ。公開fetch・Cron・ログの秘匿設定・preview無効も設定例から引き継ぐ。
 
 所有者の承認後、対象アカウントにQueueを1つ作る。保持24時間・並列1・再試行5回は設定例の範囲を維持する。新規D1は不要。Queue作成の操作例は次のとおり。アカウントと名前を確認した、範囲を絞った資格情報で実行する。
 

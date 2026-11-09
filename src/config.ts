@@ -52,8 +52,10 @@ export type XRelayTarget = {
 
 declare global {
   interface Env {
-    // 任意の秘密。Deploy to Cloudflare のボタンは .dev.vars.example の秘密をどれも必須にするので、そこには並べない。
+    // 任意の秘密と変数。Deploy to Cloudflare のボタンは .dev.vars.example の秘密と wrangler.jsonc の vars をどれも必須の
+    // 欄にするので、そこには並べない (#59)。
     RELAY_TOKEN?: string;
+    X_USER_ID?: string;
     MOCK_WEBHOOK_SECRET?: string;
     X_PREVIEW_BEARER_TOKEN?: string;
     X_RELAY_ROUTES?: string;
@@ -102,7 +104,7 @@ function usesPublicRelayTrial(env: Env): boolean {
   return env.PUBLIC_RELAY_TRIAL_UNTIL !== undefined || env.PUBLIC_RELAY_TRIAL_ORIGIN !== undefined;
 }
 
-/** 置いていない値。Deploy to Cloudflare のボタンは、空の vars (と、空の秘密も、かもしれない) を空の文字として置く。 */
+/** 置いていない値。空の文字 (手で空の値を置いたとき) も、置いていないものとして扱う。 */
 function unset(value: string | undefined): value is undefined | "" {
   return value === undefined || value === "";
 }

@@ -7,9 +7,14 @@ import { experimental_readRawConfig } from "wrangler";
 const root = resolve(import.meta.dirname, "../..");
 const read = (name) => experimental_readRawConfig({ config: resolve(root, name) }).rawConfig;
 /**
- * ボタンの設定に置かない、任意の vars。ボタンの配置の画面は vars をどれも必須の欄にするので、空でよいものは置かない。
+ * 設定に置かない、任意の vars。ボタンの配置の画面は vars をどれも必須の欄にするので、空でよいものは置かない (#59)。
+ * ボタンで写した先のリポジトリでは、利用者が `wrangler.jsonc` に足すことがある。
  */
 const optionalVars = ["X_USER_ID", "X_WEBHOOK_ID"];
+/** ボタンで写した先のリポジトリの CI か。写した先では、配置の画面で入れた値 (入口を開くなど) が書き込まれることがある。 */
+const copied =
+  process.env.GITHUB_REPOSITORY !== undefined &&
+  process.env.GITHUB_REPOSITORY !== "twitter-studio/notification-worker";
 const secrets = [
   ...readFileSync(resolve(root, ".dev.vars.example"), "utf8").matchAll(/^([A-Z0-9_]+)=/gm),
 ].map(([, name]) => name);
@@ -50,11 +55,6 @@ test("ボタンの設定は、基本の設定に端末の接続と回数の上�
   assert.equal(button.queues.producers[0].queue, button.queues.consumers[0].queue);
 });
 
-/** ボタンで写した先のリポジトリの CI か。写した先では、配置の画面で入れた値 (入口を開くなど) が書き込まれることがある。 */
-const copied =
-  process.env.GITHUB_REPOSITORY !== undefined &&
-  process.env.GITHUB_REPOSITORY !== "twitter-studio/notification-worker";
-
 test("ボタンの設定は、入口を閉じたまま配置し、秘密を平文の変数に置かない", () => {
   const button = read("wrangler.jsonc");
   if (!copied) {
@@ -62,7 +62,10 @@ test("ボタンの設定は、入口を閉じたまま配置し、秘密を平�
     assert.equal(button.vars.ENABLE_MOCK_EVENTS, "false");
   }
   assert.equal(button.preview_urls, false);
-  for (const name of optionalVars) assert.equal(button.vars[name], undefined, name);
+  for (const name of optionalVars) {
+    assert.equal(read("wrangler.example.jsonc").vars[name], undefined, name);
+    if (!copied) assert.equal(button.vars[name], undefined, name);
+  }
   const optional = [
     "RELAY_TOKEN",
     "X_RELAY_ROUTES",
@@ -79,5 +82,6 @@ test("ボタンの配置の画面で入れる値と、説明が 1 対 1 で対�
   const described = Object.keys(
     JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).cloudflare.bindings,
   );
-  assert.deepEqual(described.toSorted(), [...Object.keys(button.vars), ...secrets].toSorted());
+  const entered = Object.keys(button.vars).filter((name) => !optionalVars.includes(name));
+  assert.deepEqual(described.toSorted(), [...entered, ...secrets].toSorted());
 });

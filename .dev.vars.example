@@ -1,5 +1,5 @@
 # 秘密の名前の一覧 (値は書かない)。Deploy to Cloudflare のボタンは、ここに並べた秘密をどれも必須の欄として求める
-# (2026-11-09、空のままでは進めないことを確かめた)。そのため、Tweetbot から接続して使う Worker に要るものだけを並べ、
+# (2026-11-09、空のままでは進めないことを確かめた。#59)。そのため、Tweetbot から接続して使う Worker に要るものだけを並べ、
 # 任意の秘密は下にコメントで書く (型は src/config.ts で任意として宣言する)。
 # 手元では、この名前で .dev.vars (コミットしない) に値を置く。本番では、ボタンの配置の画面か、
 # `wrangler secret put <名前> --config wrangler.local.jsonc` で置く。型 (worker-configuration.d.ts) は、このファイルから作る。

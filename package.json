@@ -27,10 +27,10 @@
   "cloudflare": {
     "bindings": {
       "RELAY_URL": {
-        "description": "運営の通知の中継 API の URL (`https`、パスなし)。既定は運営の中継。Tweetbot の設定の画面に出る URL と同じかを確かめる。ほかの URL を入れると、端末の中継の資格情報がそこへ送られる。"
+        "description": "運営の通知の中継 API の URL (`https`、パスなし)。既定は本番の中継。Tweetbot が端末を登録した中継と違うと、通知は届かない。ほかの URL を入れると、端末の中継の資格情報がそこへ送られる。"
       },
       "ENABLE_MOCK_EVENTS": {
-        "description": "模擬のイベントの入口。試すときだけ `true` にする (引用符は付けない)。ふだんは `false`。"
+        "description": "模擬のイベントの入口。ふだんは `false`。試すときだけ `true` にし (引用符は付けない)、配置の後に秘密 `MOCK_WEBHOOK_SECRET` (32 文字以上の乱数) を置く。"
       },
       "ENABLE_X_ACTIVITY": {
         "description": "X の Webhook の入口と、`/setup`、`/connect`。X の通知を受け取るなら `true` にする (引用符は付けない。X の購読は X の API のクレジットを使う)。"
