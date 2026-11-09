@@ -99,7 +99,7 @@ function usesPublicRelayTrial(env: Env): boolean {
 }
 
 /** 置いていない値。Deploy to Cloudflare のボタンは、空の vars (と、空の秘密も、かもしれない) を空の文字として置く。 */
-function unset(value: string | undefined): boolean {
+function unset(value: string | undefined): value is undefined | "" {
   return value === undefined || value === "";
 }
 
@@ -115,7 +115,7 @@ export function xRelayTargets(env: Env, allowPairingOnly = false): XRelayTarget[
     return [];
   }
   // 期限付きの公開試験には、試験専用の資格情報だけを使う。
-  if (usesPublicRelayTrial(env) || env.X_RELAY_ROUTES === undefined) {
+  if (usesPublicRelayTrial(env) || unset(env.X_RELAY_ROUTES)) {
     const recipient = XUserID.safeParse(env.X_USER_ID);
     if (!recipient.success) throw new ConfigError("X_USER_ID");
     const types = env.X_NOTIFICATION_TYPES;
@@ -183,7 +183,7 @@ function xRelayRouteEntries(value: string) {
  * `xRelayTargets` は重なった鍵を外して返すので、ペアリングの鍵との重なりはこちらで数える。
  */
 export function manualDmPreviewKeys(env: Env): string[] {
-  if (usesPublicRelayTrial(env) || env.X_RELAY_ROUTES === undefined) return [];
+  if (usesPublicRelayTrial(env) || unset(env.X_RELAY_ROUTES)) return [];
   return xRelayRouteEntries(env.X_RELAY_ROUTES).flatMap(([, targets]) =>
     targets.flatMap(({ dm_preview_key }) => (dm_preview_key === undefined ? [] : [dm_preview_key])),
   );

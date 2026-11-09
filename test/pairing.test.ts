@@ -218,6 +218,12 @@ test("a paired route's owner can read and change its types, DM preview key, and 
   onTestFinished(() =>
     call("/disconnect", otherManager, { route_id: otherRoute }).then(() => undefined),
   );
+  // 空の X_RELAY_ROUTES は、置いていないものとして扱い、つないだ端末にも届ける。
+  expect(
+    (await deliveryTargets({ ...env, X_RELAY_ROUTES: "" })).some(
+      (item) => item.routeID === route_id,
+    ),
+  ).toBe(true);
   const settings = async (body: Record<string, unknown>, token = manager) => {
     const response = await call("/settings", token, { route_id, ...body });
     return {

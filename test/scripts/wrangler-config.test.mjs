@@ -10,10 +10,14 @@ const secrets = [
   ...readFileSync(resolve(root, ".dev.vars.example"), "utf8").matchAll(/^([A-Z0-9_]+)=/gm),
 ].map(([, name]) => name);
 
-/** 配置の画面で利用者が変えられる名前 (Worker と Queue) を除く。写した先のリポジトリで名前を変えても、比べられるように。 */
-function withoutNames({ name: _name, queues, ...config }) {
+/**
+ * 配置の画面で利用者が変えられるもの (Worker と Queue の名前、vars の値) を除く。ボタンで写した先のリポジトリに、画面で
+ * 入れた値が書き込まれても、比べられるように。vars は名前だけを比べる。
+ */
+function withoutNames({ name: _name, queues, vars, ...config }) {
   return {
     ...config,
+    vars: Object.keys(vars).toSorted(),
     queues: {
       producers: queues.producers.map(({ queue: _queue, ...rest }) => rest),
       consumers: queues.consumers.map(({ queue: _queue, ...rest }) => rest),
@@ -40,10 +44,17 @@ test("ボタンの設定は、基本の設定に端末の接続と回数の上�
   assert.equal(button.queues.producers[0].queue, button.queues.consumers[0].queue);
 });
 
+/** ボタンで写した先のリポジトリの CI か。写した先では、配置の画面で入れた値 (入口を開くなど) が書き込まれることがある。 */
+const copied =
+  process.env.GITHUB_REPOSITORY !== undefined &&
+  process.env.GITHUB_REPOSITORY !== "twitter-studio/notification-worker";
+
 test("ボタンの設定は、入口を閉じたまま配置し、秘密を平文の変数に置かない", () => {
   const button = read("wrangler.jsonc");
-  assert.equal(button.vars.ENABLE_X_ACTIVITY, "false");
-  assert.equal(button.vars.ENABLE_MOCK_EVENTS, "false");
+  if (!copied) {
+    assert.equal(button.vars.ENABLE_X_ACTIVITY, "false");
+    assert.equal(button.vars.ENABLE_MOCK_EVENTS, "false");
+  }
   assert.equal(button.preview_urls, false);
   for (const name of secrets) assert.equal(button.vars[name], undefined, name);
 });

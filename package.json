@@ -57,7 +57,7 @@
         "description": "自分の X の開発者アプリの OAuth 2.0 の Client Secret。Webhook の確かめ (CRC) と署名にも使う。"
       },
       "X_EVENT_ID_SECRET": {
-        "description": "重複を除く ID を作る、32 文字以上の乱数。`openssl rand -base64 32` などで作る。ほかの秘密と同じ値にしない。"
+        "description": "重複を除く ID を作る、32 文字以上の乱数。作り方は README の「Deploy to Cloudflare のボタンで配置する」 (画面に出さずに作る)。ほかの秘密と同じ値にしない。"
       },
       "X_PREVIEW_BEARER_TOKEN": {
         "description": "任意。公開のツイートの書き手の名前を補う、X の App-only の Bearer Token。"
