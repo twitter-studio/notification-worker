@@ -74,8 +74,8 @@ describe("Xイベントの永続Queueからの配信", () => {
     expect(item.retry).not.toHaveBeenCalled();
     expect(relay.sent[0]?.body).toEqual(input.event);
   });
-  it("長い待機は縮めず、送り先の誤りも成功としてackしない", async () => {
-    for (const status of [302, 404, 429, 503]) {
+  it("長い待機は縮めず、送り先の誤りや資格情報のほかの断りも成功としてackしない", async () => {
+    for (const status of [302, 404, 422, 429, 501, 503, 520]) {
       const relay = fakeRelay([new Response(null, { status, headers: { "Retry-After": "3600" } })]);
       const item = message(await job());
       await handleXQueue([item], enabled(), relay.deps);
@@ -85,25 +85,26 @@ describe("Xイベントの永続Queueからの配信", () => {
       });
     }
   });
-  it.each([
-    [401, "unauthorized"],
-    [403, "unauthorized"],
-    [413, "rejected"],
-    [422, "rejected"],
-  ])("中継の %i は1回だけ送り、やり直さずに捨てる", async (status, outcome) => {
+  it.each([401, 403])("中継の %i は1回だけ送り、やり直さずに捨てる", async (status) => {
     const relay = fakeRelay([new Response(null, { status })]);
     const item = message(await job());
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    const logs = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       await handleXQueue([item], enabled(), relay.deps);
       expect(relay.sent).toHaveLength(1);
       expect(item.ack).toHaveBeenCalledOnce();
       expect(item.retry).not.toHaveBeenCalled();
-      expect(JSON.stringify([...errors.mock.calls, ...logs.mock.calls])).toContain(outcome);
+      expect(errors).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "x_worker_observation",
+          stage: "delivery",
+          outcome: "unauthorized",
+          attention_count: 1,
+        }),
+      );
+      expect(JSON.stringify(errors.mock.calls)).not.toContain(enabled().RELAY_TOKEN);
     } finally {
       errors.mockRestore();
-      logs.mockRestore();
     }
   });
   it("上限で破棄し、無限に再送しない", async () => {
