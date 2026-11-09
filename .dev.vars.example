@@ -18,3 +18,5 @@ X_EVENT_ID_SECRET=
 X_PREVIEW_BEARER_TOKEN=
 # X でログインして接続するときに、購読の一覧と削除に使う、同じ X アプリの App-only の Bearer Token。
 X_APP_BEARER_TOKEN=
+# Tweetbot からの接続と /setup に使う管理用のトークン (tpa_ に、32 バイトの乱数を Base64URL にした 43 文字を続けたもの)。
+PAIRING_ADMIN_TOKEN=

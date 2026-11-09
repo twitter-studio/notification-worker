@@ -36,7 +36,7 @@ OS、ライブラリ、外部のサービスの不具合や制約をワークア
 
 ## セキュリティ
 
-- 秘密を、コード、設定のファイル (`wrangler.jsonc`、`.dev.vars` など)、ドキュメント、URL、GitHub Pages、ログ、Issue、PR、テストのフィクスチャ、スクリーンショットに残さない。値を出力しない。秘密には、APNs の `.p8` の鍵、X の資格情報と Webhook の署名の秘密、中継の資格情報、セッションのトークン、デバイストークン、D1 のデータを暗号化する鍵、Cloudflare の API トークンなどがある (この一覧に限らない)。
+- 秘密を、コード、設定のファイル (`wrangler.jsonc`、`wrangler.local.jsonc`、`.dev.vars` など)、ドキュメント、URL、GitHub Pages、ログ、Issue、PR、テストのフィクスチャ、スクリーンショットに残さない。値を出力しない。秘密には、APNs の `.p8` の鍵、X の資格情報と Webhook の署名の秘密、中継の資格情報、セッションのトークン、デバイストークン、D1 のデータを暗号化する鍵、Cloudflare の API トークンなどがある (この一覧に限らない)。
 - 運営の DB に、X の OAuth のトークン、X の API の鍵、DM の本文、ツイートの本文、要らない X の識別子を置かない。
 - 次のことは、オーナーの明示の承認を得てから行う: 課金の発生するリソースを作る、本番やプレビューへデプロイする、本番の DB に migration を当てる、権限を広げる (GitHub、Cloudflare、Apple の権限やトークンの範囲)、X の API のクレジットを買う、X の API を実際のアカウントで使う。実際の X のアカウントで X に残る操作は、各リポジトリの `AGENTS.md` が許した範囲だけで行う (tweetbot ではテスト用の @tacos_sin だけ)。
 - デプロイは、保護した GitHub の Environments と、範囲を絞った Cloudflare の資格情報で行う。CodeQL と secret scanning は、使えるリポジトリで有効にする (非公開のリポジトリでは、Free プランでは使えない)。
@@ -98,8 +98,8 @@ pnpm build       # wrangler deploy --dry-run。デプロイはしない
 
 - 道具 (Node.js、pnpm、TypeScript、Biome、Vitest、wrangler、`@cloudflare/vitest-plugin`) の版と設定は、notification-service とそろえる (notification-service の ADR-0001〜0003)。上げるときは、両方のリポジトリで上げる。
 - 依存は、公開から 3 日たった版を選ぶ (`pnpm-workspace.yaml` の `minimumReleaseAge`)。インストール時のスクリプトは動かさない (`allowBuilds` で false)。
-- 設定の正本は `wrangler.example.jsonc`。利用者は `wrangler.jsonc` に写して使う (コミットしない)。テスト、型、`build` は `wrangler.example.jsonc` を使う。
-- 秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`) は、名前だけを `.dev.vars.example` に書き、値は置かない。型 (`worker-configuration.d.ts`) は `pnpm types` で作る (vars は `--strict-vars=false` で文字列の型にする。テストで値を変えるため)。`wrangler.example.jsonc` か `.dev.vars.example` を変えたら作り直す (CI が `--check` で調べる)。
+- 設定の正本は `wrangler.example.jsonc`。テスト、型、`build`、sandbox の配置はこれを使う。`wrangler.jsonc` は Deploy to Cloudflare のボタンの設定で、正本に端末の接続 (Durable Object) と回数の上限を足したもの (食い違いは `test/scripts/wrangler-config.test.mjs` で見る)。自分で配置する利用者は `wrangler.jsonc` を `wrangler.local.jsonc` に写して使う (コミットしない)。
+- 秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`) は、名前だけを `.dev.vars.example` に書き、値は置かない。型 (`worker-configuration.d.ts`) は `pnpm types` で作る (vars は `--strict-vars=false` で文字列の型にする。テストで値を変えるため)。`wrangler.example.jsonc` か `.dev.vars.example` を変えたら作り直す (CI が `--check` で調べる)。 `vars` と `.dev.vars.example` の名前は、ボタンの配置の画面で入力を求める値にもなるので、足したら `package.json` の `cloudflare.bindings` に説明を足す (`test/scripts/wrangler-config.test.mjs` が調べる)。
 - 送り先 (`RELAY_URL`) は設定だけで決め、要求の値で変えさせない。中継の API の本文で、送信先アカウント、数値の X ユーザー ID、トークン、任意の見出し、タップ先 URL を送らない。本文はメンション・返信・引用ツイート・リツイート・いいねに関わる公開投稿の抜粋だけを許す (notification-service の ADR-0009)。
 - Webhook の署名は、生の本文を解析する前に確かめる。時刻の幅でやり直しを拒む。
 - ログには、答えの数、設定の名前、エラーの名前だけを出す。資格情報、鍵、イベントの中身、中継の API のエラーの本文を出さない。

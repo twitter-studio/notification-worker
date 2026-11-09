@@ -4,7 +4,7 @@
 
 ## 配置と警報の有効化
 
-1. コードをレビュー・検証し、対象Cloudflareアカウントへの配置承認を得る。`wrangler.example.jsonc` の `triggers` と `observability` も配置構成へ反映する。ローカルの `wrangler.jsonc` は自動更新されない。
+1. コードをレビュー・検証し、対象Cloudflareアカウントへの配置承認を得る。`wrangler.example.jsonc` (ボタンの設定 `wrangler.jsonc` も同じ) の `triggers` と `observability` も配置構成へ反映する。ローカルの `wrangler.local.jsonc` は自動更新されない。
 2. 配置後、Cronの登録と10分以内の `x_worker_observation` / `stage: queue_state` を確認する。最初のheartbeatを確認する前に警報を有効化すると、監視未起動として警報が出る。
 3. `worker-monitor.json` を作業用ファイルへコピーする。`ACCOUNT_ID` を32桁の対象アカウントID、`WORKER_NAME` を自分のWorker名、`ALERT_EMAIL` を承認した受信先へ置き換える。SQL文字列に引用符などを含む値を入れず、クエリの対象が自分のWorkerだけであることを確認する。
 4. Cloudflareの Alerts → Monitors でSQLを検証する。APIを使う場合は対象アカウントに限定した Notifications Edit と Account Analytics Read の資格情報を使う。資格情報をWorkerへ保存しない。利用可能なデータセット・監視枠・料金を確認し、プラン変更や枠超過が必要なら止める。

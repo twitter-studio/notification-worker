@@ -104,7 +104,6 @@ type State = { codes: Code[]; routes: StoredRoute[] };
 declare global {
   interface Env {
     PAIRING_ROUTES?: DurableObjectNamespace<PairingStore>;
-    PAIRING_ADMIN_TOKEN?: string;
   }
 }
 

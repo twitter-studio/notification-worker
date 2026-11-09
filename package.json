@@ -23,5 +23,51 @@
     "typescript": "7.0.2",
     "vitest": "5.0.5",
     "wrangler": "4.156.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "RELAY_URL": {
+        "description": "運営の通知の中継 API の URL (`https`、パスなし)。Tweetbot の設定の画面に出る URL を入れる。"
+      },
+      "ENABLE_MOCK_EVENTS": {
+        "description": "模擬のイベントの入口。試すときだけ `\"true\"` にする。ふだんは `\"false\"`。"
+      },
+      "ENABLE_X_ACTIVITY": {
+        "description": "X の Webhook の入口と、`/setup`、`/connect`。X の通知を受け取るなら `\"true\"` にする (X の購読は X の API のクレジットを使う)。"
+      },
+      "X_USER_ID": {
+        "description": "手で配送先を設定するときの、本人の X ユーザー ID。`/setup` と Tweetbot から接続するなら空でよい。"
+      },
+      "X_OAUTH2_CLIENT_ID": {
+        "description": "自分の X の開発者アプリの OAuth 2.0 の Client ID。"
+      },
+      "ALLOWED_X_USER_IDS": {
+        "description": "`/setup` と Tweetbot からの接続を許す X ユーザーの数値 ID。カンマ区切り。"
+      },
+      "X_WEBHOOK_ID": {
+        "description": "購読を付ける X の Webhook の ID。空なら、`/setup` で用意した Webhook を使う。"
+      },
+      "RELAY_TOKEN": {
+        "description": "手で配送先を設定するときの中継の資格情報 (`tsr_` で始まる)。Tweetbot から接続するなら空でよい。"
+      },
+      "MOCK_WEBHOOK_SECRET": {
+        "description": "模擬のイベントの署名の鍵 (32 文字以上の乱数)。`ENABLE_MOCK_EVENTS` を `\"true\"` にするときだけ要る。"
+      },
+      "X_OAUTH2_CLIENT_SECRET": {
+        "description": "自分の X の開発者アプリの OAuth 2.0 の Client Secret。Webhook の確かめ (CRC) と署名にも使う。"
+      },
+      "X_EVENT_ID_SECRET": {
+        "description": "重複を除く ID を作る、32 文字以上の乱数。`openssl rand -base64 32` などで作る。ほかの秘密と同じ値にしない。"
+      },
+      "X_PREVIEW_BEARER_TOKEN": {
+        "description": "任意。公開のツイートの書き手の名前を補う、X の App-only の Bearer Token。"
+      },
+      "X_APP_BEARER_TOKEN": {
+        "description": "同じ X の開発者アプリの App-only の Bearer Token。Webhook の登録と、購読の一覧と削除に使う。"
+      },
+      "PAIRING_ADMIN_TOKEN": {
+        "description": "`tpa_` に、32 バイトの乱数を Base64URL にしたもの (43 文字) を続けた管理用のトークン。Tweetbot からの接続と `/setup` に要る。手元の安全な所にも残す。"
+      }
+    }
   }
 }

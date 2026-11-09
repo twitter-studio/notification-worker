@@ -28,6 +28,24 @@
 
 ## デプロイの手順
 
+### Deploy to Cloudflare のボタンで配置する
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/twitter-studio/notification-worker)
+
+ボタンを押すと、Cloudflare がこのリポジトリを自分の GitHub アカウントに写し、設定 (`wrangler.jsonc`) のとおりに、Worker、Queue、Durable Object を作って配置します ([ADR-0008](https://github.com/twitter-studio/notification-docs/blob/main/docs/adr/0008-app-driven-notification-setup.md) の段 5)。X の通知を Tweetbot から接続して受け取るときは、次のように進めます。
+
+1. 自分の X の開発者アプリを用意し、OAuth 2.0 の Client ID と Client Secret、App-only の Bearer Token を手元に用意します。
+2. ボタンを押し、配置の画面で次の値を入れます (どの値にも、画面に説明が出ます)。
+   - 変数: `ENABLE_X_ACTIVITY` を `"true"`、`X_OAUTH2_CLIENT_ID`、`ALLOWED_X_USER_IDS` (自分の X ユーザーの数値 ID)、`RELAY_URL` (Tweetbot の設定の画面に出る URL)。
+   - 秘密: `X_OAUTH2_CLIENT_SECRET`、`X_APP_BEARER_TOKEN`、`X_EVENT_ID_SECRET`、`PAIRING_ADMIN_TOKEN`。
+3. 配置が終わったら、X の開発者アプリの Callback URL に `https://<Worker のドメイン>/oauth/callback` を足します。
+4. ブラウザで `https://<Worker のドメイン>/setup` を開き、X でログインして Webhook を用意します ([手順](ops/production-setup.md#setup-で-webhook-を用意する))。
+5. Tweetbot の設定から、Worker の URL を入れて接続します。
+
+まだ確かめていないこと: ボタンが Queue の producer と consumer の両方を用意するか、使わない秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`、`X_PREVIEW_BEARER_TOKEN`) を空のまま配置できるか、Rate Limiting の binding と Cron Triggers をそのまま配置するか。`CONNECT_LIMITER` の `namespace_id` は、同じ Cloudflare のアカウントのほかの Worker と重なるなら変えます。
+
+### 自分で配置する
+
 Tweetbotの本番通知を使う場合は、[利用者向けの初回セットアップ](ops/production-setup.md)から始めてください。招待制sandboxの試験と資格情報の回復は[試験用の手順](ops/setup.md)、既存Workerの承認付き更新は[配置Workflow](ops/deployment.md)を参照してください。
 
 ## 模擬のイベントで試す
@@ -43,10 +61,10 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 2. 同じ鍵を、自分の Worker の秘密として置きます (送るスクリプトと同じ読み方で読み、標準入力から渡します)。
 
    ```sh
-   node --env-file=.dev.vars -e 'process.stdout.write(process.env.MOCK_WEBHOOK_SECRET ?? "")' | pnpm wrangler secret put MOCK_WEBHOOK_SECRET --config wrangler.jsonc
+   node --env-file=.dev.vars -e 'process.stdout.write(process.env.MOCK_WEBHOOK_SECRET ?? "")' | pnpm wrangler secret put MOCK_WEBHOOK_SECRET --config wrangler.local.jsonc
    ```
 
-3. `wrangler.jsonc` の `ENABLE_MOCK_EVENTS` を `"true"` にして、デプロイし直します。
+3. `wrangler.local.jsonc` の `ENABLE_MOCK_EVENTS` を `"true"` にして、デプロイし直します。
 4. 模擬のイベントを送ります (鍵は `.dev.vars` から読みます)。
 
    ```sh
@@ -57,10 +75,10 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 5. 試し終えたら、`ENABLE_MOCK_EVENTS` を `"false"` に戻してデプロイし直し、秘密も消します。
 
    ```sh
-   pnpm wrangler secret delete MOCK_WEBHOOK_SECRET --config wrangler.jsonc
+   pnpm wrangler secret delete MOCK_WEBHOOK_SECRET --config wrangler.local.jsonc
    ```
 
-   `wrangler.example.jsonc` は版ごとの URL (`preview_urls`) を作らない設定です。模擬の入口を有効にした版が、版の URL で開いたまま残りません。
+   `wrangler.jsonc` と `wrangler.example.jsonc` は、版ごとの URL (`preview_urls`) を作らない設定です。模擬の入口を有効にした版が、版の URL で開いたまま残りません。
 
 ## XAAの有効化前に確認すること
 
