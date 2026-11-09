@@ -6,6 +6,10 @@ import { experimental_readRawConfig } from "wrangler";
 
 const root = resolve(import.meta.dirname, "../..");
 const read = (name) => experimental_readRawConfig({ config: resolve(root, name) }).rawConfig;
+/**
+ * ボタンの設定に置かない、任意の vars。ボタンの配置の画面は vars をどれも必須の欄にするので、空でよいものは置かない。
+ */
+const optionalVars = ["X_USER_ID", "X_WEBHOOK_ID"];
 const secrets = [
   ...readFileSync(resolve(root, ".dev.vars.example"), "utf8").matchAll(/^([A-Z0-9_]+)=/gm),
 ].map(([, name]) => name);
@@ -17,7 +21,9 @@ const secrets = [
 function withoutNames({ name: _name, queues, vars, ...config }) {
   return {
     ...config,
-    vars: Object.keys(vars).toSorted(),
+    vars: Object.keys(vars)
+      .filter((name) => !optionalVars.includes(name))
+      .toSorted(),
     queues: {
       producers: queues.producers.map(({ queue: _queue, ...rest }) => rest),
       consumers: queues.consumers.map(({ queue: _queue, ...rest }) => rest),
@@ -56,6 +62,7 @@ test("ボタンの設定は、入口を閉じたまま配置し、秘密を平�
     assert.equal(button.vars.ENABLE_MOCK_EVENTS, "false");
   }
   assert.equal(button.preview_urls, false);
+  for (const name of optionalVars) assert.equal(button.vars[name], undefined, name);
   const optional = [
     "RELAY_TOKEN",
     "X_RELAY_ROUTES",

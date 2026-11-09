@@ -46,7 +46,7 @@
 3. ボタンを押し、配置の画面で次の値を入れます (どの値にも、画面に説明が出ます。値は引用符を付けずに入れます)。
    - 写すリポジトリは、非公開にします (配置の画面で変えた値が、写したリポジトリに書き込まれることがあるため)。
    - 変数: `ENABLE_X_ACTIVITY` を `true`、`X_OAUTH2_CLIENT_ID`、`ALLOWED_X_USER_IDS` (自分の X ユーザーの数値 ID)、`RELAY_URL` (既定は運営の中継です。Tweetbot の設定の画面に出る URL と同じかを確かめます。ほかの URL を入れると、端末の中継の資格情報がそこへ送られます)。変数の欄は平文で残るので、秘密を入れません。
-   - 秘密: `X_OAUTH2_CLIENT_SECRET`、`X_APP_BEARER_TOKEN`、`X_EVENT_ID_SECRET`、`PAIRING_ADMIN_TOKEN`。ボタンは、ここに並べた秘密をどれも必須の欄として求めます。任意の秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`、`X_PREVIEW_BEARER_TOKEN`) は求めないので、要るときは配置の後に置きます。
+   - 秘密: `X_OAUTH2_CLIENT_SECRET`、`X_APP_BEARER_TOKEN`、`X_EVENT_ID_SECRET`、`PAIRING_ADMIN_TOKEN`。ボタンは、画面に出る変数と秘密をどれも必須の欄として求めます。任意の値 (秘密の `RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`、`X_PREVIEW_BEARER_TOKEN`、変数の `X_USER_ID`、`X_WEBHOOK_ID`) は求めないので、要るときは配置の後に置きます。
    - Queue の名前は、同じ Cloudflare のアカウントでほかの用途に使っているものと重ねません。
 4. 配置が終わったら、X の開発者アプリの Callback URL に `https://<Worker のドメイン>/oauth/callback` を足します。
 5. ブラウザで `https://<Worker のドメイン>/setup` を開き、X でログインして Webhook を用意します ([手順](ops/production-setup.md#setup-で-webhook-を用意する))。

@@ -22,14 +22,12 @@
     "ENABLE_MOCK_EVENTS": "false",
     // X の Webhook の入口 (POST /webhooks/x)。実際の接続と費用の承認を得て設定するまで "false" のまま。
     "ENABLE_X_ACTIVITY": "false",
-    // OAuth認可した本人のXユーザーID。有効化する前に自分のIDを設定。
-    "X_USER_ID": "",
     // X でログインして接続する (ADR-0008 の段 3) ときの、自分の X アプリの OAuth 2.0 の Client ID。空なら /connect を出さない。
     "X_OAUTH2_CLIENT_ID": "",
     // X でログインして接続してよい X ユーザーの数値 ID。カンマ区切り。
-    "ALLOWED_X_USER_IDS": "",
-    // 接続のときに作る購読を付ける Webhook の ID。空なら、`/setup` で用意した Webhook を使う。
-    "X_WEBHOOK_ID": ""
+    "ALLOWED_X_USER_IDS": ""
+    // X_USER_ID (手で配送先を設定するとき) と X_WEBHOOK_ID (空なら /setup で用意した Webhook を使う) は置かない。
+    // ボタンの配置の画面は、vars をどれも必須の欄にするため (2026-11-09 に確かめた)。
   },
   // 接続した端末の配送先を置く Durable Object (SQLite)。
   "durable_objects": {

@@ -35,17 +35,11 @@
       "ENABLE_X_ACTIVITY": {
         "description": "X の Webhook の入口と、`/setup`、`/connect`。X の通知を受け取るなら `true` にする (引用符は付けない。X の購読は X の API のクレジットを使う)。"
       },
-      "X_USER_ID": {
-        "description": "手で配送先を設定するときの、本人の X ユーザー ID。`/setup` と Tweetbot から接続するなら空でよい。"
-      },
       "X_OAUTH2_CLIENT_ID": {
         "description": "自分の X の開発者アプリの OAuth 2.0 の Client ID。秘密ではない値で、平文で残る。Client Secret はここに入れない。"
       },
       "ALLOWED_X_USER_IDS": {
         "description": "`/setup` と Tweetbot からの接続を許す X ユーザーの数値 ID。カンマ区切り。"
-      },
-      "X_WEBHOOK_ID": {
-        "description": "購読を付ける X の Webhook の ID。空なら、`/setup` で用意した Webhook を使う。"
       },
       "X_OAUTH2_CLIENT_SECRET": {
         "description": "自分の X の開発者アプリの OAuth 2.0 の Client Secret。Webhook の確かめ (CRC) と署名にも使う。"
