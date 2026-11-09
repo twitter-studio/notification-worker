@@ -36,7 +36,7 @@ OS、ライブラリ、外部のサービスの不具合や制約をワークア
 
 ## セキュリティ
 
-- 秘密を、コード、設定のファイル (`wrangler.jsonc`、`wrangler.local.jsonc`、`.dev.vars` など)、ドキュメント、URL、GitHub Pages、ログ、Issue、PR、テストのフィクスチャ、スクリーンショットに残さない。値を出力しない。秘密には、APNs の `.p8` の鍵、X の資格情報と Webhook の署名の秘密、中継の資格情報、セッションのトークン、デバイストークン、D1 のデータを暗号化する鍵、Cloudflare の API トークンなどがある (この一覧に限らない)。
+- 秘密を、コード、設定のファイル (`wrangler.jsonc`、`.dev.vars` など)、ドキュメント、URL、GitHub Pages、ログ、Issue、PR、テストのフィクスチャ、スクリーンショットに残さない。値を出力しない。秘密には、APNs の `.p8` の鍵、X の資格情報と Webhook の署名の秘密、中継の資格情報、セッションのトークン、デバイストークン、D1 のデータを暗号化する鍵、Cloudflare の API トークンなどがある (この一覧に限らない)。
 - 運営の DB に、X の OAuth のトークン、X の API の鍵、DM の本文、ツイートの本文、要らない X の識別子を置かない。
 - 次のことは、オーナーの明示の承認を得てから行う: 課金の発生するリソースを作る、本番やプレビューへデプロイする、本番の DB に migration を当てる、権限を広げる (GitHub、Cloudflare、Apple の権限やトークンの範囲)、X の API のクレジットを買う、X の API を実際のアカウントで使う。実際の X のアカウントで X に残る操作は、各リポジトリの `AGENTS.md` が許した範囲だけで行う (tweetbot ではテスト用の @tacos_sin だけ)。
 - デプロイは、保護した GitHub の Environments と、範囲を絞った Cloudflare の資格情報で行う。CodeQL と secret scanning は、使えるリポジトリで有効にする (非公開のリポジトリでは、Free プランでは使えない)。

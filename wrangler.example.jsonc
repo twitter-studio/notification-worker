@@ -1,4 +1,5 @@
-// 利用者の Worker の設定の例。`wrangler.jsonc` に写し、名前と RELAY_URL を自分のものに変えてから使う (README)。
+// 利用者の Worker の基本の設定 (型、試験、build、保護付きの配置 Workflow の正本)。端末の接続 (Durable Object) は含まない。
+// 自分で配置するときは、端末の接続も含む `wrangler.jsonc` を `wrangler.local.jsonc` に写して使う (README)。
 // 秘密 (RELAY_TOKEN、MOCK_WEBHOOK_SECRET) は、ここに書かず、`wrangler secret put` で置く。
 {
   "$schema": "node_modules/wrangler/config-schema.json",

@@ -10,7 +10,7 @@ Tweetbotの本番通知に、自分のX開発者アプリとCloudflare Workerを
 
 ## 2. 自分のWorkerを用意する
 
-[ローカルの準備](setup.md#1-ローカルの準備)に従い、`wrangler.jsonc` を写して `wrangler.local.jsonc` (コミットしない) を作ります。Worker名とCloudflareアカウントを自分のものにします。Queue名はproducerとconsumerの両方でそろえます。保護付き配置Workflowを使う場合は `notification-x-events` にします。既に別の用途で使われている場合、そのQueueを流用しないでください。所有者が初回配置・更新・停止にCLIを使うと承認した場合は、両方の名前を新しい専用Queue名に変えます。別名のQueueは現在の配置Workflowでは更新できません。D1は不要です。Cloudflareの無料プランではQueueの保持期間は24時間固定です。[Queueの上限](https://developers.cloudflare.com/queues/platform/limits/)
+[ローカルの準備](setup.md#1-ローカルの準備)に従い、`wrangler.jsonc` を写して `wrangler.local.jsonc` (コミットしない) を作ります。保護付き配置 Workflow で更新する場合は、Workflow と同じ形の `wrangler.example.jsonc` から作ります (Workflow は端末の接続の Durable Object を含まない構成を配るので、`wrangler.jsonc` から作った Worker は Workflow で更新できません)。Worker名とCloudflareアカウントを自分のものにします。Queue名はproducerとconsumerの両方でそろえます。保護付き配置Workflowを使う場合は `notification-x-events` にします。既に別の用途で使われている場合、そのQueueを流用しないでください。所有者が初回配置・更新・停止にCLIを使うと承認した場合は、両方の名前を新しい専用Queue名に変えます。別名のQueueは現在の配置Workflowでは更新できません。D1は不要です。Cloudflareの無料プランではQueueの保持期間は24時間固定です。[Queueの上限](https://developers.cloudflare.com/queues/platform/limits/)
 
 | 設定                 | 値                                                                                  |
 | -------------------- | ----------------------------------------------------------------------------------- |

@@ -98,13 +98,18 @@ function usesPublicRelayTrial(env: Env): boolean {
   return env.PUBLIC_RELAY_TRIAL_UNTIL !== undefined || env.PUBLIC_RELAY_TRIAL_ORIGIN !== undefined;
 }
 
+/** 置いていない値。Deploy to Cloudflare のボタンは、空の vars (と、空の秘密も、かもしれない) を空の文字として置く。 */
+function unset(value: string | undefined): boolean {
+  return value === undefined || value === "";
+}
+
 export function xRelayTargets(env: Env, allowPairingOnly = false): XRelayTarget[] {
   if (
     allowPairingOnly &&
-    env.X_RELAY_ROUTES === undefined &&
-    env.X_USER_ID === undefined &&
-    env.RELAY_TOKEN === undefined &&
-    env.X_NOTIFICATION_TYPES === undefined
+    unset(env.X_RELAY_ROUTES) &&
+    unset(env.X_USER_ID) &&
+    unset(env.RELAY_TOKEN) &&
+    unset(env.X_NOTIFICATION_TYPES)
   ) {
     relayEndpoint(env.RELAY_URL);
     return [];

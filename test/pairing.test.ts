@@ -166,6 +166,17 @@ test("a fresh Worker can have no manual routes when pairing is enabled", async (
   await expect(deliveryTargets(env)).rejects.toThrow();
 });
 
+test("Deploy to Cloudflare のボタンが置く空の値は、手動の配送先がないものとして扱う", async () => {
+  const env = testEnv({
+    PAIRING_ADMIN_TOKEN: admin,
+    X_USER_ID: "",
+    RELAY_TOKEN: "",
+    X_RELAY_ROUTES: "",
+    X_NOTIFICATION_TYPES: "",
+  });
+  expect(await deliveryTargets(env)).toEqual([]);
+});
+
 test("a paired route's owner can read and change its types, DM preview key, and relay credential", async () => {
   const relay = fakeRelay();
   const env = testEnv({ PAIRING_ADMIN_TOKEN: admin, ENABLE_X_ACTIVITY: "true" });

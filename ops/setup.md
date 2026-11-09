@@ -44,7 +44,7 @@ URLはこのCLIでは `https://<Worker名>.<サブドメイン>.workers.dev/webh
 所有者の承認後、対象アカウントにQueueを1つ作る。保持24時間・並列1・再試行5回は設定例の範囲を維持する。新規D1は不要。Queue作成の操作例は次のとおり。アカウントと名前を確認した、範囲を絞った資格情報で実行する。
 
 ```sh
-mise exec -- pnpm exec wrangler queues create notification-x-events --message-retention-period-secs 86400
+mise exec -- pnpm exec wrangler queues create notification-x-events --message-retention-period-secs 86400 --config wrangler.local.jsonc
 ```
 
 配置は保護したGitHub Environmentと対象アカウントに限定したCloudflare資格情報で行う。保護を検査する[配置workflow](deployment.md)はあるが、実Environmentと資格情報は未設定のため、[OPS-003](https://github.com/twitter-studio/notification-docs/issues/11)が完了するまではここがゲートになる。CLI例外を使うなら、その回のQueue作成・秘密保存・初回無効配置・一時有効化・無効への復帰を所有者が明示承認する必要がある。

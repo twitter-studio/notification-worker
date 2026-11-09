@@ -35,16 +35,28 @@
 ボタンを押すと、Cloudflare がこのリポジトリを自分の GitHub アカウントに写し、設定 (`wrangler.jsonc`) のとおりに、Worker、Queue、Durable Object を作って配置します ([ADR-0008](https://github.com/twitter-studio/notification-docs/blob/main/docs/adr/0008-app-driven-notification-setup.md) の段 5)。X の通知を Tweetbot から接続して受け取るときは、次のように進めます。
 
 1. 自分の X の開発者アプリを用意し、OAuth 2.0 の Client ID と Client Secret、App-only の Bearer Token を手元に用意します。
-2. ボタンを押し、配置の画面で次の値を入れます (どの値にも、画面に説明が出ます)。
-   - 変数: `ENABLE_X_ACTIVITY` を `"true"`、`X_OAUTH2_CLIENT_ID`、`ALLOWED_X_USER_IDS` (自分の X ユーザーの数値 ID)、`RELAY_URL` (Tweetbot の設定の画面に出る URL)。
-   - 秘密: `X_OAUTH2_CLIENT_SECRET`、`X_APP_BEARER_TOKEN`、`X_EVENT_ID_SECRET`、`PAIRING_ADMIN_TOKEN`。
-3. 配置が終わったら、X の開発者アプリの Callback URL に `https://<Worker のドメイン>/oauth/callback` を足します。
-4. ブラウザで `https://<Worker のドメイン>/setup` を開き、X でログインして Webhook を用意します ([手順](ops/production-setup.md#setup-で-webhook-を用意する))。
-5. Tweetbot の設定から、Worker の URL を入れて接続します。
+2. `PAIRING_ADMIN_TOKEN` を作ります。Worker にだけ置く管理用の値で、Tweetbot には入れません。接続の一覧と解除の CLI でも使うので、パスワードの管理アプリなどに保存します。画面にもログにも出さずにクリップボードへ写すには、macOS では次のようにします。
 
-まだ確かめていないこと: ボタンが Queue の producer と consumer の両方を用意するか、使わない秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`、`X_PREVIEW_BEARER_TOKEN`) を空のまま配置できるか、Rate Limiting の binding と Cron Triggers をそのまま配置するか。`CONNECT_LIMITER` の `namespace_id` は、同じ Cloudflare のアカウントのほかの Worker と重なるなら変えます。
+   ```sh
+   node -e 'process.stdout.write("tpa_" + require("node:crypto").randomBytes(32).toString("base64url"))' | pbcopy
+   ```
+
+3. ボタンを押し、配置の画面で次の値を入れます (どの値にも、画面に説明が出ます。値は引用符を付けずに入れます)。
+   - 写すリポジトリは、非公開にします (配置の画面で変えた値が、写したリポジトリに書き込まれることがあるため)。
+   - 変数: `ENABLE_X_ACTIVITY` を `true`、`X_OAUTH2_CLIENT_ID`、`ALLOWED_X_USER_IDS` (自分の X ユーザーの数値 ID)、`RELAY_URL` (Tweetbot の設定の画面に出る URL を正確に写します。ほかの URL を入れると、端末の中継の資格情報がそこへ送られます)。変数の欄は平文で残るので、秘密を入れません。
+   - 秘密: `X_OAUTH2_CLIENT_SECRET`、`X_APP_BEARER_TOKEN`、`X_EVENT_ID_SECRET`、`PAIRING_ADMIN_TOKEN`。使わない秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`、`X_PREVIEW_BEARER_TOKEN`) は空のままにします。
+   - Queue の名前は、同じ Cloudflare のアカウントでほかの用途に使っているものと重ねません。
+4. 配置が終わったら、X の開発者アプリの Callback URL に `https://<Worker のドメイン>/oauth/callback` を足します。
+5. ブラウザで `https://<Worker のドメイン>/setup` を開き、X でログインして Webhook を用意します ([手順](ops/production-setup.md#setup-で-webhook-を用意する))。
+6. Tweetbot の設定から、Worker の URL を入れて接続します。
+
+ボタンでは、`/setup` を使うために、最初から `ENABLE_X_ACTIVITY` を `true` にします (下の「XAAの有効化前に確認すること」の、準備を終えてから有効にする手順の例外です)。X の購読は、`/setup` で Webhook を用意し、Tweetbot から接続するまで作りません。
+
+まだ確かめていないこと: ボタンが Queue の producer と consumer の両方を用意するか (文書は、自動で用意する資源に Queues を挙げています)、使わない秘密を空のまま配置できるか、Rate Limiting の binding と Cron Triggers をそのまま配置するか、配置の画面で入れた変数が写したリポジトリの `wrangler.jsonc` に書き込まれるか (書き込まれなければ、写したリポジトリへの次の push で既定の値に戻ります)。`CONNECT_LIMITER` の `namespace_id` は、同じ Cloudflare のアカウントのほかの Worker と重なるなら変えます。
 
 ### 自分で配置する
+
+前の手順で、git で無視していた `wrangler.jsonc` を手元に作っていた場合は、この版を取り込む前に `wrangler.local.jsonc` へ名前を変えてください。`wrangler.jsonc` はコミットしたボタンの設定になったので、取り込むと、手元のものは警告なしに上書きされます。以後の `wrangler` のコマンドには、`--config wrangler.local.jsonc` を付けます。
 
 Tweetbotの本番通知を使う場合は、[利用者向けの初回セットアップ](ops/production-setup.md)から始めてください。招待制sandboxの試験と資格情報の回復は[試験用の手順](ops/setup.md)、既存Workerの承認付き更新は[配置Workflow](ops/deployment.md)を参照してください。
 
@@ -88,7 +100,7 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 
 - 本人が所有するX開発者アプリのOAuth 2.0 client secretを、利用者Workerの`X_OAUTH2_CLIENT_SECRET`へ保存します。API bearerやユーザーのアクセストークンで代用しません。
 - 独立した32文字以上の乱数を`X_EVENT_ID_SECRET`へ保存します。署名秘密と共用せず、通常の署名鍵更新で変更しません。値をコマンド引数・チャット・ログへ出しません。
-- `X_USER_ID`を、XでOAuth認可した本人のIDにします。mention・replyには本人によるOAuth 2.0の同意と`tweet.read`が必要です。OS通知許可やApp Attestで代用しません。
+- 手で配送先を設定するときは、`X_USER_ID`を、XでOAuth認可した本人のIDにします (Tweetbot から接続するだけなら空のままにします)。mention・replyには本人によるOAuth 2.0の同意と`tweet.read`が必要です。OS通知許可やApp Attestで代用しません。
 - 利用者側にQueue `notification-x-events`を1つ用意し、保持を1日にします。設定例のproducerとconsumerの名前をそろえます。既存の模擬イベントだけを使う場合は、`queues`設定を利用者の設定から外せます。
 - 対象アカウント、アプリ、費用上限、Queue監視、削除と認可取り消しの手順を具体化し、承認後に配置・購読を行います。Xへの照会はオーナー判断により行いません。
 - `ENABLE_X_NOTIFICATION_PREVIEW=true` で、メンション・直接返信・引用ツイート・リツイート・いいねの通知に、通知を起こした公開アカウントの @ユーザー名と公開ツイートの抜粋を表示できます。いいねとリツイートには元のツイートの本文を使います。Webhook に必要な情報がなければ、`X_PREVIEW_BEARER_TOKEN` を設定した場合に限り、X の User Lookup を行います。元のツイートの Post Lookup も使う場合は `ENABLE_X_POST_PREVIEW_LOOKUP=true` を設定します。照会には X の利用料がかかる場合があります。本文を確認できない場合は定型文で通知します。対応する中継 API を先に配置してください。
