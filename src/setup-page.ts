@@ -3,6 +3,7 @@ import { html } from "./connect-page";
 export type SetupMessage =
   | "start"
   | "ready"
+  | "ready_blocked"
   | "not_valid"
   | "crc_failed"
   | "limit"
@@ -31,6 +32,16 @@ const messages: Record<SetupMessage, { en: [string, string]; ja: [string, string
   ready: {
     en: ["Webhook Ready", "Twitter verified this Worker. You can now connect from Tweetbot."],
     ja: ["Webhookを用意しました", "TwitterがこのWorkerを確かめました。Tweetbotから接続できます。"],
+  },
+  ready_blocked: {
+    en: [
+      "Webhook Ready",
+      "Twitter verified this Worker, but Tweetbot cannot connect until you fix X_WEBHOOK_ID below.",
+    ],
+    ja: [
+      "Webhookを用意しました",
+      "TwitterがこのWorkerを確かめましたが、下のX_WEBHOOK_IDを直すまで、Tweetbotから接続できません。",
+    ],
   },
   not_valid: {
     en: [
@@ -75,11 +86,11 @@ const messages: Record<SetupMessage, { en: [string, string]; ja: [string, string
   duplicate: {
     en: [
       "Webhook Not Registered",
-      "Your developer app already has a webhook for this URL, but this Worker could not find it. Delete it in the developer console, then open this page again.",
+      "Your developer app already has a webhook for this URL, but this Worker could not find it. If this Worker already uses it, set X_WEBHOOK_ID to its ID below. Otherwise, delete it in the developer console and open this page again. Deleting a webhook stops deliveries to it.",
     ],
     ja: [
       "Webhookを登録できませんでした",
-      "開発者アプリに、このURLのWebhookがすでにありますが、このWorkerからは見つけられませんでした。開発者コンソールで削除してから、このページを開き直してください。",
+      "開発者アプリに、このURLのWebhookがすでにありますが、このWorkerからは見つけられませんでした。このWorkerがすでに使っているものなら、下のIDをX_WEBHOOK_IDに入れてください。そうでなければ、開発者コンソールで削除してから、このページを開き直してください。削除すると、そのWebhookへの配送は止まります。",
     ],
   },
   create_failed: {
@@ -166,7 +177,7 @@ export type SetupDetails = {
     /** `X_WEBHOOK_ID` の値と、この Webhook の ID の関係。 */
     configured: "none" | "same" | "different" | "invalid";
   };
-  others?: readonly { url: string; valid: boolean | undefined }[];
+  others?: readonly { id: string; url: string; valid: boolean | undefined }[];
   /** ログインを始めるフォームの、確かめの値。 */
   confirm?: string;
 };
@@ -193,8 +204,8 @@ export function setupPage(message: SetupMessage, details: SetupDetails, japanese
   if (details.others !== undefined && details.others.length > 0) {
     const items = details.others
       .map(
-        ({ url, valid }) =>
-          `<li>${html(url)} (${html(valid === true ? label.valid : label.invalid)})</li>`,
+        ({ id, url, valid }) =>
+          `<li>${html(url)} (${html(label.id)}: ${html(id)}, ${html(valid === true ? label.valid : label.invalid)})</li>`,
       )
       .join("");
     rows.push(`<dt>${label.others}</dt><dd><ul>${items}</ul></dd>`);

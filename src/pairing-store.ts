@@ -475,6 +475,14 @@ export class PairingStore extends DurableObject<Env> {
     this.ctx.storage.kv.put("webhook_id", id);
   }
 
+  /** 保存した ID がこの ID なら外す (X が確かめられなかった)。ほかの ID は残す。 */
+  forgetWebhookID(id: string): void {
+    this.ctx.storage.transactionSync(() => {
+      if (this.ctx.storage.kv.get<string>("webhook_id") === id)
+        this.ctx.storage.kv.delete("webhook_id");
+    });
+  }
+
   /**
    * 本人を確かめた後、購読を作る前に、処理中の印を付ける。次のときは付けずに false を返す。
    * - 片付けがそのアカウントの購読を消している (消されている購読を「ある」とみなして使わないように)。

@@ -394,7 +394,7 @@ describe("/setup", () => {
     expect(response.status).toBe(502);
     const body = await response.text();
     expect(body).toContain("as many webhooks as it can");
-    expect(body).toContain("https://other.test/hook?&lt;b&gt; (verified)");
+    expect(body).toContain("https://other.test/hook?&lt;b&gt; (Webhook ID: 888, verified)");
     expect(body).not.toContain("<b>");
     expect(await storedWebhook(env)).toBeUndefined();
   });
@@ -540,7 +540,51 @@ describe("/setup", () => {
     const env = setupEnv({ X_WEBHOOK_ID: " 999" });
     const response = await completeSetup(env, x);
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain("X_WEBHOOK_ID is not a webhook ID");
+    const body = await response.text();
+    expect(body).toContain("X_WEBHOOK_ID is not a webhook ID");
+    expect(body).toContain("cannot connect until you fix X_WEBHOOK_ID");
+    expect(body).not.toContain("You can now connect");
+  });
+
+  test("Cookie のない戻りでも /setup のログインを使い切り、/setup のやり直しのページを出す", async () => {
+    const x = fakeX();
+    const env = setupEnv();
+    const { authorize, cookie } = await startSetup(env, x);
+    const state = authorize.searchParams.get("state") ?? "";
+    const bare = await callback(env, x, state, "");
+    expect(bare.status).toBe(400);
+    expect(await bare.text()).toContain("Start Again");
+    expect(bare.headers.getSetCookie()).toEqual([]);
+    const again = await callback(env, x, state, cookie);
+    expect(again.status).toBe(404);
+    expect(x.calls).toEqual([]);
+  });
+
+  test("登録の答えの URL が送ったものでなければ、ID を保存しない", async () => {
+    const x = fakeX({
+      createReply: {
+        data: { id: "5550002", url: "https://other.test/webhooks/x", valid: true, created_at: "" },
+      },
+    });
+    const env = setupEnv();
+    const response = await completeSetup(env, x);
+    expect(response.status).toBe(503);
+    expect(await storedWebhook(env)).toBeUndefined();
+  });
+
+  test("保存した Webhook を確かめ直して失敗したら、保存した ID を外して接続を止める", async () => {
+    const env = setupEnv();
+    const first = fakeX({ hooks: [{ id: "777", url: webhookURL, valid: true }] });
+    expect((await completeSetup(env, first)).status).toBe(200);
+    expect(await storedWebhook(env)).toBe("777");
+    const second = fakeX({
+      hooks: [{ id: "777", url: webhookURL, valid: true }],
+      revalidate: false,
+    });
+    expect((await completeSetup(env, second)).status).toBe(502);
+    expect(await storedWebhook(env)).toBeUndefined();
+    const version = await handle(new Request(`${origin}/v1/pairing`), env, second.deps);
+    expect(await version.json()).toEqual({ version: 3, x_login: false });
   });
 });
 

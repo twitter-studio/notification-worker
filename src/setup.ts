@@ -155,8 +155,8 @@ async function start(request: Request, config: SetupConfig, store: Store): Promi
 
 /**
  * `GET /oauth/callback`。X の戻り先は 1 つに揃える (X アプリに登録する Callback URL を増やさない)。
- * state が `/setup` のログインのものなら設定を終え、ほかは接続のログインとして扱う。`/setup` のログインを引くのは、
- * `/setup` を始めたブラウザの Cookie があるときだけ (Cookie のない戻りは、どのみち断るので、Durable Object を読まない)。
+ * state が `/setup` のログインのものなら設定を終え、ほかは接続のログインとして扱う。`/setup` のログインは、Cookie が
+ * なくても引いて使い切る (別のブラウザに戻った認可コードで、後から終えられないようにする)。
  */
 export async function handleCallback(
   request: Request,
@@ -166,11 +166,11 @@ export async function handleCallback(
   const config = setupConfig(env);
   const store = pairingStore(env);
   const state = new URL(request.url).searchParams.get("state") ?? "";
-  const browser = cookieValue(request, browserCookie);
-  if (config && store && browser && request.method === "GET" && Random.test(state)) {
+  if (config && store && request.method === "GET" && Random.test(state)) {
     const { login, expired } = await store.takeSetup(state);
     if (login) {
-      if ((await hex(browser)) !== login.browserHash)
+      const browser = cookieValue(request, browserCookie);
+      if (browser === undefined || (await hex(browser)) !== login.browserHash)
         // ほかの人が始めたログインの戻り先を開かされた。開いた人の進めているログインの Cookie は消さない。
         return page(request, 400, "restart");
       const configured = env.X_WEBHOOK_ID ?? "";
@@ -218,21 +218,29 @@ async function finish(
         ? { others: prepared.others }
         : {},
     );
-  // X が確かめた Webhook の ID だけを保存する。確かめられない Webhook に購読を付けても、イベントは届かず課金だけが進む。
+  // X が確かめた Webhook の ID だけを使う。確かめられない Webhook に購読を付けても、イベントは届かず課金だけが進む。
+  // 前に保存した同じ ID も、確かめられなければ外す (接続を止め、確かめ直すまで購読を作らせない)。
   if (prepared.valid) await store.saveWebhookID(prepared.id);
-  return done(prepared.valid ? 200 : 502, prepared.valid ? "ready" : "not_valid", {
+  else await store.forgetWebhookID(prepared.id);
+  const relation =
+    configured.length === 0
+      ? "none"
+      : !WebhookID.test(configured)
+        ? "invalid"
+        : configured === prepared.id
+          ? "same"
+          : "different";
+  const message = !prepared.valid
+    ? "not_valid"
+    : relation === "invalid"
+      ? "ready_blocked"
+      : "ready";
+  return done(prepared.valid ? 200 : 502, message, {
     webhook: {
       url: webhookURL,
       id: prepared.id,
       created: prepared.created,
-      configured:
-        configured.length === 0
-          ? "none"
-          : !WebhookID.test(configured)
-            ? "invalid"
-            : configured === prepared.id
-              ? "same"
-              : "different",
+      configured: relation,
     },
   });
 }
@@ -242,7 +250,7 @@ type Prepared =
   | {
       kind: "failed";
       reason: "crc_failed" | "limit" | "url_rejected" | "duplicate" | "create_failed";
-      others: { url: string; valid: boolean | undefined }[];
+      others: { id: string; url: string; valid: boolean | undefined }[];
     }
   | { kind: "unavailable" };
 
@@ -314,11 +322,12 @@ async function prepareWebhook(url: string, bearer: string, deps: RelayDeps): Pro
   if (created.status === 200 || created.status === 201) {
     const result = Created.safeParse(await readJSON(created));
     await discardBody(created);
-    if (!result.success) return { kind: "unavailable" };
+    // 送った URL のものでなければ、この Worker の Webhook として保存しない。
+    if (!result.success || !sameURL(result.data.data.url, url)) return { kind: "unavailable" };
     return { kind: "ready", id: result.data.data.id, valid: result.data.data.valid, created: true };
   }
   const text = await errorText(created);
-  const others = rows.map(({ url: other, valid }) => ({ url: other, valid }));
+  const others = rows.map(({ id, url: other, valid }) => ({ id, url: other, valid }));
   if (text.includes("WebhookLimitExceeded")) return { kind: "failed", reason: "limit", others };
   if (text.includes("CrcValidationFailed")) return { kind: "failed", reason: "crc_failed", others };
   if (text.includes("UrlValidationFailed"))
