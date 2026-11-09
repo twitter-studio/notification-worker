@@ -1,22 +1,23 @@
-# 手元で使う秘密の名前の一覧 (値は書かない)。手元では、この名前で .dev.vars (コミットしない) に値を置く。
-# 本番 (自分の Cloudflare) では、Deploy to Cloudflare のボタンの配置の画面か、`wrangler secret put <名前> --config wrangler.local.jsonc` で置く。型 (worker-configuration.d.ts) は、このファイルから作る。
+# 秘密の名前の一覧 (値は書かない)。Deploy to Cloudflare のボタンは、ここに並べた秘密をどれも必須の欄として求める
+# (2026-11-09、空のままでは進めないことを確かめた)。そのため、Tweetbot から接続して使う Worker に要るものだけを並べ、
+# 任意の秘密は下にコメントで書く (型は src/config.ts で任意として宣言する)。
+# 手元では、この名前で .dev.vars (コミットしない) に値を置く。本番では、ボタンの配置の画面か、
+# `wrangler secret put <名前> --config wrangler.local.jsonc` で置く。型 (worker-configuration.d.ts) は、このファイルから作る。
 
-# 中継の資格情報 (アプリが 1 回だけ見せる tsr_ で始まる値)。
-RELAY_TOKEN=
-# 任意の X_RELAY_ROUTES は、X アカウントごとの配送先を指定する JSON の秘密。空の値は設定しない。
-# 模擬の Webhook の署名の鍵 (32 文字以上の乱数)。ENABLE_MOCK_EVENTS を "true" にするときだけ要る。
-# 作り方は README の「模擬のイベントで試す」(画面に出さずに .dev.vars へ書く)。
-MOCK_WEBHOOK_SECRET=
-
-# XAAのOAuth 2.0 client secret。bearerやユーザーのアクセストークンではない。無効フラグの間は不要。
+# XAAのOAuth 2.0 client secret。bearerやユーザーのアクセストークンではない。
 X_OAUTH2_CLIENT_SECRET=
 
 # 重複除去IDを作る独立した32文字以上の乱数。Xの署名秘密と共用しない。
 X_EVENT_ID_SECRET=
 
-# 公開投稿のユーザー名を補う任意の App-only Bearer Token。
-X_PREVIEW_BEARER_TOKEN=
-# X でログインして接続するときに、購読の一覧と削除に使う、同じ X アプリの App-only の Bearer Token。
+# X でログインして接続するときと /setup で、Webhook の登録、購読の一覧と削除に使う、同じ X アプリの App-only の Bearer Token。
 X_APP_BEARER_TOKEN=
 # Tweetbot からの接続と /setup に使う管理用のトークン (tpa_ に、32 バイトの乱数を Base64URL にした 43 文字を続けたもの)。
 PAIRING_ADMIN_TOKEN=
+
+# 任意の秘密 (要るときだけ置く。空の値は設定しない):
+# RELAY_TOKEN: 手で配送先を 1 つ設定するときの中継の資格情報 (アプリが 1 回だけ見せる tsr_ で始まる値)。
+# X_RELAY_ROUTES: X アカウントごとの配送先を指定する JSON。
+# MOCK_WEBHOOK_SECRET: 模擬の Webhook の署名の鍵 (32 文字以上の乱数)。ENABLE_MOCK_EVENTS を "true" にするときだけ要る。
+#   作り方は README の「模擬のイベントで試す」(画面に出さずに .dev.vars へ書く)。
+# X_PREVIEW_BEARER_TOKEN: 公開投稿のユーザー名を補う App-only Bearer Token。

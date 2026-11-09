@@ -52,6 +52,10 @@ export type XRelayTarget = {
 
 declare global {
   interface Env {
+    // 任意の秘密。Deploy to Cloudflare のボタンは .dev.vars.example の秘密をどれも必須にするので、そこには並べない。
+    RELAY_TOKEN?: string;
+    MOCK_WEBHOOK_SECRET?: string;
+    X_PREVIEW_BEARER_TOKEN?: string;
     X_RELAY_ROUTES?: string;
     X_NOTIFICATION_TYPES?: string;
     ENABLE_X_NOTIFICATION_PREVIEW?: string;

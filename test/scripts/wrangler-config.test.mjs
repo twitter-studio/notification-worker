@@ -56,7 +56,15 @@ test("ボタンの設定は、入口を閉じたまま配置し、秘密を平�
     assert.equal(button.vars.ENABLE_MOCK_EVENTS, "false");
   }
   assert.equal(button.preview_urls, false);
-  for (const name of secrets) assert.equal(button.vars[name], undefined, name);
+  const optional = [
+    "RELAY_TOKEN",
+    "X_RELAY_ROUTES",
+    "MOCK_WEBHOOK_SECRET",
+    "X_PREVIEW_BEARER_TOKEN",
+  ];
+  for (const name of [...secrets, ...optional]) assert.equal(button.vars[name], undefined, name);
+  // ボタンは .dev.vars.example の秘密をどれも必須の欄にするので、任意の秘密を並べない。
+  for (const name of optional) assert.ok(!secrets.includes(name), name);
 });
 
 test("ボタンの配置の画面で入れる値と、説明が 1 対 1 で対応する", () => {
