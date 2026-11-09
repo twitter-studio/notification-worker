@@ -44,7 +44,7 @@ GROUP BY attributes['stage'], attributes['outcome']
 LIMIT 30
 ```
 
-受信保存は `enqueued`、中継結果は `delivery` と分けて読む。種類のカウントは各stageの処理回数で、受信の再送やQueue再試行でも増える。stageを合算して通知数と扱わない。SQL APIはadaptive samplingの重みをCOUNT/SUMへ適用するため、これも厳密な配送台帳ではない。再送上限の破棄は `discarded` の理由を集計する。資格情報が使えず (401、403) 再試行せずに捨てたjobは `discarded` に出ないので、`delivery` の `unauthorized` で数える。
+受信保存は `enqueued`、中継結果は `delivery` と分けて読む。種類のカウントは各stageの処理回数で、受信の再送やQueue再試行でも増える。stageを合算して通知数と扱わない。SQL APIはadaptive samplingの重みをCOUNT/SUMへ適用するため、これも厳密な配送台帳ではない。再送上限の破棄は `discarded` の理由を集計する。中継が資格情報を断り (401) 再試行せずに捨てたjobは `discarded` に出ないので、`delivery` の `unauthorized` で数える。
 
 同じ本人・同じ投稿のmention/replyは同じ通知IDを使い、先に中継が受け付けた後はduplicateで止める。種類別の受信・処理回数は引き続き数えるため、両種類の受信があっても通知は1件になる。到着順が逆の場合と同一種類の再送を合成テストで確認する。最小限の集計には投稿の相関情報を残さないため、同じ投稿の重なりをログだけで証明できない。
 

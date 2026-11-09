@@ -9,7 +9,7 @@ export type RelayOutcome =
   /** 少し待てば送れる (409、429、5xx、つながらない)。Webhook を送ってきた側に、やり直してもらう。 */
   | { kind: "retry_later"; retryAfterSeconds: number }
   /** 資格情報が使えない (401、403)。やり直さず、利用者が RELAY_TOKEN を入れ替える。 */
-  | { kind: "unauthorized" }
+  | { kind: "unauthorized"; status: 401 | 403 }
   /** 中継の API が受けない (413、415、422 など)。やり直さない。 */
   | { kind: "rejected" }
   /**
@@ -93,7 +93,8 @@ export async function sendToRelay(
     }
     // 本文は読まずに捨てる (中継の API のエラーの文を、ログに写さない)。
     await response.body?.cancel();
-    if (response.status === 401 || response.status === 403) return { kind: "unauthorized" };
+    if (response.status === 401 || response.status === 403)
+      return { kind: "unauthorized", status: response.status };
     if (
       (response.status >= 300 && response.status < 400) ||
       response.status === 404 ||
