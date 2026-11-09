@@ -6,6 +6,8 @@ export type SetupMessage =
   | "not_valid"
   | "crc_failed"
   | "limit"
+  | "url_rejected"
+  | "duplicate"
   | "create_failed"
   | "not_allowed"
   | "denied"
@@ -60,6 +62,26 @@ const messages: Record<SetupMessage, { en: [string, string]; ja: [string, string
       "開発者アプリのWebhookが上限に達しています。使っていないWebhookを開発者コンソールで削除してから、このページを開き直してください。",
     ],
   },
+  url_rejected: {
+    en: [
+      "Webhook Not Registered",
+      "Twitter did not accept this Worker's URL as a webhook. Open this page from the Worker's workers.dev URL or custom domain, without a port.",
+    ],
+    ja: [
+      "Webhookを登録できませんでした",
+      "TwitterがこのWorkerのURLをWebhookとして受け付けませんでした。Workerのworkers.devのURLか独自ドメインで、ポートを付けずにこのページを開いてください。",
+    ],
+  },
+  duplicate: {
+    en: [
+      "Webhook Not Registered",
+      "Your developer app already has a webhook for this URL, but this Worker could not find it. Delete it in the developer console, then open this page again.",
+    ],
+    ja: [
+      "Webhookを登録できませんでした",
+      "開発者アプリに、このURLのWebhookがすでにありますが、このWorkerからは見つけられませんでした。開発者コンソールで削除してから、このページを開き直してください。",
+    ],
+  },
   create_failed: {
     en: ["Webhook Not Registered", "Twitter did not accept the webhook. Try again later."],
     ja: [
@@ -109,8 +131,10 @@ const labels = {
     id: "Webhook ID",
     created: "Registered now",
     existing: "Already registered",
-    override:
+    different:
       "X_WEBHOOK_ID is set to a different webhook, and connections use it. Remove X_WEBHOOK_ID or set it to the webhook ID above.",
+    invalidSetting:
+      "X_WEBHOOK_ID is not a webhook ID, so Tweetbot cannot connect. Remove X_WEBHOOK_ID or set it to the webhook ID above.",
     others: "Webhooks on your developer app",
     valid: "verified",
     invalid: "not verified",
@@ -122,8 +146,10 @@ const labels = {
     id: "WebhookのID",
     created: "今登録しました",
     existing: "登録済みでした",
-    override:
+    different:
       "X_WEBHOOK_IDに別のWebhookが設定されていて、接続ではそちらを使います。X_WEBHOOK_IDを消すか、上のWebhookのIDにしてください。",
+    invalidSetting:
+      "X_WEBHOOK_IDの値がWebhookのIDの形でないので、Tweetbotから接続できません。X_WEBHOOK_IDを消すか、上のWebhookのIDにしてください。",
     others: "開発者アプリのWebhook",
     valid: "確かめ済み",
     invalid: "確かめられていない",
@@ -133,7 +159,13 @@ const labels = {
 
 export type SetupDetails = {
   host: string;
-  webhook?: { url: string; id: string; created: boolean; overridden: boolean };
+  webhook?: {
+    url: string;
+    id: string;
+    created: boolean;
+    /** `X_WEBHOOK_ID` の値と、この Webhook の ID の関係。 */
+    configured: "none" | "same" | "different" | "invalid";
+  };
   others?: readonly { url: string; valid: boolean | undefined }[];
   /** ログインを始めるフォームの、確かめの値。 */
   confirm?: string;
@@ -149,12 +181,14 @@ export function setupPage(message: SetupMessage, details: SetupDetails, japanese
   const label = labels[language];
   const rows: string[] = [`<dt>${label.worker}</dt><dd>${html(details.host)}</dd>`];
   if (details.webhook !== undefined) {
-    const { url, id, created, overridden } = details.webhook;
+    const { url, id, created, configured } = details.webhook;
     rows.push(
       `<dt>${label.webhook}</dt><dd>${html(url)}<br>${html(created ? label.created : label.existing)}</dd>`,
       `<dt>${label.id}</dt><dd>${html(id)}</dd>`,
     );
-    if (overridden) rows.push(`<dd class="warning">${html(label.override)}</dd>`);
+    if (configured === "different") rows.push(`<dd class="warning">${html(label.different)}</dd>`);
+    if (configured === "invalid")
+      rows.push(`<dd class="warning">${html(label.invalidSetting)}</dd>`);
   }
   if (details.others !== undefined && details.others.length > 0) {
     const items = details.others

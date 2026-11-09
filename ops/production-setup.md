@@ -140,22 +140,24 @@ DM プレビューの鍵を外すか入れ替えると、Queue に残った DM �
 | `X_OAUTH2_CLIENT_ID`     | vars                     | 自分の X アプリの OAuth 2.0 の Client ID                                                                                                                 |
 | `X_OAUTH2_CLIENT_SECRET` | secret                   | 今の Webhook の CRC にも使っている Client Secret (32 文字以上)                                                                                           |
 | `ALLOWED_X_USER_IDS`     | vars                     | 接続を許す X ユーザーの数値 ID。カンマ区切り                                                                                                             |
-| `X_WEBHOOK_ID`           | vars                     | 購読を付ける Webhook の ID。置かなければ、下の `/setup` で用意した Webhook を使います                                                                      |
-| `X_APP_BEARER_TOKEN`     | secret                   | 同じ X アプリの App-only の Bearer Token。購読の一覧と削除に使う                                                                                         |
+| `X_WEBHOOK_ID`           | vars                     | 購読を付ける Webhook の ID。置かなければ、下の `/setup` で用意した Webhook を使います                                                                    |
+| `X_APP_BEARER_TOKEN`     | secret                   | 同じ X アプリの App-only の Bearer Token。購読の一覧と削除、`/setup` の Webhook の一覧、登録、確かめに使う                                               |
 | `CONNECT_LIMITER`        | Rate Limiting の binding | 接続元ごとの回数の上限。例: `"ratelimits": [{ "name": "CONNECT_LIMITER", "namespace_id": "<自分で決める数>", "simple": { "limit": 10, "period": 60 } }]` |
 
 X アプリの Callback URL に `https://<worker-domain>/oauth/callback` を足します (完全一致。下の `/setup` も同じ戻り先を使います)。
 
 #### `/setup` で Webhook を用意する
 
-`X_WEBHOOK_ID` を置かずに、Worker のページから Webhook を用意できます ([ADR-0008](https://github.com/twitter-studio/notification-docs/blob/main/docs/adr/0008-app-driven-notification-setup.md) の段 4)。上の表の `X_WEBHOOK_ID` 以外の設定をそろえてから、ブラウザで `https://<worker-domain>/setup` を開き、「Twitterでログイン」を押して、`ALLOWED_X_USER_IDS` のアカウントでログインします。Worker は次のことを行います。
+`X_WEBHOOK_ID` を置かずに、Worker のページから Webhook を用意できます ([ADR-0008](https://github.com/twitter-studio/notification-docs/blob/main/docs/adr/0008-app-driven-notification-setup.md) の段 4)。上の表の `X_WEBHOOK_ID` 以外の設定をそろえてから、ブラウザで `https://<worker-domain>/setup` を開き、「Twitterでログイン」を押して、`ALLOWED_X_USER_IDS` のアカウントでログインします。`ALLOWED_X_USER_IDS` のアカウントなら、持ち主でなくても設定できます (登録できないときに、開発者アプリのほかの Webhook の URL も見えます)。Worker は次のことを行います。
 
-1. ページを開いただけでは、ログインを始めません。ボタンのフォームは、ページを開いたブラウザの Cookie (`SameSite=Strict`) と照らし合わせるので、外のページから直に送らせることはできません。ページは外のページの枠の中には出ません。ボタンを押す、X から戻るのそれぞれで、接続元ごとに回数を数えます (`/connect` と同じ `CONNECT_LIMITER` を、別の鍵で使います)。
-2. X の OAuth 2.0 (PKCE) で、`tweet.read` と `users.read` だけを求めて本人を確かめます。ログインを始めたブラウザでないとき、`ALLOWED_X_USER_IDS` にないアカウントのときは、Webhook に触りません。トークンは保存しません。
-3. App-only の Bearer で開発者アプリの Webhook を一覧し、`https://<worker-domain>/webhooks/x` のものがあれば、X に確かめ (CRC) を呼び直させます。なければ登録します (登録のときも X が確かめます)。
-4. Webhook の ID を Durable Object に保存し、状態をページに出します。`X_WEBHOOK_ID` を置いていれば、接続ではそちらを使います。値が違えば、ページに出します。
+1. ページを開いただけでは、ログインを始めません。ボタンのフォームは、ページを開いたブラウザの Cookie (`SameSite=Strict`) と照らし合わせるので、外のページから直に送らせることはできません。ページは外のページの枠の中には出ません。ボタンを押したとき、X から戻ってトークンを求める前に、接続元ごとに回数を数えます (`/connect` と同じ `CONNECT_LIMITER` を、別の鍵で使います。そのため、接続元ごとの回数は `/connect` と合わせて 2 倍になります)。
+2. X の OAuth 2.0 (PKCE) で、`tweet.read` と `users.read` だけを求めて本人を確かめます。ログインを始めたブラウザでないとき、`ALLOWED_X_USER_IDS` にないアカウントのときは、Webhook に触りません。トークンは保存しません。ログインの前にはアカウントが分からないので、`/connect` と違って、許可していないアカウントも X アプリの同意画面まで進み、Worker はトークンの交換と `GET /2/users/me` を 1 回ずつ呼びます。
+3. App-only の Bearer で開発者アプリの Webhook を一覧し、`https://<worker-domain>/webhooks/x` のもの (URL の形を揃えて比べます) があれば、X に確かめ (CRC) を呼び直させます。なければ登録します (登録のときも X が確かめます)。
+4. X が確かめた Webhook の ID だけを Durable Object に保存し、状態をページに出します。確かめられない Webhook に購読を付けても、イベントは届かず、課金だけが進むためです。`X_WEBHOOK_ID` を置いていれば、接続ではそちらを使います。値が違うとき、ID の形でないときは、ページに出します。
 
-開発者アプリの Webhook が上限に達していて登録できないときは、開発者アプリのほかの Webhook の URL をページに出します (2026-11-08 に、Pay Per Use のアプリで 2 つ目を作ろうとして `WebhookLimitExceeded` になりました)。使っていないものを開発者コンソールで削除してから、開き直します。Worker はほかの Webhook を消しません (ほかの Worker への配送を止めないため)。X が確かめられないときは、`X_OAUTH2_CLIENT_SECRET` が開発者アプリの Client Secret と合っているかを確かめます。
+開発者アプリの Webhook が上限に達していて登録できないときと、同じ URL の Webhook がすでにあると言われたときは、開発者アプリのほかの Webhook の URL をページに出します (2026-11-08 に、Pay Per Use のアプリで 2 つ目を作ろうとして `WebhookLimitExceeded` になりました)。使っていないものを開発者コンソールで削除してから、開き直します。Worker はほかの Webhook を消しません (ほかの Worker への配送を止めないため)。X が確かめられないときは、`X_OAUTH2_CLIENT_SECRET` が開発者アプリの Client Secret と合っているかを確かめます。確かめの呼び直しが混み合い (429) や 5xx などで失敗したときは、結果が分からないので、しばらくしてから開き直すよう出します。
+
+`/setup` のログインは 10 分で切れ、待っているものは 16 までで、超えると古いものから置き換えます。外から何度もボタンを押されると、持ち主のログインが置き換えられて、X から戻ったときに初めからやり直すことになります (断ると、他人が枠を埋めるだけで持ち主が設定できなくなるため、置き換えます)。同じブラウザの 2 つのタブで `/setup` を開くと、前のタブのボタンは使えなくなります。
 
 #### Tweetbot から接続する
 
@@ -183,5 +185,8 @@ Tweetbot で URL と通知の種類を選んで接続すると、Worker は次�
 - いいねと新しいフォロワーの購読の向き (`inbound`) は、X の OpenAPI に合わせて `filter.direction` で送ります。概要は `filter.qualifiers.direction` と同じものとしています。
 - 新しいフォロワーの購読に要る scope。X の Callback URL に workers.dev のホストを登録できること、ASWebAuthenticationSession の中で Cookie が保たれること (Worker は Cookie の合わない戻りを断るので、接続できたことから分かります) は、実機で確かめました ([記録](https://github.com/twitter-studio/notification-docs/blob/main/docs/operations/2026-11-08-worker-x-login-device-test.md))。
 - 使った後のトークンを取り消すと、本人の認可で作った購読も消えるか (消えないと分かるまで、取り消さない)。
+- `/setup` の確かめの呼び直し (`PUT /2/webhooks/:id`) の答えの `valid` が、確かめの結果か、確かめを始めたことか (X の文書の書き方が 2 通りある)。Worker は確かめの結果として扱います。失敗の答えの状態コードと本文の形も文書にないので、エラーの名前 (`WebhookLimitExceeded`、`CrcValidationFailed`、`UrlValidationFailed`、`DuplicateUrlFailed`) が本文にあるかだけを見ます。
+- X が Webhook の URL を整えて保存するか。Worker は URL の形を揃えて比べます。
+- 許可していないアカウントの `/setup` のログインで呼ぶ `GET /2/users/me` が、X の課金の対象になるか。
 
 手動ルートを設定していない新規 Worker でも使えます。その場合は `X_RELAY_ROUTES`、`X_USER_ID`、`RELAY_TOKEN`、`X_NOTIFICATION_TYPES` を設定しません。既存の手動ルートも使えます。同じアカウントで同じ中継資格情報をすでに手動設定している端末は、二重配送を防ぐため追加できません。ペアリングは既存の購読を使うので、X の購読管理は上記の手順で行います。

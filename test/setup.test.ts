@@ -1,6 +1,8 @@
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, test } from "vitest";
 import { handle } from "../src/app";
+import { connectConfig } from "../src/connect-config";
+import { pairingStore } from "../src/pairing-store";
 import { testEnv } from "./helpers";
 
 const admin = `tpa_${"A".repeat(43)}`;
@@ -19,8 +21,12 @@ function fakeX(
     hooks?: Hook[];
     /** 登録の失敗の答え (状態コードと本文)。 */
     createError?: { status: number; body: unknown };
+    /** 登録の 200 の答えの本文を、この値にする (読めない答え)。 */
+    createReply?: unknown;
     /** 確かめ (PUT) の後の valid。 */
     revalidate?: boolean;
+    /** 確かめ (PUT) の失敗の答え (状態コードと本文)。 */
+    revalidateError?: { status: number; body: unknown };
     listStatus?: number;
   } = {},
 ) {
@@ -60,6 +66,7 @@ function fakeX(
     if (url.pathname === "/2/webhooks" && request.method === "POST") {
       if (options.createError)
         return Response.json(options.createError.body, { status: options.createError.status });
+      if (options.createReply !== undefined) return Response.json(options.createReply);
       const created = {
         id: "5550001",
         url: (JSON.parse(body) as { url: string }).url,
@@ -69,8 +76,13 @@ function fakeX(
       hooks.push(created);
       return Response.json({ data: created });
     }
-    if (url.pathname.startsWith("/2/webhooks/") && request.method === "PUT")
+    if (url.pathname.startsWith("/2/webhooks/") && request.method === "PUT") {
+      if (options.revalidateError)
+        return Response.json(options.revalidateError.body, {
+          status: options.revalidateError.status,
+        });
       return Response.json({ data: { valid: options.revalidate ?? true } });
+    }
     return Response.json({}, { status: 404 });
   };
   return {
@@ -170,6 +182,12 @@ describe("/setup", () => {
       setupEnv({ ENABLE_X_ACTIVITY: "false" }),
       setupEnv({ ALLOWED_X_USER_IDS: "" }),
       setupEnv({ PAIRING_ADMIN_TOKEN: "" }),
+      (() => {
+        const env = setupEnv();
+        delete env.CONNECT_LIMITER;
+        return env;
+      })(),
+      setupEnv({ X_OAUTH2_CLIENT_SECRET: "short" }),
     ]) {
       const response = await handle(new Request(`${origin}/setup`), env, x.deps);
       expect(response.status).toBe(404);
@@ -291,13 +309,76 @@ describe("/setup", () => {
     expect(x.calls.at(-1)?.path).toBe("/2/webhooks/777");
   });
 
-  test("X が確かめられなければ、そう出す (ID は残し、開き直して確かめ直せるようにする)", async () => {
-    const x = fakeX({ hooks: [{ id: "777", url: webhookURL, valid: true }], revalidate: false });
+  test("X が確かめられなければ、そう出し、ID は保存しない (購読を作れるようにしない)", async () => {
+    for (const options of [
+      { revalidate: false },
+      { revalidateError: { status: 400, body: { errors: [{ message: "CrcValidationFailed" }] } } },
+    ]) {
+      const x = fakeX({ hooks: [{ id: "777", url: webhookURL, valid: true }], ...options });
+      const env = setupEnv();
+      const response = await completeSetup(env, x);
+      expect(response.status).toBe(502);
+      expect(await response.text()).toContain("Webhook Not Verified");
+      expect(await storedWebhook(env)).toBeUndefined();
+      const version = await handle(new Request(`${origin}/v1/pairing`), env, x.deps);
+      expect(await version.json()).toEqual({ version: 3, x_login: false });
+    }
+  });
+
+  test("確かめの結果が分からない失敗では、確かめられないとは出さず、やり直してもらう", async () => {
+    for (const revalidateError of [
+      { status: 503, body: {} },
+      { status: 429, body: {} },
+      { status: 400, body: { errors: [{ message: "WebhookIdInvalid" }] } },
+    ]) {
+      const x = fakeX({ hooks: [{ id: "777", url: webhookURL, valid: true }], revalidateError });
+      const env = setupEnv();
+      const response = await completeSetup(env, x);
+      expect(response.status, String(revalidateError.status)).toBe(503);
+      expect(await response.text()).toContain("Could Not Reach Twitter");
+      expect(await storedWebhook(env)).toBeUndefined();
+    }
+  });
+
+  test("X が URL を整えて保存していても、同じ Webhook として見つける", async () => {
+    const x = fakeX({ hooks: [{ id: "777", url: "HTTPS://WORKER.TEST/webhooks/x", valid: true }] });
     const env = setupEnv();
     const response = await completeSetup(env, x);
-    expect(response.status).toBe(502);
-    expect(await response.text()).toContain("Webhook Not Verified");
+    expect(response.status).toBe(200);
     expect(await storedWebhook(env)).toBe("777");
+    expect(x.calls.some(({ method, path }) => method === "POST" && path === "/2/webhooks")).toBe(
+      false,
+    );
+  });
+
+  test("登録の答えが読めなければ、ID を保存しない", async () => {
+    const x = fakeX({ createReply: {} });
+    const env = setupEnv();
+    const response = await completeSetup(env, x);
+    expect(response.status).toBe(503);
+    expect(await storedWebhook(env)).toBeUndefined();
+  });
+
+  test("登録の失敗は、理由ごとの文言で出し、ほかの Webhook は上限と同じ URL のときだけ出す", async () => {
+    const other = { id: "888", url: "https://other.test/hook", valid: true };
+    for (const [message, text, listed] of [
+      ["CrcValidationFailed", "Check the client secret", false],
+      ["UrlValidationFailed", "did not accept this Worker&#39;s URL", false],
+      ["DuplicateUrlFailed", "already has a webhook for this URL", true],
+      ["SomethingElse", "Twitter did not accept the webhook", false],
+    ] as const) {
+      const x = fakeX({
+        hooks: [other],
+        createError: { status: 400, body: { errors: [{ message }] } },
+      });
+      const env = setupEnv();
+      const response = await completeSetup(env, x);
+      expect(response.status, message).toBe(502);
+      const body = await response.text();
+      expect(body, message).toContain(text);
+      expect(body.includes(other.url), message).toBe(listed);
+      expect(await storedWebhook(env)).toBeUndefined();
+    }
   });
 
   test("Webhook の数が上限なら、開発者アプリのほかの Webhook を出し、ID は保存しない", async () => {
@@ -315,17 +396,6 @@ describe("/setup", () => {
     expect(body).toContain("as many webhooks as it can");
     expect(body).toContain("https://other.test/hook?&lt;b&gt; (verified)");
     expect(body).not.toContain("<b>");
-    expect(await storedWebhook(env)).toBeUndefined();
-  });
-
-  test("登録で X が確かめられなければ、Client Secret を確かめるよう出す", async () => {
-    const x = fakeX({
-      createError: { status: 400, body: { errors: [{ message: "CrcValidationFailed" }] } },
-    });
-    const env = setupEnv();
-    const response = await completeSetup(env, x);
-    expect(response.status).toBe(502);
-    expect(await response.text()).toContain("Check the client secret");
     expect(await storedWebhook(env)).toBeUndefined();
   });
 
@@ -347,6 +417,8 @@ describe("/setup", () => {
     const other = await callback(env, x, state, `__Host-tweetbot-setup=${"Z".repeat(43)}`);
     expect(other.status).toBe(400);
     expect(await other.text()).toContain("Start Again");
+    // 開いた人が進めているログインの Cookie は消さない。
+    expect(other.headers.getSetCookie()).toEqual([]);
     expect(x.calls).toEqual([]);
     // 同じ state はもう使えない (接続のログインとして扱い、見つからない)。
     const again = await callback(env, x, state, cookie);
@@ -408,5 +480,91 @@ describe("/setup", () => {
       x.calls.filter(({ method, path }) => method === "POST" && path === "/2/webhooks"),
     ).toEqual([]);
     expect(await storedWebhook(env)).toBeUndefined();
+  });
+
+  test("GET と POST のほかは受けず、フォームでない POST は断る", async () => {
+    const x = fakeX();
+    const env = setupEnv();
+    const put = await handle(new Request(`${origin}/setup`, { method: "PUT" }), env, x.deps);
+    expect(put.status).toBe(405);
+    const opened = await handle(new Request(`${origin}/setup`), env, x.deps);
+    const confirm = /name="confirm" value="([^"]+)"/.exec(await opened.text())?.[1] ?? "";
+    const json = await handle(
+      new Request(`${origin}/setup`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: origin,
+          Cookie: cookieOf(opened, "__Host-tweetbot-setup-confirm"),
+        },
+        body: JSON.stringify({ confirm }),
+      }),
+      env,
+      x.deps,
+    );
+    expect(json.status).toBe(403);
+  });
+
+  test("X から戻ったときも回数を数え、上限を超えたら X に何も求めない", async () => {
+    const x = fakeX();
+    let calls = 0;
+    const env = setupEnv({
+      CONNECT_LIMITER: { limit: async () => ({ success: ++calls === 1 }) },
+    });
+    const response = await completeSetup(env, x);
+    expect(response.status).toBe(429);
+    expect(await response.text()).toContain("Too Many Attempts");
+    expect(x.calls).toEqual([]);
+  });
+
+  test("結果のページは、日本語の端末では日本語で出す", async () => {
+    const x = fakeX();
+    const env = setupEnv();
+    const { authorize, cookie } = await startSetup(env, x);
+    const response = await handle(
+      new Request(
+        `${origin}/oauth/callback?${new URLSearchParams({ code: "auth-code", state: authorize.searchParams.get("state") ?? "" })}`,
+        { headers: { Cookie: cookie, "Accept-Language": "ja-JP,ja;q=0.9" } },
+      ),
+      env,
+      x.deps,
+    );
+    const body = await response.text();
+    expect(body).toContain('<html lang="ja">');
+    expect(body).toContain("Webhookを用意しました");
+    expect(body).toContain("今登録しました");
+  });
+
+  test("X_WEBHOOK_ID の形が正しくなければ、接続できないことを出す", async () => {
+    const x = fakeX();
+    const env = setupEnv({ X_WEBHOOK_ID: " 999" });
+    const response = await completeSetup(env, x);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("X_WEBHOOK_ID is not a webhook ID");
+  });
+});
+
+describe("接続で使う Webhook の ID", () => {
+  async function save(env: Env, id: string) {
+    const stub = env.PAIRING_ROUTES?.getByName("routes");
+    if (!stub) throw new Error("Missing store");
+    await runInDurableObject(stub, (_instance, state) => state.storage.kv.put("webhook_id", id));
+  }
+
+  test("X_WEBHOOK_ID がなければ、/setup で保存した ID を使う", async () => {
+    const env = setupEnv();
+    expect(await connectConfig(env, pairingStore(env))).toBeUndefined();
+    await save(env, "5550001");
+    expect((await connectConfig(env, pairingStore(env)))?.webhookID).toBe("5550001");
+  });
+
+  test("X_WEBHOOK_ID を置いていれば、保存した ID より先に使い、形が正しくなければ使わない", async () => {
+    await save(setupEnv(), "5550001");
+    expect(
+      (await connectConfig(setupEnv({ X_WEBHOOK_ID: "999" }), pairingStore(setupEnv())))?.webhookID,
+    ).toBe("999");
+    expect(
+      await connectConfig(setupEnv({ X_WEBHOOK_ID: "abc" }), pairingStore(setupEnv())),
+    ).toBeUndefined();
   });
 });

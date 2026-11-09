@@ -155,7 +155,8 @@ async function start(request: Request, config: SetupConfig, store: Store): Promi
 
 /**
  * `GET /oauth/callback`。X の戻り先は 1 つに揃える (X アプリに登録する Callback URL を増やさない)。
- * state が `/setup` のログインのものなら設定を終え、ほかは接続のログインとして扱う。
+ * state が `/setup` のログインのものなら設定を終え、ほかは接続のログインとして扱う。`/setup` のログインを引くのは、
+ * `/setup` を始めたブラウザの Cookie があるときだけ (Cookie のない戻りは、どのみち断るので、Durable Object を読まない)。
  */
 export async function handleCallback(
   request: Request,
@@ -165,11 +166,17 @@ export async function handleCallback(
   const config = setupConfig(env);
   const store = pairingStore(env);
   const state = new URL(request.url).searchParams.get("state") ?? "";
-  if (config && store && request.method === "GET" && Random.test(state)) {
+  const browser = cookieValue(request, browserCookie);
+  if (config && store && browser && request.method === "GET" && Random.test(state)) {
     const { login, expired } = await store.takeSetup(state);
     if (login) {
+      if ((await hex(browser)) !== login.browserHash)
+        // ほかの人が始めたログインの戻り先を開かされた。開いた人の進めているログインの Cookie は消さない。
+        return page(request, 400, "restart");
       const configured = env.X_WEBHOOK_ID ?? "";
-      return finish(request, config, store, login, expired === true, configured, deps);
+      return finish(request, config, store, login, expired === true, configured, deps).catch(() =>
+        page(request, 503, "unavailable", {}, [clearBrowser]),
+      );
     }
   }
   return handleConnect(request, env, deps);
@@ -188,10 +195,6 @@ async function finish(
   const url = new URL(request.url);
   const done = (status: number, message: SetupMessage, details: Omit<SetupDetails, "host"> = {}) =>
     page(request, status, message, details, [clearBrowser]);
-  // ログインを始めたブラウザでなければ断る (RFC 6749 §10.12)。他人が始めたログインの URL を開かされて同意しても、何もしない。
-  const browser = cookieValue(request, browserCookie);
-  if (browser === undefined || (await hex(browser)) !== login.browserHash)
-    return done(400, "restart");
   if (expired) return done(400, "expired");
   const code = url.searchParams.get("code") ?? "";
   if (url.searchParams.has("error") || code.length === 0 || code.length > 512)
@@ -207,17 +210,29 @@ async function finish(
   const prepared = await prepareWebhook(webhookURL, config.bearer, deps);
   if (prepared.kind === "unavailable") return done(503, "unavailable");
   if (prepared.kind === "failed")
-    return done(502, prepared.reason, {
-      others: prepared.others.filter((row) => row.url !== webhookURL),
-    });
-  // 確かめに失敗した Webhook の ID も残す (ID は合っていて、開き直して確かめ直せば届くようになる)。
-  await store.saveWebhookID(prepared.id);
+    // ほかの Webhook の URL は、消すものを選んでもらうとき (上限、同じ URL のものがあると言われた) にだけ出す。
+    return done(
+      502,
+      prepared.reason,
+      prepared.reason === "limit" || prepared.reason === "duplicate"
+        ? { others: prepared.others }
+        : {},
+    );
+  // X が確かめた Webhook の ID だけを保存する。確かめられない Webhook に購読を付けても、イベントは届かず課金だけが進む。
+  if (prepared.valid) await store.saveWebhookID(prepared.id);
   return done(prepared.valid ? 200 : 502, prepared.valid ? "ready" : "not_valid", {
     webhook: {
       url: webhookURL,
       id: prepared.id,
       created: prepared.created,
-      overridden: configured.length > 0 && configured !== prepared.id,
+      configured:
+        configured.length === 0
+          ? "none"
+          : !WebhookID.test(configured)
+            ? "invalid"
+            : configured === prepared.id
+              ? "same"
+              : "different",
     },
   });
 }
@@ -226,7 +241,7 @@ type Prepared =
   | { kind: "ready"; id: string; valid: boolean; created: boolean }
   | {
       kind: "failed";
-      reason: "crc_failed" | "limit" | "create_failed";
+      reason: "crc_failed" | "limit" | "url_rejected" | "duplicate" | "create_failed";
       others: { url: string; valid: boolean | undefined }[];
     }
   | { kind: "unavailable" };
@@ -252,6 +267,22 @@ async function call(
     .catch(() => undefined);
 }
 
+/** 答えの本文を、X のエラーの名前を探すためだけに文字にする。本文はページにもログにも出さない。 */
+async function errorText(response: Response): Promise<string> {
+  const text = JSON.stringify((await readJSON(response)) ?? null);
+  await discardBody(response);
+  return text;
+}
+
+/** X が URL を整えて保存しても見つけられるよう、URL の形を揃えてから比べる。 */
+function sameURL(a: string, b: string): boolean {
+  try {
+    return new URL(a).href === new URL(b).href;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * この Worker の URL の Webhook を、App-only の Bearer で探し、なければ登録する。あれば、X に確かめ (CRC) を呼び直させる。
  * X の文書は、失敗の答えの状態コードと本文の形を決めていない。名前 (`WebhookLimitExceeded` など) が本文にあるかだけを見る。
@@ -262,31 +293,36 @@ async function prepareWebhook(url: string, bearer: string, deps: RelayDeps): Pro
   await discardBody(listed);
   if (!parsed?.success) return { kind: "unavailable" };
   const rows = parsed.data.data ?? [];
-  const found = rows.find((row) => row.url === url);
+  const found = rows.find((row) => sameURL(row.url, url));
   if (found !== undefined) {
     const checked = await call(deps, "PUT", `/2/webhooks/${found.id}`, bearer);
-    const result =
-      checked?.status === 200 ? Validated.safeParse(await readJSON(checked)) : undefined;
-    await discardBody(checked);
-    return {
-      kind: "ready",
-      id: found.id,
-      valid: result?.success === true && result.data.data.valid,
-      created: false,
-    };
+    if (checked === undefined) return { kind: "unavailable" };
+    if (checked.status === 200) {
+      const result = Validated.safeParse(await readJSON(checked));
+      await discardBody(checked);
+      if (!result.success) return { kind: "unavailable" };
+      return { kind: "ready", id: found.id, valid: result.data.data.valid, created: false };
+    }
+    // 確かめに失敗したと分かるときだけ、確かめられないと出す。ほかの失敗 (429、5xx、一覧の後に消された) では、
+    // 確かめの結果が分からないので、やり直してもらう (次は一覧から探し直す)。
+    if ((await errorText(checked)).includes("CrcValidationFailed"))
+      return { kind: "ready", id: found.id, valid: false, created: false };
+    return { kind: "unavailable" };
   }
   const created = await call(deps, "POST", "/2/webhooks", bearer, { url });
   if (created === undefined) return { kind: "unavailable" };
-  if (created.status === 200) {
+  if (created.status === 200 || created.status === 201) {
     const result = Created.safeParse(await readJSON(created));
     await discardBody(created);
-    if (!result.success || result.data.data.url !== url) return { kind: "unavailable" };
+    if (!result.success) return { kind: "unavailable" };
     return { kind: "ready", id: result.data.data.id, valid: result.data.data.valid, created: true };
   }
-  const text = JSON.stringify((await readJSON(created)) ?? null);
-  await discardBody(created);
+  const text = await errorText(created);
   const others = rows.map(({ url: other, valid }) => ({ url: other, valid }));
   if (text.includes("WebhookLimitExceeded")) return { kind: "failed", reason: "limit", others };
   if (text.includes("CrcValidationFailed")) return { kind: "failed", reason: "crc_failed", others };
+  if (text.includes("UrlValidationFailed"))
+    return { kind: "failed", reason: "url_rejected", others };
+  if (text.includes("DuplicateUrlFailed")) return { kind: "failed", reason: "duplicate", others };
   return { kind: "failed", reason: "create_failed", others };
 }

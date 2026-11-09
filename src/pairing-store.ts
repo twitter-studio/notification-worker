@@ -435,7 +435,7 @@ export class PairingStore extends DurableObject<Env> {
   }
 
   /**
-   * `/setup` の X のログインの途中の状態を置く。期限の切れたものを除き、8 つを超えたら古いものから置き換える
+   * `/setup` の X のログインの途中の状態を置く。期限の切れたものを除き、16 を超えたら古いものから置き換える
    * (外から何度でも始められるので、断ると、他人が枠を埋めるだけで持ち主が設定できなくなる)。
    * 接続のログイン (`logins`) とは分けて置く: アカウントにも購読の片付けにも関わらないため。
    */
@@ -445,7 +445,7 @@ export class PairingStore extends DurableObject<Env> {
       const logins = (this.ctx.storage.kv.get<SetupLogin[]>("setup_logins") ?? []).filter(
         (item) => item.expires > now,
       );
-      this.ctx.storage.kv.put("setup_logins", [...logins.slice(-7), login]);
+      this.ctx.storage.kv.put("setup_logins", [...logins.slice(-15), login]);
     });
   }
 

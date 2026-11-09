@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { discardBody, readBody } from "./body";
 import { NotificationTypes } from "./config";
-import { type ConnectConfig, connectConfig } from "./connect-config";
+import { type ConnectConfig, connectConfig, setupConfig } from "./connect-config";
 import { confirmationPage } from "./connect-page";
 import type { X_NOTIFICATION_TYPES } from "./normalize";
 import { issuePairingCode } from "./pairing";
@@ -133,8 +133,8 @@ export async function handleConnect(
   deps: RelayDeps,
 ): Promise<Response> {
   const store = pairingStore(env);
-  const config = await connectConfig(env, store);
-  if (!config || !store) return text(404, "Not Found");
+  const setup = setupConfig(env);
+  if (!setup || !store) return text(404, "Not Found");
   const url = new URL(request.url);
   const method = url.pathname === "/connect" ? ["GET", "POST"] : ["GET"];
   if (!method.includes(request.method)) return text(405, "Method Not Allowed");
@@ -142,7 +142,10 @@ export async function handleConnect(
   // 上限を超えたら、X へは何も求めず、ログインも始めない (書き込まない)。始めたアプリが分かれば、そのアプリへ戻す。
   // X から戻ったときは、始めたアプリを知るために、上限を超えていてもログインを読む (読み出しは絞らない)。
   const source = sourceKey(request.headers.get("CF-Connecting-IP") ?? "unknown");
-  const limited = !(await config.limiter.limit({ key: `connect:${source}` })).success;
+  const limited = !(await setup.limiter.limit({ key: `connect:${source}` })).success;
+  // `/setup` で用意した Webhook の ID は Durable Object から読むので、回数を数えた後に読む。
+  const config = await connectConfig(env, store);
+  if (!config) return text(404, "Not Found");
   if (url.pathname === "/connect")
     return request.method === "GET"
       ? confirmStart(request, url, config, limited)
