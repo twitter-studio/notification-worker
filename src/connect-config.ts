@@ -7,6 +7,8 @@ declare global {
   interface Env {
     /** `/connect`、`/setup` と `/oauth/callback` の回数を、接続元ごとに絞る Rate Limiting の binding。配置ごとに namespace の ID が要るので任意にする。 */
     CONNECT_LIMITER?: RateLimit;
+    /** 任意。ボタンの配置の画面が vars をどれも必須の欄にするので、設定に置かない (#59)。 */
+    X_WEBHOOK_ID?: string;
   }
 }
 

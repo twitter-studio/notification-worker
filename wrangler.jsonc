@@ -1,0 +1,62 @@
+// Deploy to Cloudflare のボタンと、自分で配置するときの設定 (wrangler.example.jsonc に、端末の接続 (Durable Object) と
+// 回数の上限を足し、RELAY_URL の既定を本番の中継にしたもの。2 つの食い違いは test/scripts/wrangler-config.test.mjs で見る)。
+// 自分で配置するときは `wrangler.local.jsonc` に写し、名前を自分のものに変え、RELAY_URL が端末を登録した中継と同じかを
+// 確かめて、`--config` で渡す (README)。
+// 秘密は、ここに書かず、ボタンの配置の画面か `wrangler secret put` で置く (名前の一覧は .dev.vars.example)。
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // 自分の Worker の名前 (自分の Cloudflare のアカウントの中で決める)。
+  "name": "notification-worker",
+  // Durable Object (接続した端末の配送先) を含む入口。
+  "main": "src/pairing-worker.ts",
+  "compatibility_date": "2026-10-29",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  // Wrangler の利用状況を Cloudflare に送らない。
+  "send_metrics": false,
+  // 版ごとの URL (Version URL) を作らない。試すために模擬の入口を有効にした版が、版の URL で開いたまま残らないように。
+  // デプロイのとき、wrangler が「Preview URLs も有効にしては」と警告するが、無視してよい。
+  "preview_urls": false,
+  "vars": {
+    // 運営の通知の中継 API の URL (https、パスなし)。既定は本番の中継。端末を登録した中継と違うと、通知は届かない。
+    "RELAY_URL": "https://notification-service-production.zunda-dev.workers.dev",
+    // 模擬のイベントの入口 (POST /webhooks/mock)。試すときだけ "true" にし、MOCK_WEBHOOK_SECRET を置く。
+    "ENABLE_MOCK_EVENTS": "false",
+    // X の Webhook の入口 (POST /webhooks/x)。実際の接続と費用の承認を得て設定するまで "false" のまま。
+    "ENABLE_X_ACTIVITY": "false",
+    // X でログインして接続する (ADR-0008 の段 3) ときの、自分の X アプリの OAuth 2.0 の Client ID。空なら /connect を出さない。
+    "X_OAUTH2_CLIENT_ID": "",
+    // X でログインして接続してよい X ユーザーの数値 ID。カンマ区切り。
+    "ALLOWED_X_USER_IDS": ""
+    // 任意の変数 (X_USER_ID、X_WEBHOOK_ID) は置かない。ボタンの配置の画面が、vars をどれも必須の欄にするため (#59)。
+  },
+  // 接続した端末の配送先を置く Durable Object (SQLite)。
+  "durable_objects": {
+    "bindings": [{ "name": "PAIRING_ROUTES", "class_name": "PairingStore" }]
+  },
+  "migrations": [{ "tag": "pairing-v1", "new_sqlite_classes": ["PairingStore"] }],
+  // `/connect`、`/setup`、`/oauth/callback` の、接続元ごとの回数の上限。namespace_id は、同じ Cloudflare のアカウントの
+  // ほかの Worker と重ねない (同じ値の binding は回数を分け合う)。
+  "ratelimits": [
+    { "name": "CONNECT_LIMITER", "namespace_id": "4601", "simple": { "limit": 10, "period": 60 } }
+  ],
+  "queues": {
+    "producers": [{ "binding": "X_EVENTS", "queue": "notification-x-events" }],
+    "consumers": [
+      {
+        "queue": "notification-x-events",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 1
+      }
+    ]
+  },
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "redact_query_string": true,
+    "logs": { "enabled": true, "invocation_logs": false },
+    "traces": { "enabled": false }
+  }
+}

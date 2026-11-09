@@ -166,6 +166,17 @@ test("a fresh Worker can have no manual routes when pairing is enabled", async (
   await expect(deliveryTargets(env)).rejects.toThrow();
 });
 
+test("手で置いた空の値は、手動の配送先がないものとして扱う", async () => {
+  const env = testEnv({
+    PAIRING_ADMIN_TOKEN: admin,
+    X_USER_ID: "",
+    RELAY_TOKEN: "",
+    X_RELAY_ROUTES: "",
+    X_NOTIFICATION_TYPES: "",
+  });
+  expect(await deliveryTargets(env)).toEqual([]);
+});
+
 test("a paired route's owner can read and change its types, DM preview key, and relay credential", async () => {
   const relay = fakeRelay();
   const env = testEnv({ PAIRING_ADMIN_TOKEN: admin, ENABLE_X_ACTIVITY: "true" });
@@ -207,6 +218,12 @@ test("a paired route's owner can read and change its types, DM preview key, and 
   onTestFinished(() =>
     call("/disconnect", otherManager, { route_id: otherRoute }).then(() => undefined),
   );
+  // 空の X_RELAY_ROUTES は、置いていないものとして扱い、つないだ端末にも届ける。
+  expect(
+    (await deliveryTargets({ ...env, X_RELAY_ROUTES: "" })).some(
+      (item) => item.routeID === route_id,
+    ),
+  ).toBe(true);
   const settings = async (body: Record<string, unknown>, token = manager) => {
     const response = await call("/settings", token, { route_id, ...body });
     return {

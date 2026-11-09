@@ -52,6 +52,12 @@ export type XRelayTarget = {
 
 declare global {
   interface Env {
+    // 任意の秘密と変数。Deploy to Cloudflare のボタンは .dev.vars.example の秘密と wrangler.jsonc の vars をどれも必須の
+    // 欄にするので、そこには並べない (#59)。
+    RELAY_TOKEN?: string;
+    X_USER_ID?: string;
+    MOCK_WEBHOOK_SECRET?: string;
+    X_PREVIEW_BEARER_TOKEN?: string;
     X_RELAY_ROUTES?: string;
     X_NOTIFICATION_TYPES?: string;
     ENABLE_X_NOTIFICATION_PREVIEW?: string;
@@ -98,19 +104,24 @@ function usesPublicRelayTrial(env: Env): boolean {
   return env.PUBLIC_RELAY_TRIAL_UNTIL !== undefined || env.PUBLIC_RELAY_TRIAL_ORIGIN !== undefined;
 }
 
+/** 置いていない値。空の文字 (手で空の値を置いたとき) も、置いていないものとして扱う。 */
+function unset(value: string | undefined): value is undefined | "" {
+  return value === undefined || value === "";
+}
+
 export function xRelayTargets(env: Env, allowPairingOnly = false): XRelayTarget[] {
   if (
     allowPairingOnly &&
-    env.X_RELAY_ROUTES === undefined &&
-    env.X_USER_ID === undefined &&
-    env.RELAY_TOKEN === undefined &&
-    env.X_NOTIFICATION_TYPES === undefined
+    unset(env.X_RELAY_ROUTES) &&
+    unset(env.X_USER_ID) &&
+    unset(env.RELAY_TOKEN) &&
+    unset(env.X_NOTIFICATION_TYPES)
   ) {
     relayEndpoint(env.RELAY_URL);
     return [];
   }
   // 期限付きの公開試験には、試験専用の資格情報だけを使う。
-  if (usesPublicRelayTrial(env) || env.X_RELAY_ROUTES === undefined) {
+  if (usesPublicRelayTrial(env) || unset(env.X_RELAY_ROUTES)) {
     const recipient = XUserID.safeParse(env.X_USER_ID);
     if (!recipient.success) throw new ConfigError("X_USER_ID");
     const types = env.X_NOTIFICATION_TYPES;
@@ -178,7 +189,7 @@ function xRelayRouteEntries(value: string) {
  * `xRelayTargets` は重なった鍵を外して返すので、ペアリングの鍵との重なりはこちらで数える。
  */
 export function manualDmPreviewKeys(env: Env): string[] {
-  if (usesPublicRelayTrial(env) || env.X_RELAY_ROUTES === undefined) return [];
+  if (usesPublicRelayTrial(env) || unset(env.X_RELAY_ROUTES)) return [];
   return xRelayRouteEntries(env.X_RELAY_ROUTES).flatMap(([, targets]) =>
     targets.flatMap(({ dm_preview_key }) => (dm_preview_key === undefined ? [] : [dm_preview_key])),
   );

@@ -28,6 +28,51 @@
 
 ## デプロイの手順
 
+### Deploy to Cloudflare のボタンで配置する
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/twitter-studio/notification-worker)
+
+ボタンを押すと、Cloudflare がこのリポジトリを自分の GitHub アカウントに写し、設定 (`wrangler.jsonc`) のとおりに、Worker、Queue、Durable Object を作って配置します ([ADR-0008](https://github.com/twitter-studio/notification-docs/blob/main/docs/adr/0008-app-driven-notification-setup.md) の段 5)。X の通知を Tweetbot から接続して受け取るときは、次のように進めます。
+
+1. 自分の X の開発者アプリを用意し、OAuth 2.0 の Client ID と Client Secret、App-only の Bearer Token を手元に用意します。
+2. `PAIRING_ADMIN_TOKEN` を作ります。Worker にだけ置く管理用の値で、Tweetbot には入れません。接続の一覧と解除の CLI でも使うので、パスワードの管理アプリなどに保存します。画面にもログにも出さずにクリップボードへ写すには、macOS では次のようにします。
+
+   ```sh
+   node -e 'process.stdout.write("tpa_" + require("node:crypto").randomBytes(32).toString("base64url"))' | pbcopy
+   ```
+
+   `X_EVENT_ID_SECRET` も、同じように画面に出さずに作れます (`randomBytes(32).toString("base64url")`。`tpa_` は付けません)。クリップボードは履歴やほかの機器との共有に残ることがあるので、配置の画面に貼ったら、ほかの文字を写して消します。
+
+3. ボタンを押し、配置の画面で次の値を入れます (どの値にも、画面に説明が出ます。値は引用符を付けずに入れます)。
+   - 「Create private Git repository」にチェックを入れ、写すリポジトリを非公開にします (配置の画面で入れた変数の値は、写したリポジトリの `wrangler.jsonc` に書き込まれます)。
+   - 変数: `ENABLE_X_ACTIVITY` を `true`、`X_OAUTH2_CLIENT_ID`、`ALLOWED_X_USER_IDS` (自分の X ユーザーの数値 ID)、`RELAY_URL` (既定は本番の中継 `https://notification-service-production.zunda-dev.workers.dev` です。Tweetbot が端末を登録した中継と違うと、通知は届きません。開発中の版のアプリで試すときは、そのアプリが使う中継に変えます。ほかの URL を入れると、端末の中継の資格情報がそこへ送られます)。変数の欄は平文で残るので、秘密を入れません。
+   - 秘密: `X_OAUTH2_CLIENT_SECRET`、`X_APP_BEARER_TOKEN`、`X_EVENT_ID_SECRET`、`PAIRING_ADMIN_TOKEN`。ボタンは、画面に出る変数と秘密をどれも必須の欄として求めます。任意の値は画面に出さないので、要るときは配置の後に置きます ([#59](https://github.com/twitter-studio/notification-worker/issues/59))。任意の秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`、`X_PREVIEW_BEARER_TOKEN`) は、ダッシュボードか `wrangler secret put` で置きます (配置し直しても残ります)。任意の変数 (`X_USER_ID`、`X_WEBHOOK_ID`) は、写したリポジトリの `wrangler.jsonc` の `vars` に足して push します。
+   - 「Select Queue」は「+ Create new」を選び、同じ Cloudflare のアカウントでほかの Worker が使っていない名前にします。今ある Queue を選ぶと、ほかの Worker と Queue を分け合うことになります。
+   - 「Enable Preview builds」は切ります (この設定は版ごとの URL を作らないので、プレビューのビルドは要りません)。
+4. 配置が終わったら、X の開発者アプリの Callback URL に `https://<Worker のドメイン>/oauth/callback` を足します。
+5. ブラウザで `https://<Worker のドメイン>/setup` を開き、X でログインして Webhook を用意します ([手順](ops/production-setup.md#setup-で-webhook-を用意する))。
+6. Tweetbot の設定から、Worker の URL を入れて接続します。
+
+ボタンでは、`/setup` を使うために、最初から `ENABLE_X_ACTIVITY` を `true` にします (下の「XAAの有効化前に確認すること」の、準備を終えてから有効にする手順の例外です)。X の購読は、`/setup` で Webhook を用意し、Tweetbot から接続するまで作りません。
+
+2026-11-09 に、このボタンで試しの Worker を配置して確かめたこと:
+
+- Queue (producer と consumer の両方)、Durable Object、Rate Limiting の binding、Cron Triggers は、設定のとおりに作られました。Workers Builds で、依存の install と build も通りました (Node は `.node-version` で 26 を指定。ビルドのログは見ていません)。試したアカウントの Workers のプランは記録していません。
+- 配置の画面は、画面に出る変数と秘密を、どれも空のままでは受け付けませんでした。そのため、任意の値はボタンの設定に置いていません。
+- 配置の画面で入れた変数の値は、写したリポジトリの `wrangler.jsonc` に文字のまま書き込まれました (`"true"`)。秘密の値は書き込まれませんでした。写した後は、写したリポジトリの `wrangler.jsonc` が変数の正本です。Wrangler の文書では、`keep_vars` がなければ、ダッシュボードで変えた変数は次の配置で `wrangler.jsonc` の値に戻ります (試してはいません)。
+- `/setup` で X にログインし、Webhook の一覧を読めました。開発者アプリの Webhook が上限に達していたので登録は断られ、上限のページ (ほかの Webhook の URL と ID) が出ました。新しい Webhook の登録と、X の確かめ (CRC) が通るところは、まだ確かめていません。
+
+気をつけること:
+
+- ボタンの URL でブランチを指すときは、名前にスラッシュのないブランチにします (`tree/feat/x` の `feat/x` を、ブランチとフォルダに読み分けられないため)。
+- 写したリポジトリでも Dependabot が動きます。写したリポジトリの `main` に push や merge をすると、Worker は配置し直されます。
+- 配置の画面で「GitHub authorization has expired」と出たときは、GitHub の Cloudflare Workers and Pages のアプリを入れ直します ([手順](https://developers.cloudflare.com/workers/ci-cd/builds/git-integration/github-integration/))。
+- `CONNECT_LIMITER` の `namespace_id` は、同じ Cloudflare のアカウントのほかの Worker と重なるなら変えます。
+
+### 自分で配置する
+
+前の手順で、git で無視していた `wrangler.jsonc` を手元に作っていた場合は、この版を取り込む前に `wrangler.local.jsonc` へ名前を変えてください。`wrangler.jsonc` はコミットしたボタンの設定になったので、取り込むと、手元のものは警告なしに上書きされます。以後の `wrangler` のコマンドには、`--config wrangler.local.jsonc` を付けます。
+
 Tweetbotの本番通知を使う場合は、[利用者向けの初回セットアップ](ops/production-setup.md)から始めてください。招待制sandboxの試験と資格情報の回復は[試験用の手順](ops/setup.md)、既存Workerの承認付き更新は[配置Workflow](ops/deployment.md)を参照してください。
 
 ## 模擬のイベントで試す
@@ -43,10 +88,10 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 2. 同じ鍵を、自分の Worker の秘密として置きます (送るスクリプトと同じ読み方で読み、標準入力から渡します)。
 
    ```sh
-   node --env-file=.dev.vars -e 'process.stdout.write(process.env.MOCK_WEBHOOK_SECRET ?? "")' | pnpm wrangler secret put MOCK_WEBHOOK_SECRET --config wrangler.jsonc
+   node --env-file=.dev.vars -e 'process.stdout.write(process.env.MOCK_WEBHOOK_SECRET ?? "")' | pnpm wrangler secret put MOCK_WEBHOOK_SECRET --config wrangler.local.jsonc
    ```
 
-3. `wrangler.jsonc` の `ENABLE_MOCK_EVENTS` を `"true"` にして、デプロイし直します。
+3. `wrangler.local.jsonc` の `ENABLE_MOCK_EVENTS` を `"true"` にして、デプロイし直します。
 4. 模擬のイベントを送ります (鍵は `.dev.vars` から読みます)。
 
    ```sh
@@ -57,10 +102,10 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 5. 試し終えたら、`ENABLE_MOCK_EVENTS` を `"false"` に戻してデプロイし直し、秘密も消します。
 
    ```sh
-   pnpm wrangler secret delete MOCK_WEBHOOK_SECRET --config wrangler.jsonc
+   pnpm wrangler secret delete MOCK_WEBHOOK_SECRET --config wrangler.local.jsonc
    ```
 
-   `wrangler.example.jsonc` は版ごとの URL (`preview_urls`) を作らない設定です。模擬の入口を有効にした版が、版の URL で開いたまま残りません。
+   `wrangler.jsonc` と `wrangler.example.jsonc` は、版ごとの URL (`preview_urls`) を作らない設定です。模擬の入口を有効にした版が、版の URL で開いたまま残りません。
 
 ## XAAの有効化前に確認すること
 
@@ -70,7 +115,7 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 
 - 本人が所有するX開発者アプリのOAuth 2.0 client secretを、利用者Workerの`X_OAUTH2_CLIENT_SECRET`へ保存します。API bearerやユーザーのアクセストークンで代用しません。
 - 独立した32文字以上の乱数を`X_EVENT_ID_SECRET`へ保存します。署名秘密と共用せず、通常の署名鍵更新で変更しません。値をコマンド引数・チャット・ログへ出しません。
-- `X_USER_ID`を、XでOAuth認可した本人のIDにします。mention・replyには本人によるOAuth 2.0の同意と`tweet.read`が必要です。OS通知許可やApp Attestで代用しません。
+- 手で配送先を設定するときは、`vars`に`X_USER_ID`を足し、XでOAuth認可した本人のIDにします (Tweetbot から接続するだけなら置きません)。mention・replyには本人によるOAuth 2.0の同意と`tweet.read`が必要です。OS通知許可やApp Attestで代用しません。
 - 利用者側にQueue `notification-x-events`を1つ用意し、保持を1日にします。設定例のproducerとconsumerの名前をそろえます。既存の模擬イベントだけを使う場合は、`queues`設定を利用者の設定から外せます。
 - 対象アカウント、アプリ、費用上限、Queue監視、削除と認可取り消しの手順を具体化し、承認後に配置・購読を行います。Xへの照会はオーナー判断により行いません。
 - `ENABLE_X_NOTIFICATION_PREVIEW=true` で、メンション・直接返信・引用ツイート・リツイート・いいねの通知に、通知を起こした公開アカウントの @ユーザー名と公開ツイートの抜粋を表示できます。いいねとリツイートには元のツイートの本文を使います。Webhook に必要な情報がなければ、`X_PREVIEW_BEARER_TOKEN` を設定した場合に限り、X の User Lookup を行います。元のツイートの Post Lookup も使う場合は `ENABLE_X_POST_PREVIEW_LOOKUP=true` を設定します。照会には X の利用料がかかる場合があります。本文を確認できない場合は定型文で通知します。対応する中継 API を先に配置してください。
@@ -98,7 +143,7 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 ## 気をつけること
 
 - Worker の URL は公開です。誰でも `GET /health` などを呼べ、自分の Workers の無料の枠 (1 日の要求の数、ログの数) を使えます。
-- `RELAY_URL` は、アプリに出た URL を写します。ほかの URL を入れると、中継の資格情報がそこへ送られます。
+- `RELAY_URL` は、Tweetbot が端末を登録した中継と同じにします (本番は `https://notification-service-production.zunda-dev.workers.dev`)。ほかの URL を入れると、中継の資格情報がそこへ送られます。
 - `wrangler login` は、手元に広い範囲の権限を残します。デプロイし終えたら `pnpm wrangler logout` するか、範囲を絞った API トークンを使います。
 
 ## 開発

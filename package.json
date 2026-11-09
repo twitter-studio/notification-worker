@@ -12,7 +12,7 @@
     "types": "wrangler types --config wrangler.example.jsonc --env-file .dev.vars.example --strict-vars=false",
     "typecheck": "wrangler types --config wrangler.example.jsonc --env-file .dev.vars.example --strict-vars=false --check && tsc -p tsconfig.json && tsc -p test/tsconfig.json",
     "test": "vitest run && node --test test/scripts/*.test.mjs",
-    "build": "wrangler deploy --config wrangler.example.jsonc --dry-run --outdir dist"
+    "build": "wrangler deploy --config wrangler.example.jsonc --dry-run --outdir dist && wrangler deploy --config wrangler.jsonc --dry-run --outdir dist/button"
   },
   "dependencies": {
     "zod": "4.6.7"
@@ -23,5 +23,36 @@
     "typescript": "7.0.2",
     "vitest": "5.0.5",
     "wrangler": "4.156.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "RELAY_URL": {
+        "description": "運営の通知の中継 API の URL (`https`、パスなし)。既定は本番の中継。Tweetbot が端末を登録した中継と違うと、通知は届かない。ほかの URL を入れると、端末の中継の資格情報がそこへ送られる。"
+      },
+      "ENABLE_MOCK_EVENTS": {
+        "description": "模擬のイベントの入口。ふだんは `false`。試すときだけ `true` にし (引用符は付けない)、配置の後に秘密 `MOCK_WEBHOOK_SECRET` (32 文字以上の乱数) を置く。"
+      },
+      "ENABLE_X_ACTIVITY": {
+        "description": "X の Webhook の入口と、`/setup`、`/connect`。X の通知を受け取るなら `true` にする (引用符は付けない。X の購読は X の API のクレジットを使う)。"
+      },
+      "X_OAUTH2_CLIENT_ID": {
+        "description": "自分の X の開発者アプリの OAuth 2.0 の Client ID。秘密ではない値で、平文で残る。Client Secret はここに入れない。"
+      },
+      "ALLOWED_X_USER_IDS": {
+        "description": "`/setup` と Tweetbot からの接続を許す X ユーザーの数値 ID。カンマ区切り。"
+      },
+      "X_OAUTH2_CLIENT_SECRET": {
+        "description": "自分の X の開発者アプリの OAuth 2.0 の Client Secret。Webhook の確かめ (CRC) と署名にも使う。"
+      },
+      "X_EVENT_ID_SECRET": {
+        "description": "重複を除く ID を作る、32 文字以上の乱数。作り方は README の「Deploy to Cloudflare のボタンで配置する」 (画面に出さずに作る)。ほかの秘密と同じ値にしない。"
+      },
+      "X_APP_BEARER_TOKEN": {
+        "description": "同じ X の開発者アプリの App-only の Bearer Token。Webhook の登録と、購読の一覧と削除に使う。"
+      },
+      "PAIRING_ADMIN_TOKEN": {
+        "description": "Worker にだけ置く管理用のトークン (Tweetbot には入れない)。`tpa_` に、32 バイトの乱数を Base64URL にした 43 文字を続ける。作り方は README の「Deploy to Cloudflare のボタンで配置する」。Tweetbot からの接続と `/setup` に要る。接続の一覧と解除にも使うので、安全な所に保存する。"
+      }
+    }
   }
 }

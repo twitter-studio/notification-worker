@@ -10,7 +10,7 @@ Tweetbotの本番通知に、自分のX開発者アプリとCloudflare Workerを
 
 ## 2. 自分のWorkerを用意する
 
-[ローカルの準備](setup.md#1-ローカルの準備)に従い、設定例から `wrangler.jsonc` を作ります。Worker名とCloudflareアカウントを自分のものにします。Queue名はproducerとconsumerの両方でそろえます。保護付き配置Workflowを使う場合は `notification-x-events` にします。既に別の用途で使われている場合、そのQueueを流用しないでください。所有者が初回配置・更新・停止にCLIを使うと承認した場合は、両方の名前を新しい専用Queue名に変えます。別名のQueueは現在の配置Workflowでは更新できません。D1は不要です。Cloudflareの無料プランではQueueの保持期間は24時間固定です。[Queueの上限](https://developers.cloudflare.com/queues/platform/limits/)
+[ローカルの準備](setup.md#1-ローカルの準備)に従い、`wrangler.jsonc` を写して `wrangler.local.jsonc` (コミットしない) を作ります。保護付き配置 Workflow で更新する場合は、Workflow と同じ形の `wrangler.example.jsonc` から作ります (Workflow は端末の接続の Durable Object を含まない構成を配るので、`wrangler.jsonc` から作った Worker は Workflow で更新できません)。Worker名とCloudflareアカウントを自分のものにします。`X_USER_ID` は設定の例に置いていないので (#59)、`vars` に足します。Queue名はproducerとconsumerの両方でそろえます。保護付き配置Workflowを使う場合は `notification-x-events` にします。既に別の用途で使われている場合、そのQueueを流用しないでください。所有者が初回配置・更新・停止にCLIを使うと承認した場合は、両方の名前を新しい専用Queue名に変えます。別名のQueueは現在の配置Workflowでは更新できません。D1は不要です。Cloudflareの無料プランではQueueの保持期間は24時間固定です。[Queueの上限](https://developers.cloudflare.com/queues/platform/limits/)
 
 | 設定                 | 値                                                                                  |
 | -------------------- | ----------------------------------------------------------------------------------- |
@@ -23,14 +23,14 @@ Tweetbotの本番通知に、自分のX開発者アプリとCloudflare Workerを
 配置前に、次のコマンドで利用者の設定を使ってビルドします。Cloudflareへの配置は行いません。
 
 ```sh
-mise exec -- pnpm exec wrangler deploy --config wrangler.jsonc --dry-run
+mise exec -- pnpm exec wrangler deploy --config wrangler.local.jsonc --dry-run
 ```
 
 自分のアカウントでWorkerを用意し、X入口を無効のまま初回配置します。対象名が既存Workerと重複していないことを確認してください。[保護された配置Workflow](deployment.md)は既存WorkerとQueueの更新用です。使う場合は、自分が管理するリポジトリにEnvironmentを設定します。初回作成にCLIを使う場合は、アカウントの所有者が対象と権限を確認してから、次を実行します。下のQueue名は設定ファイルとそろえます。この用途専用のQueueを作成済みなら、最初のコマンドは不要です。
 
 ```sh
-mise exec -- pnpm exec wrangler queues create notification-x-events --config wrangler.jsonc
-mise exec -- pnpm exec wrangler deploy --config wrangler.jsonc
+mise exec -- pnpm exec wrangler queues create notification-x-events --config wrangler.local.jsonc
+mise exec -- pnpm exec wrangler deploy --config wrangler.local.jsonc
 ```
 
 [CloudflareのWorker secret](https://developers.cloudflare.com/workers/configuration/secrets/)に、`RELAY_TOKEN`、`X_OAUTH2_CLIENT_SECRET`、署名鍵と独立に生成した `X_EVENT_ID_SECRET` を保存します。初回の無効配置を確認してから、WorkerのSettingsにあるVariables and Secretsで、種類をSecretにして保存します。本人 OAuth token は手元の保護領域に置きます。App-only Bearer Token は、[通知プレビューの照会](setup.md#通知プレビュー)を使う場合だけ自分の Worker の secret にも保存します。テスト専用の `PUBLIC_RELAY_TRIAL_TOKEN` や期限付きの上書き設定は不要です。
@@ -109,7 +109,7 @@ DM の配送を試す前に、対応する運営 API とアプリに更新しま
 
 ## Tweetbot から端末をペアリングする
 
-X の Webhook と購読を設定した利用者 Worker に、SQLite の Durable Object を追加します。現在使用している Wrangler 設定で `main` を切り替え、次の項目を設定してください。既存の migration がある場合は、末尾に固有のタグで追加します。
+X の Webhook と購読を設定した利用者 Worker に、SQLite の Durable Object を追加します。リポジトリの `wrangler.jsonc` (Deploy to Cloudflare のボタンの設定) と、それを写した `wrangler.local.jsonc` には、もう入っています。`wrangler.example.jsonc` などから作った前の設定を使っているときは、`main` を切り替え、次の項目を設定してください。既存の migration がある場合は、末尾に固有のタグで追加します。
 
 ```jsonc
 "main": "src/pairing-worker.ts",
@@ -185,7 +185,7 @@ Tweetbot で URL と通知の種類を選んで接続すると、Worker は次�
 - いいねと新しいフォロワーの購読の向き (`inbound`) は、X の OpenAPI に合わせて `filter.direction` で送ります。概要は `filter.qualifiers.direction` と同じものとしています。
 - 新しいフォロワーの購読に要る scope。X の Callback URL に workers.dev のホストを登録できること、ASWebAuthenticationSession の中で Cookie が保たれること (Worker は Cookie の合わない戻りを断るので、接続できたことから分かります) は、実機で確かめました ([記録](https://github.com/twitter-studio/notification-docs/blob/main/docs/operations/2026-11-08-worker-x-login-device-test.md))。
 - 使った後のトークンを取り消すと、本人の認可で作った購読も消えるか (消えないと分かるまで、取り消さない)。
-- `/setup` の確かめの呼び直し (`PUT /2/webhooks/:id`) の答えの `valid` が、確かめの結果か、確かめを始めたことか (X の文書の書き方が 2 通りある)。Worker は確かめの結果として扱います。失敗の答えの状態コードと本文の形も文書にないので、エラーの名前 (`WebhookLimitExceeded`、`CrcValidationFailed`、`UrlValidationFailed`、`DuplicateUrlFailed`) が本文にあるかだけを見ます。
+- `/setup` の確かめの呼び直し (`PUT /2/webhooks/:id`) の答えの `valid` が、確かめの結果か、確かめを始めたことか (X の文書の書き方が 2 通りある)。Worker は確かめの結果として扱います。失敗の答えの状態コードと本文の形も文書にないので、エラーの名前 (`WebhookLimitExceeded`、`CrcValidationFailed`、`UrlValidationFailed`、`DuplicateUrlFailed`) が本文にあるかだけを見ます。2026-11-09 に、上限のときの本文に `WebhookLimitExceeded` があることを、本物の X で確かめました。ほかの名前は確かめていません。
 - X が Webhook の URL を整えて保存するか。Worker は URL の形を揃えて比べます。
 - 許可していないアカウントの `/setup` のログインで呼ぶ `GET /2/users/me` が、X の課金の対象になるか。
 

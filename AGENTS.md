@@ -98,8 +98,8 @@ pnpm build       # wrangler deploy --dry-run。デプロイはしない
 
 - 道具 (Node.js、pnpm、TypeScript、Biome、Vitest、wrangler、`@cloudflare/vitest-plugin`) の版と設定は、notification-service とそろえる (notification-service の ADR-0001〜0003)。上げるときは、両方のリポジトリで上げる。
 - 依存は、公開から 3 日たった版を選ぶ (`pnpm-workspace.yaml` の `minimumReleaseAge`)。インストール時のスクリプトは動かさない (`allowBuilds` で false)。
-- 設定の正本は `wrangler.example.jsonc`。利用者は `wrangler.jsonc` に写して使う (コミットしない)。テスト、型、`build` は `wrangler.example.jsonc` を使う。
-- 秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`) は、名前だけを `.dev.vars.example` に書き、値は置かない。型 (`worker-configuration.d.ts`) は `pnpm types` で作る (vars は `--strict-vars=false` で文字列の型にする。テストで値を変えるため)。`wrangler.example.jsonc` か `.dev.vars.example` を変えたら作り直す (CI が `--check` で調べる)。
+- 設定の正本は `wrangler.example.jsonc`。テスト、型、`build`、sandbox の配置はこれを使う。`wrangler.jsonc` は Deploy to Cloudflare のボタンの設定で、正本に端末の接続 (Durable Object) と回数の上限を足し、`RELAY_URL` の既定を本番の中継にしたもの (食い違いは `test/scripts/wrangler-config.test.mjs` で見る)。ボタンの配置の画面は vars と秘密をどれも必須の欄にするので、任意の vars (`X_USER_ID`、`X_WEBHOOK_ID`) はどちらの設定にも置かず、型は `src/` で任意として宣言する (#59)。自分で配置する利用者は `wrangler.jsonc` を `wrangler.local.jsonc` に写して使う (コミットしない。保護付き配置 Workflow で更新する場合は、Workflow と同じ形の `wrangler.example.jsonc` から作る)。
+- 秘密は、名前だけを `.dev.vars.example` に書き、値は置かない。Deploy to Cloudflare のボタンは、ここに並べた秘密をどれも必須の欄にするので、任意の秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET` など) はコメントで書き、型は `src/config.ts` で任意として宣言する (#59)。型 (`worker-configuration.d.ts`) は `pnpm types` で作る (vars は `--strict-vars=false` で文字列の型にする。テストで値を変えるため)。`wrangler.example.jsonc` か `.dev.vars.example` を変えたら作り直す (CI が `--check` で調べる)。 `vars` と `.dev.vars.example` の名前は、ボタンの配置の画面で入力を求める値にもなるので、足したら `package.json` の `cloudflare.bindings` に説明を足す (`test/scripts/wrangler-config.test.mjs` が調べる)。
 - 送り先 (`RELAY_URL`) は設定だけで決め、要求の値で変えさせない。中継の API の本文で、送信先アカウント、数値の X ユーザー ID、トークン、任意の見出し、タップ先 URL を送らない。本文はメンション・返信・引用ツイート・リツイート・いいねに関わる公開投稿の抜粋だけを許す (notification-service の ADR-0009)。
 - Webhook の署名は、生の本文を解析する前に確かめる。時刻の幅でやり直しを拒む。
 - ログには、答えの数、設定の名前、エラーの名前だけを出す。資格情報、鍵、イベントの中身、中継の API のエラーの本文を出さない。

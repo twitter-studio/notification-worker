@@ -51,13 +51,15 @@ it("公開試験中は専用の送り先と資格情報を使い、期限後はs
   expect(() => relayConfig({ ...config, PUBLIC_RELAY_TRIAL_TOKEN: "" })).toThrow();
 });
 async function job() {
+  // 試験の環境 (vitest.config.ts) は、手で配送先を設定した形で X_USER_ID を置いている。
+  const recipient = enabled().X_USER_ID ?? "";
   return XJobSchema.parse({
     event: {
       ...event,
       occurred_at: new Date().toISOString(),
-      event_id: await xEventID(enabled().X_EVENT_ID_SECRET, enabled().X_USER_ID, event),
+      event_id: await xEventID(enabled().X_EVENT_ID_SECRET, recipient, event),
     },
-    relay_binding: await relayBinding(relayConfig(enabled()), enabled().X_USER_ID),
+    relay_binding: await relayBinding(relayConfig(enabled()), recipient),
   });
 }
 function message(body: unknown, attempts = 1) {

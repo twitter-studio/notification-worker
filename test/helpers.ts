@@ -14,7 +14,7 @@ export async function signedHeaders(
   const timestamp = String(options.timestamp ?? Math.floor(Date.now() / 1000));
   const key = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(options.secret ?? env.MOCK_WEBHOOK_SECRET),
+    new TextEncoder().encode(options.secret ?? testEnv().MOCK_WEBHOOK_SECRET ?? ""),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],

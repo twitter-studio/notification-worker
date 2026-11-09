@@ -1,4 +1,4 @@
 [tools]
-# ci.yml の node-version とそろえる。
+# ci.yml の node-version と .node-version (Deploy to Cloudflare のボタンの Workers Builds が読む) とそろえる。
 node = "26.13.0"
 pnpm = "11.28.10"
