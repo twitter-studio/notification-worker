@@ -185,7 +185,7 @@ Tweetbot で URL と通知の種類を選んで接続すると、Worker は次�
 - いいねと新しいフォロワーの購読の向き (`inbound`) は、X の OpenAPI に合わせて `filter.direction` で送ります。概要は `filter.qualifiers.direction` と同じものとしています。
 - 新しいフォロワーの購読に要る scope。X の Callback URL に workers.dev のホストを登録できること、ASWebAuthenticationSession の中で Cookie が保たれること (Worker は Cookie の合わない戻りを断るので、接続できたことから分かります) は、実機で確かめました ([記録](https://github.com/twitter-studio/notification-docs/blob/main/docs/operations/2026-11-08-worker-x-login-device-test.md))。
 - 使った後のトークンを取り消すと、本人の認可で作った購読も消えるか (消えないと分かるまで、取り消さない)。
-- `/setup` の確かめの呼び直し (`PUT /2/webhooks/:id`) の答えの `valid` が、確かめの結果か、確かめを始めたことか (X の文書の書き方が 2 通りある)。Worker は確かめの結果として扱います。失敗の答えの状態コードと本文の形も文書にないので、エラーの名前 (`WebhookLimitExceeded`、`CrcValidationFailed`、`UrlValidationFailed`、`DuplicateUrlFailed`) が本文にあるかだけを見ます。
+- `/setup` の確かめの呼び直し (`PUT /2/webhooks/:id`) の答えの `valid` が、確かめの結果か、確かめを始めたことか (X の文書の書き方が 2 通りある)。Worker は確かめの結果として扱います。失敗の答えの状態コードと本文の形も文書にないので、エラーの名前 (`WebhookLimitExceeded`、`CrcValidationFailed`、`UrlValidationFailed`、`DuplicateUrlFailed`) が本文にあるかだけを見ます。2026-11-09 に、上限のときの本文に `WebhookLimitExceeded` があることを、本物の X で確かめました。ほかの名前は確かめていません。
 - X が Webhook の URL を整えて保存するか。Worker は URL の形を揃えて比べます。
 - 許可していないアカウントの `/setup` のログインで呼ぶ `GET /2/users/me` が、X の課金の対象になるか。
 
