@@ -53,6 +53,14 @@ X アプリの Callback URL に `https://<worker-domain>/oauth/callback` を追�
 
 アプリにアクセスできない場合は、管理者が次の CLI で接続を一覧し、対象だけを強制解除できます。`PAIRING_ADMIN_TOKEN` を保護領域から環境変数に読み込み、値を画面やログへ出さずに使います。一覧は X ユーザー ID と配送先 ID を含むため、公開の記録へ転載しません。
 
+管理用 CLI を使う Mac では Git と [mise](https://mise.jdx.dev) を用意し、リポジトリを取得して Node.js を入れます。配置ボタンだけを使った場合も、この準備が必要です。
+
+```sh
+git clone https://github.com/twitter-studio/notification-worker.git
+cd notification-worker
+mise install
+```
+
 ```sh
 node scripts/pair-device.mjs list https://<worker-domain>
 node scripts/pair-device.mjs revoke https://<worker-domain> <配送先ID>
@@ -67,7 +75,7 @@ node scripts/pair-device.mjs revoke https://<worker-domain> <配送先ID>
 3. Worker 経由テスト通知と実イベントの到達を確かめます。既存の設定値を変える更新では、移行前の設定を再配置しないよう正本も更新します。
    最後の手動配送先を外すときは、`X_RELAY_ROUTES`、`X_USER_ID`、`RELAY_TOKEN`、`X_NOTIFICATION_TYPES` の4項目を、同じ本番更新ですべて未設定または空にします。`X_RELAY_ROUTES` に `{}` を残すと設定エラーになります。その秘密だけを消して旧単一配送の `X_USER_ID` と `RELAY_TOKEN` を残すと、旧配送が再び使われ、同じ資格情報での接続は409になります。ほかの手動配送先が残る間は、その配送先の有効な一覧を保持します。すべてアプリへ移した後は、4項目を復活させない構成を設定の正本にします。
 
-手動で作った X 購読は自動削除されません。期限付きのもの、使わない種類、別の用途が使う購読を所有者が確認します。アプリで通知を絞っても、その購読による X 側の配信や課金は止まりません。
+手動で作った X 購読は自動削除されません。[手動購読の停止・回復手順](manual-subscription-cleanup.md)で対象を照合して削除します。期限付きのもの、使わない種類、別の用途が使う購読を所有者が確認します。アプリで通知を絞っても、その購読による X 側の配信や課金は止まりません。
 
 ## `/setup` で Webhook を用意する
 

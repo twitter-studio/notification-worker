@@ -24,7 +24,7 @@
 - 自分の Cloudflare アカウント。Workers と Queues の利用枠は、初回セットアップで確認します。
 - Tweetbot の通知登録と端末の所有確認を完了した iPhone または iPad。
 - X 通知を受ける場合は、自分の X 開発者アプリ。
-- [mise](https://mise.jdx.dev) (開発する場合に Node.js と pnpm のバージョンをそろえます)。
+- [mise](https://mise.jdx.dev) と Node.js。下の管理トークン生成と、管理者の一覧・強制解除 CLI に使います。開発時は pnpm も使います。
 
 ## デプロイの手順
 
