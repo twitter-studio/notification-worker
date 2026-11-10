@@ -36,6 +36,7 @@ const STOP_KINDS: ReadonlySet<RelayOutcome["kind"]> = new Set([
   "retry_later",
   "unauthorized",
   "misdirected",
+  "expired",
 ]);
 
 async function handleMockWebhook(request: Request, env: Env, deps: RelayDeps): Promise<Response> {

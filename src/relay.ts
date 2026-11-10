@@ -12,6 +12,8 @@ export type RelayOutcome =
   | { kind: "unauthorized"; status: 401 | 403 }
   /** 中継の API が受けない (413、415、422 など)。やり直さない。 */
   | { kind: "rejected" }
+  /** 公開試験の期限切れ。中継へは送らない。 */
+  | { kind: "expired" }
   /**
    * 中継の API でない先の答え (リダイレクト、404、405)。RELAY_URL の誤り。リダイレクトには、資格情報とイベントをほかの先へ
    * 送らないため、従わない。
@@ -44,8 +46,6 @@ export const MAX_INLINE_WAIT_SECONDS = 5;
  */
 export const REQUEST_TIMEOUT_MS = 70 * 1000;
 
-const RETRYABLE = new Set([409, 429, 500, 502, 503, 504]);
-
 /** Retry-After の秒数 (1 日まで)。ないとき、読めないときは `fallback`。 */
 function retryAfterOf(response: Response, fallback: number): number {
   const value = response.headers.get("Retry-After");
@@ -64,7 +64,7 @@ export async function sendToRelay(
     if (budget.remaining <= 0) break;
     const remainingMs =
       config.expiresAt === undefined ? REQUEST_TIMEOUT_MS : config.expiresAt - Date.now();
-    if (remainingMs <= 0) return { kind: "rejected" };
+    if (remainingMs <= 0) return { kind: "expired" };
     budget.remaining--;
     let response: Response;
     try {
@@ -101,7 +101,13 @@ export async function sendToRelay(
       response.status === 405
     )
       return { kind: "misdirected" };
-    if (!RETRYABLE.has(response.status)) return { kind: "rejected" };
+    if (
+      response.status >= 400 &&
+      response.status < 500 &&
+      response.status !== 409 &&
+      response.status !== 429
+    )
+      return { kind: "rejected" };
     retryAfterSeconds = retryAfterOf(response, 60);
     if (retryAfterSeconds > MAX_INLINE_WAIT_SECONDS || attempt === MAX_ATTEMPTS) break;
     await deps.sleep(retryAfterSeconds * 1000);
