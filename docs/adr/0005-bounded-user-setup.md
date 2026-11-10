@@ -1,5 +1,7 @@
 # ADR-0005: 初回接続を期限付き購読と回復用台帳で行う
 
+2026-11-10、通常のセットアップは [ADR-0008](https://github.com/twitter-studio/notification-docs/blob/main/docs/adr/0008-app-driven-notification-setup.md) と [アプリからの接続](../../ops/production-setup.md) に置き換えました。この ADR は以前の判断の記録です。旧 CLI は削除済みです。
+
 Status: Accepted / 2026-11-05。対象: [USER-002 #13](https://github.com/twitter-studio/notification-worker/issues/13)。設計書の本人認可とBYO構成を具体化する。通知のAPI契約・イベント正規化は変更しない。
 
 ## 背景
@@ -24,4 +26,4 @@ HTTPの送信先・サイズ・timeout・リダイレクトを制限し、公開
 
 ## 継続利用の購読管理
 
-30分の初回検証とは別に、本人が `x-activity-subscriptions.mjs` を使って作成・延長・解除を明示的に実行できる。期限は操作ごとに指定し、無期限の作成は明示指定とする。既存購読の延長には同じ本人、Webhook、種類、tag、購読IDを照合し、Xの作成APIに新しい期限を渡す。応答喪失時の再実行では、保存した操作と一覧の全ページから、完了した分と残りを判断する。強制終了時の扱い、認可の更新、解除後のWorker停止は[運用手順](../../ops/setup.md#継続する購読の作成延長解除)を参照。実接続試験の範囲は別に記録する。
+期限付き・継続購読の CLI は #47 で廃止しました。現在はアプリが Worker で本人を認可し、選んだ種類の購読を用意します。接続解除時は Worker が作った購読だけを片付けます。以前に手動作成した購読は保護します。
