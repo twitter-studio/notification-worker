@@ -6,6 +6,11 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    # CodeQL の init と analyze は同じ版で動かす必要があるため、一緒に更新する。
+    groups:
+      codeql:
+        patterns:
+          - github/codeql-action/*
   - package-ecosystem: npm
     directory: /
     schedule:
