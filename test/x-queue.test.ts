@@ -17,7 +17,7 @@ it("公開試験の期限をまたぐと中継HTTPを再試行しない", async 
     async () => new Response(null, { status: 503, headers: { "Retry-After": "1" } }),
   );
   try {
-    await sendToRelay(
+    const outcome = await sendToRelay(
       { ...relayConfig(enabled()), expiresAt },
       { ...event, event_id: "test-event" },
       {
@@ -28,6 +28,7 @@ it("公開試験の期限をまたぐと中継HTTPを再試行しない", async 
       },
       { remaining: 3 },
     );
+    expect(outcome).toEqual({ kind: "expired" });
     expect(fetch).toHaveBeenCalledTimes(1);
   } finally {
     clock.mockRestore();
@@ -77,15 +78,23 @@ describe("Xイベントの永続Queueからの配信", () => {
     expect(relay.sent[0]?.body).toEqual(input.event);
   });
   it("長い待機は縮めず、送り先の誤りや中継のほかの断りも成功としてackしない", async () => {
-    for (const status of [302, 403, 404, 422, 429, 501, 503, 520]) {
+    for (const status of [200, 204, 302, 403, 404, 429, 501, 503, 520]) {
       const relay = fakeRelay([new Response(null, { status, headers: { "Retry-After": "3600" } })]);
       const item = message(await job());
       await handleXQueue([item], enabled(), relay.deps);
       expect(item.ack, String(status)).not.toHaveBeenCalled();
       expect(item.retry).toHaveBeenCalledWith({
-        delaySeconds: status === 429 || status === 503 ? 3600 : 60,
+        delaySeconds: status < 300 || status === 429 || status >= 500 ? 3600 : 60,
       });
     }
+  });
+  it.each([400, 413, 415, 422])("中継の%sは1回だけ送り、やり直さずに捨てる", async (status) => {
+    const relay = fakeRelay([new Response(null, { status })]);
+    const item = message(await job());
+    await handleXQueue([item], enabled(), relay.deps);
+    expect(relay.sent).toHaveLength(1);
+    expect(item.ack).toHaveBeenCalledOnce();
+    expect(item.retry).not.toHaveBeenCalled();
   });
   it("中継の401は1回だけ送り、やり直さずに捨てる", async () => {
     const relay = fakeRelay([new Response(null, { status: 401 })]);
@@ -106,6 +115,43 @@ describe("Xイベントの永続Queueからの配信", () => {
       );
       expect(JSON.stringify(errors.mock.calls)).not.toContain(enabled().RELAY_TOKEN);
     } finally {
+      errors.mockRestore();
+    }
+  });
+  it("送信の待機中に公開試験の期限を迎えたjobは拒否ではなく期限切れとして記録する", async () => {
+    const expiresAt = Date.now() + 500;
+    const environment = {
+      ...enabled(),
+      PUBLIC_RELAY_TRIAL_UNTIL: String(expiresAt),
+      PUBLIC_RELAY_TRIAL_ORIGIN: "https://public.example",
+      PUBLIC_RELAY_TRIAL_TOKEN: `tsr_${"x".repeat(43)}`,
+    };
+    const input = await job();
+    const item = message({
+      ...input,
+      relay_binding: await relayBinding(relayConfig(environment), environment.X_USER_ID ?? ""),
+    });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(expiresAt - 500);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const relay = fakeRelay([new Response(null, { status: 503, headers: { "Retry-After": "1" } })]);
+    try {
+      await handleXQueue([item], environment, {
+        ...relay.deps,
+        sleep: async () => {
+          clock.mockReturnValue(expiresAt);
+        },
+      });
+      expect(relay.sent).toHaveLength(1);
+      expect(item.ack).toHaveBeenCalledOnce();
+      expect(item.retry).not.toHaveBeenCalled();
+      expect(errors).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          stage: "discarded",
+          reason: "inactive_invalid_or_expired",
+        }),
+      );
+    } finally {
+      clock.mockRestore();
       errors.mockRestore();
     }
   });

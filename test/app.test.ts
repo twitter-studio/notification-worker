@@ -181,6 +181,15 @@ describe("中継の API へ送る", () => {
     expect(relay.sleeps).toEqual([]);
   });
 
+  it.each([200, 204, 501, 520])("中継の予期しない%sは503を返して再送を求める", async (status) => {
+    const relay = fakeRelay([new Response(null, { status })]);
+    const response = await postMock({ events: [mockEvent(), mockEvent()] }, { deps: relay.deps });
+    await expectProblem(response, 503);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    expect(relay.sent).toHaveLength(1);
+    expect(relay.sleeps).toEqual([]);
+  });
+
   it("つながらないときは、決まった回数だけ送り直し、それでもだめなら 503", async () => {
     const relay = fakeRelay([new Error("down"), new Error("down"), new Error("down")]);
 
