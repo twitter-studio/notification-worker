@@ -21,7 +21,7 @@
     "@biomejs/biome": "2.6.4",
     "@cloudflare/vitest-plugin": "1.4.11",
     "typescript": "7.0.2",
-    "vitest": "5.0.5",
+    "vitest": "5.1.0",
     "wrangler": "4.156.0"
   },
   "cloudflare": {
