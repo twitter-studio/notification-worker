@@ -612,7 +612,7 @@ describe("connecting with an X login", () => {
       connectEnv("2"),
       x.deps,
     );
-    expect(await version.json()).toEqual({ version: 3, x_login: true });
+    expect(await version.json()).toEqual({ version: 3, x_login: true, dm_preview_setup: true });
 
     const env = connectEnv("2");
     // 引数が合わなくても、始めたアプリが分かればアプリへ戻す。分からなければ、文字のページで断る。

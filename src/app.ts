@@ -2,6 +2,7 @@ import { readBody } from "./body";
 import { ConfigError, isEnabled, publicRelayTrialExpired, relayConfig } from "./config";
 import { handleConnect } from "./connect";
 import { dmPreviewKeyID, sealDmPreview } from "./dm-preview";
+import { handleDMPreview } from "./dm-preview-setup";
 import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
 import { handlePairing } from "./pairing";
 import { deliveryTargets } from "./pairing-store";
@@ -256,6 +257,16 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
 
 export async function handle(request: Request, env: Env, deps: AppDeps): Promise<Response> {
   const { pathname } = new URL(request.url);
+  if (
+    pathname === "/dm-preview" ||
+    pathname.startsWith("/v1/pairing/dm-preview/") ||
+    (pathname === "/oauth/callback" &&
+      new URL(request.url).searchParams.get("state")?.startsWith("dmp_"))
+  ) {
+    return handleDMPreview(request, env, deps).catch(
+      () => new Response(null, { status: 503, headers: { "Cache-Control": "no-store" } }),
+    );
+  }
   if (pathname === "/connect") {
     return handleConnect(request, env, deps).catch(() => problem(503, "Service Unavailable"));
   }

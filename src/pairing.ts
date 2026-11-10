@@ -94,6 +94,7 @@ export async function handlePairing(
   if (path === "/v1/pairing" && request.method === "GET")
     return response(200, {
       version: 3,
+      dm_preview_setup: (await connectConfig(env, store).catch(() => undefined)) !== undefined,
       // `/setup` で用意した Webhook の ID を読めなければ、使えないものとして答える (版の確かめまで失敗させない)。
       x_login: (await connectConfig(env, store).catch(() => undefined)) !== undefined,
     });
