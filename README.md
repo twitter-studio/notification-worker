@@ -22,9 +22,9 @@
 ## 用意するもの
 
 - 自分の Cloudflare アカウント。Workers と Queues の利用枠は、初回セットアップで確認します。
-- Tweetbot の通知を登録した iPhone と、登録時に 1 回だけ表示される中継の資格情報。
+- Tweetbot の通知登録と端末の所有確認を完了した iPhone または iPad。
 - X 通知を受ける場合は、自分の X 開発者アプリ。
-- [mise](https://mise.jdx.dev) (Node.js と pnpm の版をそろえます)。
+- [mise](https://mise.jdx.dev) と Node.js。下の管理トークン生成と、管理者の一覧・強制解除 CLI に使います。開発時は pnpm も使います。
 
 ## デプロイの手順
 
@@ -46,7 +46,7 @@
 3. ボタンを押し、配置の画面で次の値を入れます (どの値にも、画面に説明が出ます。値は引用符を付けずに入れます)。
    - 「Create private Git repository」にチェックを入れ、写すリポジトリを非公開にします (配置の画面で入れた変数の値は、写したリポジトリの `wrangler.jsonc` に書き込まれます)。
    - 変数: `ENABLE_X_ACTIVITY` を `true`、`X_OAUTH2_CLIENT_ID`、`ALLOWED_X_USER_IDS` (自分の X ユーザーの数値 ID)、`RELAY_URL` (既定は本番の中継 `https://notification-service-production.zunda-dev.workers.dev` です。Tweetbot が端末を登録した中継と違うと、通知は届きません。開発中の版のアプリで試すときは、そのアプリが使う中継に変えます。ほかの URL を入れると、端末の中継の資格情報がそこへ送られます)。変数の欄は平文で残るので、秘密を入れません。
-   - 秘密: `X_OAUTH2_CLIENT_SECRET`、`X_APP_BEARER_TOKEN`、`X_EVENT_ID_SECRET`、`PAIRING_ADMIN_TOKEN`。ボタンは、画面に出る変数と秘密をどれも必須の欄として求めます。任意の値は画面に出さないので、要るときは配置の後に置きます ([#59](https://github.com/twitter-studio/notification-worker/issues/59))。任意の秘密 (`RELAY_TOKEN`、`MOCK_WEBHOOK_SECRET`、`X_PREVIEW_BEARER_TOKEN`) は、ダッシュボードか `wrangler secret put` で置きます (配置し直しても残ります)。任意の変数 (`X_USER_ID`、`X_WEBHOOK_ID`) は、写したリポジトリの `wrangler.jsonc` の `vars` に足して push します。
+   - 秘密: `X_OAUTH2_CLIENT_SECRET`、`X_APP_BEARER_TOKEN`、`X_EVENT_ID_SECRET`、`PAIRING_ADMIN_TOKEN`。ボタンは、画面に出る変数と秘密をどれも必須の欄として求めます。任意の値は画面に出さないので、要るときは配置の後に置きます ([#59](https://github.com/twitter-studio/notification-worker/issues/59))。任意の秘密 (`MOCK_WEBHOOK_SECRET`、`X_PREVIEW_BEARER_TOKEN`。模擬イベントの開発では `RELAY_TOKEN` も使用) は、ダッシュボードか `wrangler secret put` で置きます (配置し直しても残ります)。任意の変数 (`X_WEBHOOK_ID`) は、写したリポジトリの `wrangler.jsonc` の `vars` に足して push します。
    - 「Select Queue」は「+ Create new」を選び、同じ Cloudflare のアカウントでほかの Worker が使っていない名前にします。今ある Queue を選ぶと、ほかの Worker と Queue を分け合うことになります。
    - 「Enable Preview builds」は切ります (この設定は版ごとの URL を作らないので、プレビューのビルドは要りません)。
 4. 配置が終わったら、X の開発者アプリの Callback URL に `https://<Worker のドメイン>/oauth/callback` を足します。
@@ -73,7 +73,7 @@
 
 前の手順で、git で無視していた `wrangler.jsonc` を手元に作っていた場合は、この版を取り込む前に `wrangler.local.jsonc` へ名前を変えてください。`wrangler.jsonc` はコミットしたボタンの設定になったので、取り込むと、手元のものは警告なしに上書きされます。以後の `wrangler` のコマンドには、`--config wrangler.local.jsonc` を付けます。
 
-Tweetbotの本番通知を使う場合は、[利用者向けの初回セットアップ](ops/production-setup.md)から始めてください。招待制sandboxの試験と資格情報の回復は[試験用の手順](ops/setup.md)、既存Workerの承認付き更新は[配置Workflow](ops/deployment.md)を参照してください。
+Tweetbotの本番通知を使う場合は、[利用者向けの初回セットアップ](ops/production-setup.md)から始めてください。鍵の更新・停止は[運用手順](ops/setup.md)を参照してください。[既存の sandbox 配置 Workflow](ops/deployment.md) は端末接続の Durable Object を含まない開発用構成です。アプリ接続用 Worker の更新には使いません。
 
 ## 模擬のイベントで試す
 
@@ -109,13 +109,13 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 
 ## XAAの有効化前に確認すること
 
-[ADR-0002](docs/adr/0002-x-activity-webhook.md)に署名・本人の確認・再送・破棄の条件を記録しています。LEGAL-001はオーナー判断で完了しました。実API接続や課金を伴う操作、配置は別途承認を得てから行います。実接続の結果は[QA-002の記録](docs/verification/2026-11-05-qa002.md)を参照してください。補助CLIの実接続と停止は[USER-003の記録](docs/verification/2026-11-05-user-setup-cli.md)を参照してください。
+[ADR-0002](docs/adr/0002-x-activity-webhook.md)に署名・本人の確認・再送・破棄の条件を記録しています。LEGAL-001はオーナー判断で完了しました。実API接続や課金を伴う操作、配置は別途承認を得てから行います。実接続の結果は[QA-002の記録](docs/verification/2026-11-05-qa002.md)を参照してください。以前の補助 CLI の実接続と停止は[USER-003の記録](docs/verification/2026-11-05-user-setup-cli.md)を参照してください。
 
 有効化には次の構成が必要です。
 
 - 本人が所有するX開発者アプリのOAuth 2.0 client secretを、利用者Workerの`X_OAUTH2_CLIENT_SECRET`へ保存します。API bearerやユーザーのアクセストークンで代用しません。
 - 独立した32文字以上の乱数を`X_EVENT_ID_SECRET`へ保存します。署名秘密と共用せず、通常の署名鍵更新で変更しません。値をコマンド引数・チャット・ログへ出しません。
-- 手で配送先を設定するときは、`vars`に`X_USER_ID`を足し、XでOAuth認可した本人のIDにします (Tweetbot から接続するだけなら置きません)。mention・replyには本人によるOAuth 2.0の同意と`tweet.read`が必要です。OS通知許可やApp Attestで代用しません。
+- X アカウントの許可は `ALLOWED_X_USER_IDS` に設定し、端末は Tweetbot から接続します。中継資格情報・配送先 ID・DM プレビューの鍵はアプリが Worker へ送ります。人が配送先 JSON や接続コードを入力する手順はありません。
 - 利用者側にQueue `notification-x-events`を1つ用意し、保持を1日にします。設定例のproducerとconsumerの名前をそろえます。既存の模擬イベントだけを使う場合は、`queues`設定を利用者の設定から外せます。
 - 対象アカウント、アプリ、費用上限、Queue監視、削除と認可取り消しの手順を具体化し、承認後に配置・購読を行います。Xへの照会はオーナー判断により行いません。
 - `ENABLE_X_NOTIFICATION_PREVIEW=true` で、メンション・直接返信・引用ツイート・リツイート・いいねの通知に、通知を起こした公開アカウントの @ユーザー名と公開ツイートの抜粋を表示できます。いいねとリツイートには元のツイートの本文を使います。Webhook に必要な情報がなければ、`X_PREVIEW_BEARER_TOKEN` を設定した場合に限り、X の User Lookup を行います。元のツイートの Post Lookup も使う場合は `ENABLE_X_POST_PREVIEW_LOOKUP=true` を設定します。照会には X の利用料がかかる場合があります。本文を確認できない場合は定型文で通知します。対応する中継 API を先に配置してください。
@@ -127,7 +127,7 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 
 ## 秘密の入れ替え
 
-- **中継の資格情報**: アプリの設定の画面で入れ替えると、新しい値が 1 回だけ出て、前の値はすぐに使えなくなります。承認した配置経路でWorker secretを更新します。計画的な更新では先に購読を解除しQueueを空にします。XのQueue jobは資格情報変更後に破棄されるため、[更新と停止の手順](ops/setup.md)に従います。模擬イベントとXのQueue jobは、401を送り直しません。
+- **中継の資格情報**: アプリの設定の画面で入れ替えると、新しい値が 1 回だけ出て、前の値はすぐに使えなくなります。アプリが接続済みの Worker へ新しい値を送ります。失敗した接続はアプリから再接続します。XのQueue jobは資格情報変更後に破棄されるため、[更新と停止の手順](ops/setup.md)に従います。模擬イベントとXのQueue jobは、401を送り直しません。
 - **漏れたかもしれないとき**: アプリで中継の資格情報を取り消すか入れ替えます。取り消すと、入れ替えるまで通知は届きません。
 - **模擬の Webhook の鍵**: 上の手順 1 と 2 をやり直します (手順 1 が `.dev.vars` の行を置き換えます)。
 
@@ -154,27 +154,6 @@ pnpm typecheck
 pnpm test
 pnpm build   # デプロイはしない (--dry-run)
 ```
-
-## 本人のOAuth認可をローカルで保存する
-
-`scripts/x-oauth.mjs`は、XアプリのConfidential client用の認可を受けます。Xユーザーの認可、token交換、ローカル保存だけを行い、本人情報の取得・購読・課金・配置は行いません。
-
-1. 自分だけが読めるディレクトリ（0700）へ、`client-id.txt`と`client-secret.txt`（各0600）を置きます。ファイルには値だけを保存し、コマンドの引数や環境変数に資格情報を書きません。
-2. XアプリのCallback URIを`http://127.0.0.1:8788/callback`にします。OAuth 2.0の有効化と秘密の発行は、実行する前に承認を確認します。
-3. ディレクトリのパスだけを渡して起動します。
-
-   ```sh
-   mise exec -- node scripts/x-oauth.mjs '<保護ディレクトリの絶対パス>'
-   ```
-
-4. 出力されたローカルHTMLファイルをブラウザで開き、リンクからXの認可画面へ進みます。アカウントと`tweet.read users.read`を確認し、承認します。`offline.access`・DM・書き込みの権限は求めません。PKCEはS256、stateとverifierは起動ごとに作ります。
-5. 承認するとClient Secret・認可コード・verifierを`https://api.x.com/2/oauth2/token`へ送り、得たtokenと認可に使ったClient IDを同じディレクトリの`user-token.json`へ0600で保存します。callbackページ・標準出力・エラーには値を出しません。既存のtokenファイルは上書きしません。期限切れのファイルを残す場合は、保護ディレクトリ内で別名へ移してからやり直します。
-
-待機は5分、token交換は10秒までです。拒否・timeout・SIGINT/SIGTERMでは、一時HTMLと予約した空ファイルを片付けます。強制終了や電源断では残る場合があります。再実行前に、前回プロセスの終了と空ファイルであることを確認します。通常の資格情報ファイルは削除しません。
-
-認可後のAPI利用・購読・Cloudflareへの資格情報保存は別の実行範囲です。利用者のMacだけにtokenを置き、運営へ渡しません。実行環境が異なるため、OAuth CLIはNodeのテスト、Workerはworkerdのテストで検証します。
-
-公式手順（2026-11-04確認）: [X OAuth 2.0 PKCE](https://docs.x.com/fundamentals/authentication/oauth-2-0/user-access-token)、[アプリ種別とloopback Callback](https://docs.x.com/fundamentals/developer-apps#callback-urls)。
 
 ## 利用者Workerの監視
 
