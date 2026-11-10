@@ -145,7 +145,7 @@ test("pairing is opt-in, reports the settings version, and is disabled during a 
   expect((await handle(request, testEnv(), deps)).status).toBe(404);
   const enabled = await handle(request, testEnv({ PAIRING_ADMIN_TOKEN: admin }), deps);
   expect(enabled.status).toBe(200);
-  expect(await enabled.json()).toEqual({ version: 3, x_login: false });
+  expect(await enabled.json()).toEqual({ version: 3, x_login: false, dm_preview_setup: false });
   expect(
     (
       await handle(

@@ -6,6 +6,7 @@ import {
   type XRelayTarget,
   xRelayTargets,
 } from "./config";
+import type { DMPreviewSession } from "./dm-preview-setup";
 import type { X_NOTIFICATION_TYPES } from "./normalize";
 
 type NotificationType = (typeof X_NOTIFICATION_TYPES)[number];
@@ -41,6 +42,7 @@ export type StoredRoute = PairingRoute & {
   connectedAt?: number;
   viaLogin?: boolean;
   nextTestAt?: number;
+  nextDMPreviewAt?: number;
   settingsWrites?: number;
   settingsWindowEndsAt?: number;
 };
@@ -161,6 +163,116 @@ export function applyRouteChanges(
 }
 
 export class PairingStore extends DurableObject<Env> {
+  dmPreviewRoute(routeID: string, managementHash: string): { recipient: string } | undefined {
+    const route = this.read().routes.find(
+      (item) => item.routeID === routeID && item.managementHash === managementHash,
+    );
+    return route ? { recipient: route.recipient } : undefined;
+  }
+
+  private dmPreviews(): DMPreviewSession[] {
+    return (this.ctx.storage.kv.get<DMPreviewSession[]>("dm_previews") ?? []).filter(
+      (item) =>
+        item.expires > Date.now() &&
+        this.dmPreviewRoute(item.routeID, item.managementHash) !== undefined,
+    );
+  }
+
+  private saveDMPreviews(sessions: DMPreviewSession[]): void {
+    this.ctx.storage.kv.put("dm_previews", sessions);
+    if (sessions.length)
+      void this.ctx.storage.setAlarm(Math.min(...sessions.map((item) => item.expires)));
+  }
+
+  override alarm(): void {
+    this.saveDMPreviews(this.dmPreviews());
+  }
+
+  beginDMPreview(session: DMPreviewSession): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const state = this.read();
+      const route = state.routes.find(
+        (item) =>
+          item.routeID === session.routeID &&
+          item.managementHash === session.managementHash &&
+          item.recipient === session.recipient,
+      );
+      if (!route || (route.nextDMPreviewAt ?? 0) > Date.now()) return false;
+      route.nextDMPreviewAt = Date.now() + 30_000;
+      this.ctx.storage.kv.put("pairing", state);
+      this.saveDMPreviews([
+        ...this.dmPreviews()
+          .filter((item) => item.routeID !== session.routeID)
+          .slice(-15),
+        session,
+      ]);
+      return true;
+    });
+  }
+
+  readDMPreview(state: string): DMPreviewSession | undefined {
+    return this.dmPreviews().find((item) => item.state === state);
+  }
+
+  startDMPreview(
+    state: string,
+    browser: { verifier: string; browserHash: string; redirectURI: string },
+  ): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const sessions = this.dmPreviews();
+      const session = sessions.find((item) => item.state === state);
+      if (session?.kind !== "prepared") return false;
+      this.saveDMPreviews(
+        sessions.map((item) =>
+          item === session ? { ...session, ...browser, kind: "authorizing" } : item,
+        ),
+      );
+      return true;
+    });
+  }
+
+  authorizeDMPreview(state: string, code: string): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const sessions = this.dmPreviews();
+      const session = sessions.find((item) => item.state === state);
+      if (session?.kind !== "authorizing") return false;
+      const { browserHash: _, ...rest } = session;
+      this.saveDMPreviews(
+        sessions.map((item) =>
+          item === session
+            ? {
+                ...rest,
+                kind: "authorized",
+                code,
+                expires: Math.min(session.expires, Date.now() + 20_000),
+              }
+            : item,
+        ),
+      );
+      return true;
+    });
+  }
+
+  takeDMPreview(
+    routeID: string,
+    managementHash: string,
+    requestID: string,
+    appState: string,
+  ): DMPreviewSession | undefined {
+    return this.ctx.storage.transactionSync(() => {
+      const sessions = this.dmPreviews();
+      const session = sessions.find(
+        (item) =>
+          item.routeID === routeID &&
+          item.managementHash === managementHash &&
+          item.requestID === requestID &&
+          item.appState === appState,
+      );
+      this.saveDMPreviews(sessions.filter((item) => item !== session));
+      return session;
+    });
+  }
+
   private read(): State {
     return this.ctx.storage.kv.get<State>("pairing") ?? { codes: [], routes: [] };
   }

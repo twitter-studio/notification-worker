@@ -271,7 +271,7 @@ describe("/setup", () => {
     const x = fakeX();
     const env = setupEnv();
     const before = await handle(new Request(`${origin}/v1/pairing`), env, x.deps);
-    expect(await before.json()).toEqual({ version: 3, x_login: false });
+    expect(await before.json()).toEqual({ version: 3, x_login: false, dm_preview_setup: false });
 
     const response = await completeSetup(env, x);
     expect(response.status).toBe(200);
@@ -293,7 +293,7 @@ describe("/setup", () => {
     expect(response.headers.getSetCookie().join("\n")).toContain("__Host-tweetbot-setup=; ");
 
     const after = await handle(new Request(`${origin}/v1/pairing`), env, x.deps);
-    expect(await after.json()).toEqual({ version: 3, x_login: true });
+    expect(await after.json()).toEqual({ version: 3, x_login: true, dm_preview_setup: true });
   });
 
   test("登録済みの Webhook は作り直さず、X に確かめ直させる", async () => {
@@ -321,7 +321,7 @@ describe("/setup", () => {
       expect(await response.text()).toContain("Webhook Not Verified");
       expect(await storedWebhook(env)).toBeUndefined();
       const version = await handle(new Request(`${origin}/v1/pairing`), env, x.deps);
-      expect(await version.json()).toEqual({ version: 3, x_login: false });
+      expect(await version.json()).toEqual({ version: 3, x_login: false, dm_preview_setup: false });
     }
   });
 
@@ -584,7 +584,7 @@ describe("/setup", () => {
     expect((await completeSetup(env, second)).status).toBe(502);
     expect(await storedWebhook(env)).toBeUndefined();
     const version = await handle(new Request(`${origin}/v1/pairing`), env, second.deps);
-    expect(await version.json()).toEqual({ version: 3, x_login: false });
+    expect(await version.json()).toEqual({ version: 3, x_login: false, dm_preview_setup: false });
   });
 });
 
