@@ -104,5 +104,5 @@ pnpm build       # wrangler deploy --dry-run。デプロイはしない
 - Webhook の署名は、生の本文を解析する前に確かめる。時刻の幅でやり直しを拒む。
 - ログには、答えの数、設定の名前、エラーの名前だけを出す。資格情報、鍵、イベントの中身、中継の API のエラーの本文を出さない。
 - `ENABLE_X_ACTIVITY` は既定で `"false"`。X の規約の判断 (LEGAL-001) が通るまで、X の連携を作らない。実際の X のアカウントや X の API を使わない。
-- `wrangler deploy` を `--dry-run` なしで動かさない。利用者の Cloudflare へのデプロイは、利用者が自分で行う (README の手順)。運営の配置の Workflow は置かない (sandbox の配置 Workflow は、端末の接続を含まない構成で、同じ名前の本番の Worker を上書きしかねないので取り除いた)。
+- `wrangler deploy` を `--dry-run` なしで動かさない。利用者の Cloudflare へのデプロイは、利用者が自分で行う (README の手順)。運営の配置の Workflow は置かない。共通規則の「保護した GitHub の Environments でデプロイする」と違い、運営の本番の Worker は、オーナーがその都度承認して、手元の CLI で、リポジトリの外に置いた設定から配置する。このリポジトリは利用者が自分で配置するための公開コードで、運営の本番の設定 (許可するアカウント、Webhook の ID など) を置かないため。以前の sandbox の配置 Workflow は、端末の接続を含まない構成で、同じ名前の本番の Worker を上書きしかねなかったので取り除いた。
 - 名前付きの export を `src/index.ts` に置かない (Workers の別の入口として呼べてしまうため)。テストは `src/app.ts` の `handle` を、外へ送る処理を差し替えて呼ぶ。

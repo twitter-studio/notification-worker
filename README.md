@@ -162,7 +162,7 @@ pnpm build   # デプロイはしない (--dry-run)
 
 ## セキュリティと運用資料
 
-報告方法は [SECURITY.md](SECURITY.md)、Worker の配置と更新は [利用者向けの初回セットアップ](ops/production-setup.md)、鍵の更新・停止・削除は [運用手順](ops/setup.md) を参照してください。運営用の障害・鍵更新・削除の詳しい手順は [notification-docs](https://github.com/twitter-studio/notification-docs/blob/main/docs/operations/recovery.md) にあります。非公開リポジトリのため、アクセスできる管理者だけが参照します。公開コードから実サービスの利用登録やproduction運用を開始できるという意味ではありません。
+報告方法は [SECURITY.md](SECURITY.md)、Worker の配置は [利用者向けの初回セットアップ](ops/production-setup.md)、鍵の更新・停止・削除は [運用手順](ops/setup.md) を参照してください。運営用の障害・鍵更新・削除の詳しい手順は [notification-docs](https://github.com/twitter-studio/notification-docs/blob/main/docs/operations/recovery.md) にあります。非公開リポジトリのため、アクセスできる管理者だけが参照します。公開コードから実サービスの利用登録やproduction運用を開始できるという意味ではありません。
 
 ## DM通知の本文表示
 
