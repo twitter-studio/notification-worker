@@ -23,7 +23,7 @@
 
 ## 通知プレビュー
 
-1. プレビューに対応した運営 API が稼働していることを確認する。利用者 Worker を対応版へ更新し、自分の Wrangler 設定の `vars` に `ENABLE_X_NOTIFICATION_PREVIEW="true"` を追加する。共有の sandbox Workflow では未設定のままなので、プレビューは有効にならない。
+1. プレビューに対応した運営 API が稼働していることを確認する。利用者 Worker を対応版へ更新し、自分の Wrangler 設定の `vars` に `ENABLE_X_NOTIFICATION_PREVIEW="true"` を追加する。リポジトリの設定 (`wrangler.jsonc`、`wrangler.example.jsonc`) には置いていないので、追加しないとプレビューは有効にならない。
 2. イベントに公開投稿者の情報がない場合も表示するには、同じ X アプリの App-only Bearer Token を利用者 Worker の `X_PREVIEW_BEARER_TOKEN` secret に置く。X の利用料を確認してから設定する。Worker は情報が欠けているイベントでだけユーザー照会を1回試す。運営や GitHub にトークンを渡さない。いいね・リツイートで元のツイートがイベントにない場合、`ENABLE_X_POST_PREVIEW_LOOKUP="true"` を追加すると公開ツイートを照会する。この設定を省略すると Post Lookup は行わない。DM の本文表示を設定した端末がある場合は、送った人を端末の鍵で暗号化した中身に入れる。通常の DM は Webhook の `users` を使い、X Chat と、`users` にない通常の DM だけを、送った人ごとに 1 回照会する (#73)。[X の User Lookup](https://docs.x.com/x-api/users/get-user-by-id)
 3. メンションと直接返信を1件ずつ送り、各端末の通知に @ユーザー名と抜粋が出ること、タップで対象の投稿が開くことを確認する。投稿者を確認できない場合は定型文で届く。
 

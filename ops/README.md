@@ -4,7 +4,7 @@
 
 ## 配置と警報の有効化
 
-1. コードをレビュー・検証し、対象Cloudflareアカウントへの配置承認を得る。`wrangler.example.jsonc` (ボタンの設定 `wrangler.jsonc` も同じ) の `triggers` と `observability` も配置構成へ反映する。ローカルの `wrangler.local.jsonc` は自動更新されない。
+1. コードをレビュー・検証し、対象Cloudflareアカウントへの配置承認を得る。`wrangler.jsonc` の `triggers` と `observability` も配置構成 (`wrangler.local.jsonc` など) へ反映する。ローカルの `wrangler.local.jsonc` は自動更新されない。
 2. 配置後、Cronの登録と10分以内の `x_worker_observation` / `stage: queue_state` を確認する。最初のheartbeatを確認する前に警報を有効化すると、監視未起動として警報が出る。
 3. `worker-monitor.json` を作業用ファイルへコピーする。`ACCOUNT_ID` を32桁の対象アカウントID、`WORKER_NAME` を自分のWorker名、`ALERT_EMAIL` を承認した受信先へ置き換える。SQL文字列に引用符などを含む値を入れず、クエリの対象が自分のWorkerだけであることを確認する。
 4. Cloudflareの Alerts → Monitors でSQLを検証する。APIを使う場合は対象アカウントに限定した Notifications Edit と Account Analytics Read の資格情報を使う。資格情報をWorkerへ保存しない。利用可能なデータセット・監視枠・料金を確認し、プラン変更や枠超過が必要なら止める。
@@ -68,4 +68,4 @@ QA-002では、無効版へrollbackした後も管理APIのsettingsに有効設�
 
 旧 `x1_` からの切り替えは、購読解除と不在確認・X入口無効・Queue件数とbytesが0の状態で行う。旧jobの読み替えはしない。既存履歴を引き継ぐ移行ではないため、過去イベントをreplayしない。詳細は [ADR-0004](../docs/adr/0004-post-notification-dedup.md) と [QA-002の実接続記録](../docs/verification/2026-11-05-qa002.md) を参照。
 
-通常配置と復旧は [Environment経由の配置手順](deployment.md) を参照する。
+配置は [アプリからの接続手順](production-setup.md)、鍵の更新・停止・削除は [セットアップ手順](setup.md) を参照する。

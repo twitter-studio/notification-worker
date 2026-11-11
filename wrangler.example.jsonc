@@ -1,6 +1,5 @@
-// 利用者の Worker の基本の設定 (型、試験、build、保護付きの配置 Workflow の正本)。端末の接続 (Durable Object) は含まない。
-// 自分で配置するときは、端末の接続も含む `wrangler.jsonc` を `wrangler.local.jsonc` に写して使う (README)。保護付きの配置
-// Workflow で更新する場合は、このファイルから `wrangler.local.jsonc` を作る (Workflow は端末の接続を含まない構成を配る)。
+// 利用者の Worker の基本の設定 (型、試験、build の正本)。端末の接続 (Durable Object) は含まないので、配置には使わない。
+// 自分で配置するときは、端末の接続も含む `wrangler.jsonc` を `wrangler.local.jsonc` に写して使う (README)。
 // 秘密 (RELAY_TOKEN、MOCK_WEBHOOK_SECRET) は、ここに書かず、`wrangler secret put` で置く。
 {
   "$schema": "node_modules/wrangler/config-schema.json",

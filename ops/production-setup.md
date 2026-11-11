@@ -29,7 +29,7 @@ X の開発者アプリを用意し、[Deploy to Cloudflare](../README.md#deploy
 
 X アプリの Callback URL に `https://<worker-domain>/oauth/callback` を追加し、ブラウザで `https://<worker-domain>/setup` を開いて Webhook を用意します。
 
-自分で CLI 配置する場合も、`wrangler.jsonc` を git で無視する `wrangler.local.jsonc` に写し、端末接続の binding・migration・Cron を保持します。既存の [sandbox 配置 Workflow](deployment.md) は端末接続を含まない開発用構成なので、この Worker の更新には使いません。
+自分で CLI 配置する場合も、`wrangler.jsonc` を git で無視する `wrangler.local.jsonc` に写し、端末接続の binding・migration・Cron を保持します。`wrangler.example.jsonc` は端末接続を含まない型・テスト・build 用の設定なので、この Worker の配置には使いません。
 
 ## 3. 各端末・アカウントを接続する
 
