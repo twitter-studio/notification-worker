@@ -24,10 +24,11 @@ export type DmPreviewSource = { sender?: DmSender | undefined } & (
 const MAX_PLAINTEXT_BYTES = 2522;
 
 /** 上限に収めるために省いたもの。ログには、この名前だけを出す。 */
-type Trimmed = "none" | "profile_image" | "key_change" | "sender";
+type Trimmed = "none" | "profile_image" | "name" | "key_change" | "sender";
 
 /**
- * 上限に収まらないときに省く順。アイコンの URL、鍵変更、送った人の順に省く。
+ * 上限に収まらないときに省く順。アイコンの URL、名前、鍵変更、送った人の順に省く。
+ * 名前を省いても、端末は @ユーザー名を題に出す。
  * 鍵変更を送った人より先に省くのは、X Chat の鍵変更と暗号化したイベントがどちらも大きく、送った人が先に落ちると
  * 実機の X Chat ではほとんど送った人が出なかったため (2026-11-12、#75)。1 対 1 の会話の鍵はめったに変わらず、
  * 端末は本文表示の設定のときに保存した鍵変更で照合できる。鍵が変わって本文を開けないときも、端末は確かめられない
@@ -38,14 +39,19 @@ function smaller(source: DmPreviewSource): [DmPreviewSource, Trimmed][] {
     source.sender?.profile_image_url === undefined
       ? source
       : { ...source, sender: { ...source.sender, profile_image_url: undefined } };
+  const withoutName: DmPreviewSource =
+    withoutImage.sender?.name === undefined
+      ? withoutImage
+      : { ...withoutImage, sender: { ...withoutImage.sender, name: undefined } };
   const withoutKeyChange: DmPreviewSource =
-    withoutImage.kind === "x_chat"
-      ? { ...withoutImage, conversation_key_change_event: undefined }
-      : withoutImage;
+    withoutName.kind === "x_chat"
+      ? { ...withoutName, conversation_key_change_event: undefined }
+      : withoutName;
   const withoutSender: DmPreviewSource = { ...withoutKeyChange, sender: undefined };
   return [
     [source, "none"],
     [withoutImage, "profile_image"],
+    [withoutName, "name"],
     [withoutKeyChange, "key_change"],
     [withoutSender, "sender"],
   ];
@@ -94,11 +100,13 @@ export async function sealDmPreview({
     }
     encoded.fill(0);
   }
-  // 何を省いたかだけを残す (中身や大きさは出さない)。
+  // 何が付いていて、何を省いたかだけを残す (中身や大きさは出さない)。
   console.info({
     event: "dm_preview_sealed",
     kind: source.kind,
     sender: source.sender !== undefined,
+    image: source.sender?.profile_image_url !== undefined,
+    key_change: source.kind === "x_chat" && source.conversation_key_change_event !== undefined,
     trimmed,
   });
   if (plaintext === undefined) return undefined;
