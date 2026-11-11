@@ -402,6 +402,29 @@ describe("通知のプレビュー", () => {
     });
   });
 
+  it("同じ人の記録のどれかが表示を止めていれば、表示名とアイコンを入れない", async () => {
+    const relay = fakeRelay();
+    const payload = event();
+    payload.data.includes = Object.assign(payload.data.includes, {
+      users: [
+        {
+          ...author,
+          name: "First Name",
+          profile_image_url: "https://pbs.twimg.com/profile_images/1/f_normal.jpg",
+        },
+        { ...author, withheld: { country_codes: ["DE"] } },
+      ],
+    });
+    await post(payload, {
+      relay,
+      environment: testEnv({ ENABLE_X_ACTIVITY: "true", ENABLE_X_NOTIFICATION_PREVIEW: "true" }),
+    });
+    expect(XJobSchema.parse(relay.queued[0]).event.preview).toEqual({
+      author: "example",
+      excerpt: canary,
+    });
+  });
+
   it("鍵付きの記録が混ざれば、表示名とアイコンをどこにも出さない", async () => {
     const relay = fakeRelay();
     const payload = event();

@@ -310,23 +310,22 @@ async function lookupPostExcerpt(
 
 function previewActor(authorID: string, users: readonly unknown[]): Actor | undefined {
   let actor: Actor = { authorID, author: undefined };
+  let withheld = false;
   for (const user of users) {
     const profile = Profile.safeParse(user);
     if (!profile.success || profile.data.id !== authorID) continue;
     if (profile.data.protected === true) return undefined;
+    // 同じ人の記録が複数あれば、どれか 1 つでも表示を止めていれば、表示名とアイコンは出さない。
+    if (profile.data.withheld != null) withheld = true;
     if (profile.data.protected === false && actor.author === undefined && profile.data.username)
       actor = {
         authorID,
         author: profile.data.username,
-        ...(profile.data.withheld == null
-          ? {
-              authorName: displayNameOf(profile.data.name),
-              authorImage: profileImageOf(profile.data.profile_image_url),
-            }
-          : {}),
+        authorName: displayNameOf(profile.data.name),
+        authorImage: profileImageOf(profile.data.profile_image_url),
       };
   }
-  return actor;
+  return withheld ? { authorID, author: actor.author } : actor;
 }
 
 export function previewSourceFor(
