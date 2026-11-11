@@ -53,6 +53,7 @@ export function isRestrictedPost(post: z.infer<typeof PostPreviewFields>): boole
 }
 
 function observeLookup(
+  purpose: "dm_sender" | undefined,
   outcome:
     | "found"
     | "http_error"
@@ -62,7 +63,12 @@ function observeLookup(
     | "transport_error",
   status?: number,
 ): void {
-  console.info({ event: "x_preview_lookup", outcome, ...(status === undefined ? {} : { status }) });
+  console.info({
+    event: "x_preview_lookup",
+    ...(purpose === undefined ? {} : { purpose }),
+    outcome,
+    ...(status === undefined ? {} : { status }),
+  });
 }
 
 async function lookup<T>(
@@ -71,6 +77,7 @@ async function lookup<T>(
   schema: z.ZodType<T>,
   usable: (data: T) => boolean,
   fetch: typeof globalThis.fetch,
+  purpose?: "dm_sender",
 ): Promise<T | undefined> {
   const signal = AbortSignal.timeout(1000);
   let status: number | undefined;
@@ -83,13 +90,13 @@ async function lookup<T>(
     });
     status = response.status;
     if (!response.ok) {
-      observeLookup("http_error", status);
+      observeLookup(purpose, "http_error", status);
       await response.body?.cancel().catch(() => {});
       return undefined;
     }
     const body = await readBody(response, 8192);
     if (body === undefined) {
-      observeLookup("invalid_response", status);
+      observeLookup(purpose, "invalid_response", status);
       return undefined;
     }
     const json: unknown = JSON.parse(
@@ -97,22 +104,105 @@ async function lookup<T>(
     );
     const parsed = schema.safeParse(json);
     if (!parsed.success) {
-      observeLookup("invalid_response", status);
+      observeLookup(purpose, "invalid_response", status);
       return undefined;
     }
     if (!usable(parsed.data)) {
-      observeLookup("unavailable_profile", status);
+      observeLookup(purpose, "unavailable_profile", status);
       return undefined;
     }
-    observeLookup("found", status);
+    observeLookup(purpose, "found", status);
     return parsed.data;
   } catch {
     observeLookup(
+      purpose,
       signal.aborted ? "timeout" : status === undefined ? "transport_error" : "invalid_response",
       status,
     );
     return undefined;
   }
+}
+
+/** DM の送った人。端末の鍵で暗号化した中身にだけ入れ、中継には平文で送らない。 */
+export type DmSender = {
+  id: string;
+  name?: string | undefined;
+  username: string;
+  profile_image_url?: string | undefined;
+};
+const DmSenderProfile = z.object({
+  id: z.string(),
+  name: z.string().optional().catch(undefined),
+  username: PreviewHandle,
+  profile_image_url: z.string().optional().catch(undefined),
+});
+const MAX_DISPLAY_NAME_LENGTH = 100;
+
+/** 表示名から制御文字と書字方向の制御を除く。X の表示名は 50 文字までなので、長すぎるものは使わない。 */
+function displayNameOf(name: string | undefined): string | undefined {
+  const line = name
+    ?.replace(/\s+/gu, " ")
+    .replace(/[\p{Cc}\p{Cs}\p{Bidi_Control}]/gu, "")
+    .trim();
+  return line && line.length <= MAX_DISPLAY_NAME_LENGTH ? line : undefined;
+}
+
+/** アイコンは X の画像の配信元の https の URL だけを使う (端末がこの URL から画像を取る)。 */
+function profileImageOf(value: string | undefined): string | undefined {
+  if (value === undefined || value.length > 512) return undefined;
+  try {
+    const url = new URL(value);
+    // 正規化で百分率符号化されて伸びることがあるので、端末が受ける長さは正規化の後に見る。
+    return url.href.length <= 512 &&
+      url.protocol === "https:" &&
+      url.hostname === "pbs.twimg.com" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.pathname.startsWith("/profile_images/") &&
+      url.search === "" &&
+      url.hash === ""
+      ? url.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** ユーザーの記録 (User Lookup の `data`、Webhook の `users[id].data`) から、DM の送った人を読む。 */
+export function dmSenderFrom(senderID: string, value: unknown): DmSender | undefined {
+  const profile = DmSenderProfile.safeParse(value);
+  if (!profile.success || profile.data.id !== senderID) return undefined;
+  const name = displayNameOf(profile.data.name);
+  const image = profileImageOf(profile.data.profile_image_url);
+  return {
+    id: senderID,
+    username: profile.data.username,
+    ...(name === undefined ? {} : { name }),
+    ...(image === undefined ? {} : { profile_image_url: image }),
+  };
+}
+
+/**
+ * DM の送った人の名前、@ユーザー名、アイコンを引く。暗号化して受け手の端末にだけ届けるので、
+ * 公開投稿のプレビューと違って、鍵付きのアカウントも除かない (受け手は DM で相手をもう知っている)。
+ */
+export async function lookupDmSender(
+  senderID: string,
+  bearer: string,
+  fetch: typeof globalThis.fetch,
+): Promise<DmSender | undefined> {
+  const url = new URL(`https://api.x.com/2/users/${senderID}`);
+  url.searchParams.set("user.fields", "profile_image_url");
+  const response = await lookup(
+    url,
+    bearer,
+    z.object({ data: z.unknown() }),
+    ({ data }) => dmSenderFrom(senderID, data) !== undefined,
+    fetch,
+    "dm_sender",
+  );
+  return response === undefined ? undefined : dmSenderFrom(senderID, response.data);
 }
 
 export async function resolvePreview(

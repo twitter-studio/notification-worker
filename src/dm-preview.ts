@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { DmSender } from "./x-preview";
 
 export const DmPreviewKey = z.string().regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/);
 export const SealedDmPreview = z
@@ -7,16 +8,37 @@ export const SealedDmPreview = z
   .max(3400)
   .regex(/^[A-Za-z0-9_-]+$/);
 
-export type DmPreviewSource =
-  | { kind: "legacy"; excerpt: string }
+export type DmPreviewSource = { sender?: DmSender | undefined } & (
+  | { kind: "legacy"; excerpt?: string | undefined }
   | {
       kind: "x_chat";
       sender_id: string;
       conversation_id: string;
       conversation_key_version: string;
       encoded_event: string;
-      conversation_key_change_event?: string;
-    };
+      conversation_key_change_event?: string | undefined;
+    }
+);
+
+/** APNs の上限に収める平文の大きさ (12 バイトの nonce と 16 バイトの tag を足し、Base64URL にして 3400 文字以内)。 */
+const MAX_PLAINTEXT_BYTES = 2522;
+
+/**
+ * 上限に収まらないときに省く順。本文を正しく出すことを、送った人を出すことより優先する。
+ * アイコンの URL、送った人、鍵変更 (端末は保存済みの鍵変更で照合できる) の順に省く。
+ */
+function smaller(source: DmPreviewSource): DmPreviewSource[] {
+  const withoutImage: DmPreviewSource =
+    source.sender?.profile_image_url === undefined
+      ? source
+      : { ...source, sender: { ...source.sender, profile_image_url: undefined } };
+  const withoutSender: DmPreviewSource = { ...withoutImage, sender: undefined };
+  const withoutKeyChange: DmPreviewSource =
+    withoutSender.kind === "x_chat"
+      ? { ...withoutSender, conversation_key_change_event: undefined }
+      : withoutSender;
+  return [source, withoutImage, withoutSender, withoutKeyChange];
+}
 
 export async function dmPreviewKeyID(key: string): Promise<string> {
   const data = new TextEncoder().encode(`twitter-studio/dm-preview-key/v1\n${key}`);
@@ -50,22 +72,16 @@ export async function sealDmPreview({
   occurredAt: string;
 }): Promise<string | undefined> {
   const encoder = new TextEncoder();
-  let plaintext = encoder.encode(JSON.stringify({ ...source, occurred_at: occurredAt }));
-  // 12-byte nonce + AES-GCM ciphertext + 16-byte tag must fit the APNs budget after encoding.
-  if (plaintext.length > 2522 && source.kind === "x_chat" && source.conversation_key_change_event) {
-    plaintext.fill(0);
-    plaintext = encoder.encode(
-      JSON.stringify({
-        ...source,
-        conversation_key_change_event: undefined,
-        occurred_at: occurredAt,
-      }),
-    );
+  let plaintext: Uint8Array | undefined;
+  for (const candidate of smaller(source)) {
+    const encoded = encoder.encode(JSON.stringify({ ...candidate, occurred_at: occurredAt }));
+    if (encoded.length <= MAX_PLAINTEXT_BYTES) {
+      plaintext = encoded;
+      break;
+    }
+    encoded.fill(0);
   }
-  if (plaintext.length > 2522) {
-    plaintext.fill(0);
-    return undefined;
-  }
+  if (plaintext === undefined) return undefined;
   const rawKey = Uint8Array.from(atob(key.replaceAll("-", "+").replaceAll("_", "/")), (char) =>
     char.charCodeAt(0),
   );
