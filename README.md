@@ -118,7 +118,7 @@ Tweetbotの本番通知を使う場合は、[利用者向けの初回セット�
 - X アカウントの許可は `ALLOWED_X_USER_IDS` に設定し、端末は Tweetbot から接続します。中継資格情報・配送先 ID・DM プレビューの鍵はアプリが Worker へ送ります。人が配送先 JSON や接続コードを入力する手順はありません。
 - 利用者側にQueue `notification-x-events`を1つ用意し、保持を1日にします。設定例のproducerとconsumerの名前をそろえます。既存の模擬イベントだけを使う場合は、`queues`設定を利用者の設定から外せます。
 - 対象アカウント、アプリ、費用上限、Queue監視、削除と認可取り消しの手順を具体化し、承認後に配置・購読を行います。Xへの照会はオーナー判断により行いません。
-- `ENABLE_X_NOTIFICATION_PREVIEW=true` で、メンション・直接返信・引用ツイート・リツイート・いいねの通知に、通知を起こした公開アカウントの @ユーザー名と公開ツイートの抜粋を表示できます。いいねとリツイートには元のツイートの本文を使います。Webhook に必要な情報がなければ、`X_PREVIEW_BEARER_TOKEN` を設定した場合に限り、X の User Lookup を行います。元のツイートの Post Lookup も使う場合は `ENABLE_X_POST_PREVIEW_LOOKUP=true` を設定します。照会には X の利用料がかかる場合があります。本文を確認できない場合は定型文で通知します。対応する中継 API を先に配置してください。
+- `ENABLE_X_NOTIFICATION_PREVIEW=true` で、メンション・直接返信・引用ツイート・リツイート・いいねの通知に、通知を起こした公開アカウントの @ユーザー名と公開ツイートの抜粋を表示できます。公開アカウントの表示名とアイコンの URL も中継に送り、アプリの通知拡張が送った人の Communication Notifications として出します (中継の ADR-0009)。いいねとリツイートには元のツイートの本文を使います。Webhook に必要な情報がなければ、`X_PREVIEW_BEARER_TOKEN` を設定した場合に限り、X の User Lookup を行います。元のツイートの Post Lookup も使う場合は `ENABLE_X_POST_PREVIEW_LOOKUP=true` を設定します。照会には X の利用料がかかる場合があります。本文を確認できない場合は定型文で通知します。対応する中継 API を先に配置してください。
 - DM の本文表示を設定した端末あてには、送った人の名前・@ユーザー名・アイコンの URL も届けます。通常の DM は Webhook の `users` に入っていればそれを使います。X Chat と、入っていない通常の DM は、同じ設定と `X_PREVIEW_BEARER_TOKEN` があれば、送った人ごとに 1 回照会します。結果は端末の鍵で暗号化した中身にだけ入れ、中継 API には平文で送りません。受け手は DM で相手をもう知っているので、鍵付きのアカウントも除きません。APNs の上限に収まらなければ、鍵変更、アイコンの URL、名前、送った人の順に省きます。本文表示の設定の後に会話の鍵が変わると、設定し直すまで本文は定型文になります ([#73](https://github.com/twitter-studio/notification-worker/issues/73)、[#77](https://github.com/twitter-studio/notification-worker/issues/77))。
 - 準備と検証を終えてから`ENABLE_X_ACTIVITY`を`"true"`にします。それまでは`"false"`のままです。生のWebhook本文や署名をログへ追加しません。
 

@@ -290,8 +290,183 @@ describe("XAAの署名と本文", () => {
 });
 describe("通知のプレビュー", () => {
   const author = { id: "3333333333333333333", username: "example", protected: false };
-  const lookup = "https://api.x.com/2/users/3333333333333333333?user.fields=protected";
+  const lookup =
+    "https://api.x.com/2/users/3333333333333333333?user.fields=protected%2Cprofile_image_url%2Cwithheld";
   const bearer = "synthetic-preview-bearer";
+
+  it.each([
+    [
+      "公開アカウントの表示名とアイコン",
+      {
+        name: "Example Name",
+        profile_image_url: "https://pbs.twimg.com/profile_images/1/e_normal.jpg",
+      },
+      {
+        author_name: "Example Name",
+        author_image: "https://pbs.twimg.com/profile_images/1/e_normal.jpg",
+      },
+    ],
+    [
+      "形の違う表示名とアイコンは入れない",
+      { name: "N".repeat(101), profile_image_url: "https://example.com/profile_images/1/e.jpg" },
+      {},
+    ],
+  ])("メンションのプレビューに、%s を入れる", async (_name, profile, expected) => {
+    const relay = fakeRelay();
+    const payload = event();
+    payload.data.includes = Object.assign(payload.data.includes, {
+      users: [{ ...author, ...profile }],
+    });
+    await post(payload, {
+      relay,
+      environment: testEnv({ ENABLE_X_ACTIVITY: "true", ENABLE_X_NOTIFICATION_PREVIEW: "true" }),
+    });
+    const preview = XJobSchema.parse(relay.queued[0]).event.preview;
+    expect(preview).toEqual({ author: "example", excerpt: canary, ...expected });
+  });
+
+  it("いいねの表示名とアイコンは、受け手ではなく、いいねした人のものを中継に送る", async () => {
+    const relay = fakeRelay();
+    const liker = { id: "5555555555555555555", username: "liker", protected: false };
+    const image = "https://pbs.twimg.com/profile_images/2/liker_normal.jpg";
+    const input = {
+      data: {
+        ...event().data,
+        event_type: "like.create",
+        payload: {
+          id: "6666666666666666666",
+          liked_tweet_id: "7777777777777777777",
+          liked_tweet_author_id: recipient,
+          liking_user_id: liker.id,
+        },
+        includes: {
+          users: [
+            { id: recipient, username: "recipient", name: "Recipient", protected: false },
+            { ...liker, name: "Liker Name", profile_image_url: image },
+          ],
+          tweets: [
+            {
+              id: "7777777777777777777",
+              author_id: recipient,
+              text: "元のツイート",
+              possibly_sensitive: false,
+            },
+          ],
+        },
+      },
+    };
+    const environment = testEnv({
+      ENABLE_X_ACTIVITY: "true",
+      ENABLE_X_NOTIFICATION_PREVIEW: "true",
+      X_NOTIFICATION_TYPES: "like",
+    });
+    expect((await post(input, { relay, environment })).status).toBe(200);
+    const job = XJobSchema.parse(relay.queued[0]);
+    await handleXQueue(
+      [{ body: job, attempts: 1, ack: vi.fn(), retry: vi.fn() }],
+      environment,
+      relay.deps,
+    );
+    expect(relay.sent[0]?.body).toMatchObject({
+      preview: {
+        author: "liker",
+        excerpt: "元のツイート",
+        author_name: "Liker Name",
+        author_image: image,
+      },
+    });
+    const sent = JSON.stringify(relay.sent[0]?.body);
+    for (const value of ["Recipient", recipient, liker.id]) expect(sent).not.toContain(value);
+  });
+
+  it("国ごとに表示を止めたアカウントは、表示名とアイコンを入れない", async () => {
+    const relay = fakeRelay();
+    const payload = event();
+    payload.data.includes = Object.assign(payload.data.includes, {
+      users: [
+        {
+          ...author,
+          name: "Withheld Name",
+          profile_image_url: "https://pbs.twimg.com/profile_images/1/w_normal.jpg",
+          withheld: { country_codes: ["DE"] },
+        },
+      ],
+    });
+    await post(payload, {
+      relay,
+      environment: testEnv({ ENABLE_X_ACTIVITY: "true", ENABLE_X_NOTIFICATION_PREVIEW: "true" }),
+    });
+    expect(XJobSchema.parse(relay.queued[0]).event.preview).toEqual({
+      author: "example",
+      excerpt: canary,
+    });
+  });
+
+  it("同じ人の記録のどれかが表示を止めていれば、表示名とアイコンを入れない", async () => {
+    const relay = fakeRelay();
+    const payload = event();
+    payload.data.includes = Object.assign(payload.data.includes, {
+      users: [
+        {
+          ...author,
+          name: "First Name",
+          profile_image_url: "https://pbs.twimg.com/profile_images/1/f_normal.jpg",
+        },
+        { ...author, withheld: { country_codes: ["DE"] } },
+      ],
+    });
+    await post(payload, {
+      relay,
+      environment: testEnv({ ENABLE_X_ACTIVITY: "true", ENABLE_X_NOTIFICATION_PREVIEW: "true" }),
+    });
+    expect(XJobSchema.parse(relay.queued[0]).event.preview).toEqual({
+      author: "example",
+      excerpt: canary,
+    });
+  });
+
+  it("鍵付きの記録が混ざれば、表示名とアイコンをどこにも出さない", async () => {
+    const relay = fakeRelay();
+    const payload = event();
+    payload.data.includes = Object.assign(payload.data.includes, {
+      users: [
+        { ...author, name: "Public Name" },
+        { ...author, protected: true, name: "Private Name" },
+      ],
+    });
+    await post(payload, {
+      relay,
+      environment: testEnv({ ENABLE_X_ACTIVITY: "true", ENABLE_X_NOTIFICATION_PREVIEW: "true" }),
+    });
+    const queued = JSON.stringify(relay.queued);
+    for (const value of ["Public Name", "Private Name"]) expect(queued).not.toContain(value);
+  });
+
+  it("照会した投稿者の表示名とアイコンも、プレビューに入れる", async () => {
+    const relay = fakeRelay();
+    const payload = event();
+    const image = "https://pbs.twimg.com/profile_images/1/e_normal.jpg";
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        Response.json({ data: { ...author, name: "Looked Up", profile_image_url: image } }),
+      );
+    await post(payload, {
+      relay: { ...relay, deps: { ...relay.deps, fetch } },
+      environment: testEnv({
+        ENABLE_X_ACTIVITY: "true",
+        ENABLE_X_NOTIFICATION_PREVIEW: "true",
+        X_PREVIEW_BEARER_TOKEN: bearer,
+      }),
+    });
+    expect(fetch).toHaveBeenCalledWith(new URL(lookup), expect.anything());
+    expect(XJobSchema.parse(relay.queued[0]).event.preview).toEqual({
+      author: "example",
+      excerpt: canary,
+      author_name: "Looked Up",
+      author_image: image,
+    });
+  });
 
   it("メンションは本人や参照先でなく、投稿者と短い本文を中継する", async () => {
     const relay = fakeRelay();
@@ -1271,6 +1446,8 @@ describe("DM の送った人", () => {
     ["ほかのホスト", "https://example.com/profile_images/1/example_normal.jpg"],
     ["アイコン以外のパス", "https://pbs.twimg.com/media/example.jpg"],
     ["クエリ付き", `${image}?name=large`],
+    ["末尾が空のクエリ", `${image}?`],
+    ["末尾が空のフラグメント", `${image}#`],
   ])("アイコンの URL が%sなら入れない", async (_name, url) => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

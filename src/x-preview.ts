@@ -5,12 +5,26 @@ export const PreviewHandle = z.string().regex(/^[A-Za-z0-9_]{1,15}$/);
 export const XNotificationPreview = z.strictObject({
   author: PreviewHandle,
   excerpt: z.string().min(1).max(280),
+  // 公開アカウントの表示名とアイコン。アプリの通知拡張が、送った人の Communication Notifications に使う
+  // (中継の ADR-0009)。形は displayNameOf と profileImageOf で確かめてから入れる。
+  author_name: z
+    .string()
+    .refine((value) => displayNameOf(value) === value)
+    .optional(),
+  author_image: z
+    .string()
+    .refine((value) => profileImageOf(value) === value)
+    .optional(),
 });
 
 const Profile = z.object({
   id: z.string(),
   username: PreviewHandle.optional().catch(undefined),
   protected: z.boolean().optional(),
+  name: z.string().optional().catch(undefined),
+  profile_image_url: z.string().optional().catch(undefined),
+  // 国ごとに表示を止めたアカウント。表示名とアイコンは出さない (@ユーザー名は今までどおり)。
+  withheld: z.unknown().optional(),
 });
 const MAX_EXCERPT_LENGTH = 280;
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -30,7 +44,12 @@ export function excerptOf(text: string | undefined): string | undefined {
   return end === 0 ? undefined : `${line.slice(0, end).trimEnd()}…`;
 }
 
-type Actor = { authorID: string; author: string | undefined };
+type Actor = {
+  authorID: string;
+  author: string | undefined;
+  authorName?: string | undefined;
+  authorImage?: string | undefined;
+};
 export type PreviewSource = Actor &
   ({ kind: "excerpt"; excerpt: string } | { kind: "post"; postID: string; postAuthorID: string });
 
@@ -149,7 +168,9 @@ function displayNameOf(name: string | undefined): string | undefined {
 
 /** アイコンは X の画像の配信元の https の URL だけを使う (端末がこの URL から画像を取る)。 */
 function profileImageOf(value: string | undefined): string | undefined {
-  if (value === undefined || value.length > 512) return undefined;
+  // 末尾が空の `?` や `#` も、クエリやフラグメントとして使わない (中継の ADR-0009 と同じ)。
+  if (value === undefined || value.length > 512 || value.includes("?") || value.includes("#"))
+    return undefined;
   try {
     const url = new URL(value);
     // 正規化で百分率符号化されて伸びることがあるので、端末が受ける長さは正規化の後に見る。
@@ -213,22 +234,33 @@ export async function resolvePreview(
 ): Promise<z.infer<typeof XNotificationPreview> | undefined> {
   if (source === undefined) return undefined;
   if (source.kind === "post" && (!bearer || !allowPostLookup)) return undefined;
-  const [author, excerpt] = await Promise.all([
-    source.author ?? (bearer ? lookupPreviewAuthor(source.authorID, bearer, fetch) : undefined),
+  const [profile, excerpt] = await Promise.all([
+    source.author === undefined
+      ? bearer
+        ? lookupPreviewAuthor(source.authorID, bearer, fetch)
+        : undefined
+      : { author: source.author, name: source.authorName, image: source.authorImage },
     source.kind === "excerpt"
       ? source.excerpt
       : bearer && lookupPostExcerpt(source.postID, source.postAuthorID, bearer, fetch),
   ]);
-  return author === undefined || !excerpt ? undefined : { author, excerpt };
+  return profile === undefined || !excerpt
+    ? undefined
+    : {
+        author: profile.author,
+        excerpt,
+        ...(profile.name === undefined ? {} : { author_name: profile.name }),
+        ...(profile.image === undefined ? {} : { author_image: profile.image }),
+      };
 }
 
 async function lookupPreviewAuthor(
   authorID: string,
   bearer: string,
   fetch: typeof globalThis.fetch,
-) {
+): Promise<{ author: string; name?: string | undefined; image?: string | undefined } | undefined> {
   const url = new URL(`https://api.x.com/2/users/${authorID}`);
-  url.searchParams.set("user.fields", "protected");
+  url.searchParams.set("user.fields", "protected,profile_image_url,withheld");
   const response = await lookup(
     url,
     bearer,
@@ -236,7 +268,14 @@ async function lookupPreviewAuthor(
     ({ data }) => data.protected === false && data.username !== undefined,
     fetch,
   );
-  return response?.data.username;
+  const username = response?.data.username;
+  if (response === undefined || username === undefined) return undefined;
+  if (response.data.withheld != null) return { author: username };
+  return {
+    author: username,
+    name: displayNameOf(response.data.name),
+    image: profileImageOf(response.data.profile_image_url),
+  };
 }
 
 async function lookupPostExcerpt(
@@ -270,14 +309,23 @@ async function lookupPostExcerpt(
 }
 
 function previewActor(authorID: string, users: readonly unknown[]): Actor | undefined {
-  let author: string | undefined;
+  let actor: Actor = { authorID, author: undefined };
+  let withheld = false;
   for (const user of users) {
     const profile = Profile.safeParse(user);
     if (!profile.success || profile.data.id !== authorID) continue;
     if (profile.data.protected === true) return undefined;
-    if (profile.data.protected === false) author ??= profile.data.username;
+    // 同じ人の記録が複数あれば、どれか 1 つでも表示を止めていれば、表示名とアイコンは出さない。
+    if (profile.data.withheld != null) withheld = true;
+    if (profile.data.protected === false && actor.author === undefined && profile.data.username)
+      actor = {
+        authorID,
+        author: profile.data.username,
+        authorName: displayNameOf(profile.data.name),
+        authorImage: profileImageOf(profile.data.profile_image_url),
+      };
   }
-  return { authorID, author };
+  return withheld ? { authorID, author: actor.author } : actor;
 }
 
 export function previewSourceFor(
