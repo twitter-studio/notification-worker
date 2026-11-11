@@ -68,4 +68,4 @@ QA-002では、無効版へrollbackした後も管理APIのsettingsに有効設�
 
 旧 `x1_` からの切り替えは、購読解除と不在確認・X入口無効・Queue件数とbytesが0の状態で行う。旧jobの読み替えはしない。既存履歴を引き継ぐ移行ではないため、過去イベントをreplayしない。詳細は [ADR-0004](../docs/adr/0004-post-notification-dedup.md) と [QA-002の実接続記録](../docs/verification/2026-11-05-qa002.md) を参照。
 
-通常配置と復旧は [Environment経由の配置手順](deployment.md) を参照する。
+配置と更新は [アプリからの接続手順](production-setup.md)、鍵の更新・停止・削除は [セットアップ手順](setup.md) を参照する。

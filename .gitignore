@@ -14,6 +14,3 @@ coverage/
 # wrangler.jsonc (ボタンの設定) と wrangler.example.jsonc (基本の設定) のほかは、手元の設定としてコミットしない。
 /wrangler.*.json*
 !/wrangler.example.jsonc
-
-# GitHub Environmentの変数から一時生成する配置設定。
-.sandbox-deploy-*.jsonc

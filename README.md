@@ -73,7 +73,7 @@
 
 前の手順で、git で無視していた `wrangler.jsonc` を手元に作っていた場合は、この版を取り込む前に `wrangler.local.jsonc` へ名前を変えてください。`wrangler.jsonc` はコミットしたボタンの設定になったので、取り込むと、手元のものは警告なしに上書きされます。以後の `wrangler` のコマンドには、`--config wrangler.local.jsonc` を付けます。
 
-Tweetbotの本番通知を使う場合は、[利用者向けの初回セットアップ](ops/production-setup.md)から始めてください。鍵の更新・停止は[運用手順](ops/setup.md)を参照してください。[既存の sandbox 配置 Workflow](ops/deployment.md) は端末接続の Durable Object を含まない開発用構成です。アプリ接続用 Worker の更新には使いません。
+Tweetbotの本番通知を使う場合は、[利用者向けの初回セットアップ](ops/production-setup.md)から始めてください。鍵の更新・停止は[運用手順](ops/setup.md)を参照してください。`wrangler.example.jsonc` は型・テスト・build 用の設定で、端末接続の Durable Object を含みません。アプリ接続用 Worker の配置には使いません。
 
 ## 模擬のイベントで試す
 
@@ -162,7 +162,7 @@ pnpm build   # デプロイはしない (--dry-run)
 
 ## セキュリティと運用資料
 
-報告方法は [SECURITY.md](SECURITY.md)、承認付き配置の定義と必要な設定は [ops/deployment.md](ops/deployment.md) を参照してください。追加の運営用資料へのリンクには、非公開リポジトリへの参照を含みます。公開コードから実サービスの利用登録やproduction運用を開始できるという意味ではありません。
+報告方法は [SECURITY.md](SECURITY.md)、Worker の配置と更新は [利用者向けの初回セットアップ](ops/production-setup.md)、鍵の更新・停止・削除は [運用手順](ops/setup.md) を参照してください。運営用の障害・鍵更新・削除の詳しい手順は [notification-docs](https://github.com/twitter-studio/notification-docs/blob/main/docs/operations/recovery.md) にあります。非公開リポジトリのため、アクセスできる管理者だけが参照します。公開コードから実サービスの利用登録やproduction運用を開始できるという意味ではありません。
 
 ## DM通知の本文表示
 
