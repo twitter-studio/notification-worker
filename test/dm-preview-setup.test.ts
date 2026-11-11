@@ -542,6 +542,10 @@ describe("reading Twitter key material for DM message text", () => {
       "the conversation ID when participant IDs are empty",
       { id: `${owner}-${peer}`, participant_ids: [] },
     ],
+    [
+      "participant IDs when the conversation ID is a bare number",
+      { id: "123", participant_ids: [owner, peer] },
+    ],
   ])("the peer is found from %s", async (_name, row) => {
     const result = await finishWith((url) =>
       url.pathname === "/2/chat/conversations" ? conversations([row]) : undefined,
@@ -800,6 +804,8 @@ describe("reading Twitter key material for DM message text", () => {
     ["too many participants", { participant_ids: [owner, otherPeer, peer] }],
     ["an unreadable ID", { id: "1".repeat(65), participant_ids: [owner, otherPeer] }],
     ["a non-numeric participant", { id: `${owner}-${otherPeer}`, participant_ids: [owner, "me"] }],
+    ["an empty ID", { id: "", participant_ids: [owner, otherPeer] }],
+    ["an ID in no documented form", { id: "dm-1", participant_ids: [owner, otherPeer] }],
   ])("a conversation with %s is skipped", async (_name, row) => {
     const result = await finishWith((url) =>
       url.pathname === "/2/chat/conversations"

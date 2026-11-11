@@ -529,6 +529,10 @@ async function collectMaterial(
       if (members) {
         if (!members.includes(owner) || members[0] === members[1]) return undefined;
         fromID = members.find((member) => member !== owner);
+      } else if (!/^[0-9]{1,19}$/.test(id.data.id)) {
+        // 会話イベントの文書が認める形 (数字、`A-B`、`g` で始まる) のどれでもない ID は読めないものとして飛ばす。
+        // 数字だけの ID は、何を指すかを文書が書いていないので、participant_ids で決める。
+        return undefined;
       }
     }
     let fromParticipants: string | undefined;
