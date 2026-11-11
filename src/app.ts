@@ -11,7 +11,7 @@ import { handleCallback, handleSetup } from "./setup";
 import { recordObservation } from "./telemetry";
 import { MIN_SECRET_LENGTH, verifyMockSignature } from "./verify";
 import { normalizeXEvent, verifyXSignature, xCRC } from "./x-activity";
-import { resolvePreview } from "./x-preview";
+import { lookupDmSender, resolvePreview } from "./x-preview";
 import { relayBinding, type XJob, xEventID } from "./x-queue";
 
 export type AppDeps = RelayDeps & { enqueueX: (job: XJob) => Promise<void> };
@@ -189,8 +189,18 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
   }
   const jobs: XJob[] = (
     await Promise.all(
-      pending.map(async ({ event, sourceID, previewSource, dmPreviewSource }) => {
-        const [eventID, preview] = await Promise.all([
+      pending.map(async ({ event, sourceID, previewSource, dmPreviewSource, dmSenderID }) => {
+        // 送った人は、端末向けに暗号化するルートがあるときだけ、DM 1 件につき 1 回引く。
+        const sealsDmPreview =
+          dmPreviewSource !== undefined &&
+          targets.some(
+            (target) =>
+              target.eventTypes.includes(event.type) &&
+              target.dmPreviewKey !== undefined &&
+              target.routeID !== undefined,
+          );
+        const bearer = env.X_PREVIEW_BEARER_TOKEN;
+        const [eventID, preview, sender] = await Promise.all([
           xEventID(idSecret, recipient, event, sourceID),
           isEnabled(env.ENABLE_X_NOTIFICATION_PREVIEW)
             ? resolvePreview(
@@ -200,16 +210,26 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
                 isEnabled(env.ENABLE_X_POST_PREVIEW_LOOKUP),
               )
             : undefined,
+          sealsDmPreview &&
+          dmSenderID !== undefined &&
+          bearer &&
+          isEnabled(env.ENABLE_X_NOTIFICATION_PREVIEW)
+            ? lookupDmSender(dmSenderID, bearer, deps.fetch)
+            : undefined,
         ]);
+        const dmSource =
+          dmPreviewSource === undefined || sender === undefined
+            ? dmPreviewSource
+            : { ...dmPreviewSource, sender };
         return Promise.all(
           targets
             .filter((target) => target.eventTypes.includes(event.type))
             .map(async ({ config, routeID, dmPreviewKey }) => {
               const [relay_binding, dmPreview] = await Promise.all([
                 relayBinding(config, recipient, routeID),
-                dmPreviewSource !== undefined && dmPreviewKey !== undefined && routeID !== undefined
+                dmSource !== undefined && dmPreviewKey !== undefined && routeID !== undefined
                   ? sealDmPreview({
-                      source: dmPreviewSource,
+                      source: dmSource,
                       key: dmPreviewKey,
                       recipient,
                       routeID,

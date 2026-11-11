@@ -20,4 +20,4 @@ PAIRING_ADMIN_TOKEN=
 # X_RELAY_ROUTES: X アカウントごとの配送先を指定する JSON。
 # MOCK_WEBHOOK_SECRET: 模擬の Webhook の署名の鍵 (32 文字以上の乱数)。ENABLE_MOCK_EVENTS を "true" にするときだけ要る。
 #   作り方は README の「模擬のイベントで試す」(画面に出さずに .dev.vars へ書く)。
-# X_PREVIEW_BEARER_TOKEN: 公開投稿のユーザー名を補う App-only Bearer Token。
+# X_PREVIEW_BEARER_TOKEN: 公開投稿のユーザー名と、DM の送った人 (端末向けの暗号文にだけ入れる) を引く App-only Bearer Token。

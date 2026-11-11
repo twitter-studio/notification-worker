@@ -222,6 +222,8 @@ type AcceptedEvent = {
   event: XEvent;
   previewSource: PreviewSource | undefined;
   dmPreviewSource?: DmPreviewSource | undefined;
+  /** DM の送った人。端末向けに暗号化するときに、名前とアイコンを引くのに使う。 */
+  dmSenderID?: string | undefined;
 };
 
 type NormalizedXEvent =
@@ -274,6 +276,7 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
         {
           sourceID: id,
           dmPreviewSource: excerpt === undefined ? undefined : { kind: "legacy" as const, excerpt },
+          dmSenderID: message_create.sender_id,
           previewSource: undefined,
           event: { type: "dm" as const, occurred_at },
         },
@@ -295,6 +298,7 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
       recipient,
       sourceID: sourceID.data,
       previewSource: undefined,
+      dmSenderID: sender_id,
       dmPreviewSource:
         encodedEvent.success &&
         conversation_id !== undefined &&

@@ -115,6 +115,79 @@ async function lookup<T>(
   }
 }
 
+/** DM の送った人。端末の鍵で暗号化した中身にだけ入れ、中継には平文で送らない。 */
+export type DmSender = {
+  id: string;
+  name?: string | undefined;
+  username: string;
+  profile_image_url?: string | undefined;
+};
+const DmSenderProfile = z.object({
+  id: z.string(),
+  name: z.string().optional().catch(undefined),
+  username: PreviewHandle,
+  profile_image_url: z.string().optional().catch(undefined),
+});
+const MAX_DISPLAY_NAME_LENGTH = 100;
+
+/** 表示名から制御文字と書字方向の制御を除く。X の表示名は 50 文字までなので、長すぎるものは使わない。 */
+function displayNameOf(name: string | undefined): string | undefined {
+  const line = name
+    ?.replace(/\s+/gu, " ")
+    .replace(/[\p{Cc}\p{Cs}\p{Bidi_Control}]/gu, "")
+    .trim();
+  return line && line.length <= MAX_DISPLAY_NAME_LENGTH ? line : undefined;
+}
+
+/** アイコンは X の画像の配信元の https の URL だけを使う (端末がこの URL から画像を取る)。 */
+function profileImageOf(value: string | undefined): string | undefined {
+  if (value === undefined || value.length > 512) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" &&
+      url.hostname === "pbs.twimg.com" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.pathname.startsWith("/profile_images/") &&
+      url.search === "" &&
+      url.hash === ""
+      ? url.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * DM の送った人の名前、@ユーザー名、アイコンを引く。暗号化して受け手の端末にだけ届けるので、
+ * 公開投稿のプレビューと違って、鍵付きのアカウントも除かない (受け手は DM で相手をもう知っている)。
+ */
+export async function lookupDmSender(
+  senderID: string,
+  bearer: string,
+  fetch: typeof globalThis.fetch,
+): Promise<DmSender | undefined> {
+  const url = new URL(`https://api.x.com/2/users/${senderID}`);
+  url.searchParams.set("user.fields", "profile_image_url");
+  const response = await lookup(
+    url,
+    bearer,
+    z.object({ data: DmSenderProfile }).refine(({ data }) => data.id === senderID),
+    () => true,
+    fetch,
+  );
+  if (response === undefined) return undefined;
+  const name = displayNameOf(response.data.name);
+  const image = profileImageOf(response.data.profile_image_url);
+  return {
+    id: senderID,
+    username: response.data.username,
+    ...(name === undefined ? {} : { name }),
+    ...(image === undefined ? {} : { profile_image_url: image }),
+  };
+}
+
 export async function resolvePreview(
   source: PreviewSource | undefined,
   bearer: string | undefined,
