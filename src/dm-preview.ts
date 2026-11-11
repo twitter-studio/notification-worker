@@ -100,15 +100,9 @@ export async function sealDmPreview({
     }
     encoded.fill(0);
   }
-  // 何が付いていて、何を省いたかだけを残す (中身や大きさは出さない)。
-  console.info({
-    event: "dm_preview_sealed",
-    kind: source.kind,
-    sender: source.sender !== undefined,
-    image: source.sender?.profile_image_url !== undefined,
-    key_change: source.kind === "x_chat" && source.conversation_key_change_event !== undefined,
-    trimmed,
-  });
+  // 結果の名前 (何を省いたか) だけを残す。DM の種類や送った人の有無は、ログの決まり (件数、設定の名前、
+  // エラーの名前だけ) の外なので出さない。
+  console.info({ event: "dm_preview_sealed", outcome: trimmed });
   if (plaintext === undefined) return undefined;
   const rawKey = Uint8Array.from(atob(key.replaceAll("-", "+").replaceAll("_", "/")), (char) =>
     char.charCodeAt(0),
