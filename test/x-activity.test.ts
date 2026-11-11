@@ -290,8 +290,66 @@ describe("XAAの署名と本文", () => {
 });
 describe("通知のプレビュー", () => {
   const author = { id: "3333333333333333333", username: "example", protected: false };
-  const lookup = "https://api.x.com/2/users/3333333333333333333?user.fields=protected";
+  const lookup =
+    "https://api.x.com/2/users/3333333333333333333?user.fields=protected%2Cprofile_image_url";
   const bearer = "synthetic-preview-bearer";
+
+  it.each([
+    [
+      "公開アカウントの表示名とアイコン",
+      {
+        name: "Example Name",
+        profile_image_url: "https://pbs.twimg.com/profile_images/1/e_normal.jpg",
+      },
+      {
+        author_name: "Example Name",
+        author_image: "https://pbs.twimg.com/profile_images/1/e_normal.jpg",
+      },
+    ],
+    [
+      "形の違う表示名とアイコンは入れない",
+      { name: "N".repeat(101), profile_image_url: "https://example.com/profile_images/1/e.jpg" },
+      {},
+    ],
+  ])("メンションのプレビューに、%s を入れる", async (_name, profile, expected) => {
+    const relay = fakeRelay();
+    const payload = event();
+    payload.data.includes = Object.assign(payload.data.includes, {
+      users: [{ ...author, ...profile }],
+    });
+    await post(payload, {
+      relay,
+      environment: testEnv({ ENABLE_X_ACTIVITY: "true", ENABLE_X_NOTIFICATION_PREVIEW: "true" }),
+    });
+    const preview = XJobSchema.parse(relay.queued[0]).event.preview;
+    expect(preview).toEqual({ author: "example", excerpt: canary, ...expected });
+  });
+
+  it("照会した投稿者の表示名とアイコンも、プレビューに入れる", async () => {
+    const relay = fakeRelay();
+    const payload = event();
+    const image = "https://pbs.twimg.com/profile_images/1/e_normal.jpg";
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        Response.json({ data: { ...author, name: "Looked Up", profile_image_url: image } }),
+      );
+    await post(payload, {
+      relay: { ...relay, deps: { ...relay.deps, fetch } },
+      environment: testEnv({
+        ENABLE_X_ACTIVITY: "true",
+        ENABLE_X_NOTIFICATION_PREVIEW: "true",
+        X_PREVIEW_BEARER_TOKEN: bearer,
+      }),
+    });
+    expect(fetch).toHaveBeenCalledWith(new URL(lookup), expect.anything());
+    expect(XJobSchema.parse(relay.queued[0]).event.preview).toEqual({
+      author: "example",
+      excerpt: canary,
+      author_name: "Looked Up",
+      author_image: image,
+    });
+  });
 
   it("メンションは本人や参照先でなく、投稿者と短い本文を中継する", async () => {
     const relay = fakeRelay();
