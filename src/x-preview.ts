@@ -7,8 +7,14 @@ export const XNotificationPreview = z.strictObject({
   excerpt: z.string().min(1).max(280),
   // 公開アカウントの表示名とアイコン。アプリの通知拡張が、送った人の Communication Notifications に使う
   // (中継の ADR-0009)。形は displayNameOf と profileImageOf で確かめてから入れる。
-  author_name: z.string().min(1).max(100).optional(),
-  author_image: z.string().max(512).optional(),
+  author_name: z
+    .string()
+    .refine((value) => displayNameOf(value) === value)
+    .optional(),
+  author_image: z
+    .string()
+    .refine((value) => profileImageOf(value) === value)
+    .optional(),
 });
 
 const Profile = z.object({
@@ -17,6 +23,8 @@ const Profile = z.object({
   protected: z.boolean().optional(),
   name: z.string().optional().catch(undefined),
   profile_image_url: z.string().optional().catch(undefined),
+  // 国ごとに表示を止めたアカウント。表示名とアイコンは出さない (@ユーザー名は今までどおり)。
+  withheld: z.unknown().optional(),
 });
 const MAX_EXCERPT_LENGTH = 280;
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -252,7 +260,7 @@ async function lookupPreviewAuthor(
   fetch: typeof globalThis.fetch,
 ): Promise<{ author: string; name?: string | undefined; image?: string | undefined } | undefined> {
   const url = new URL(`https://api.x.com/2/users/${authorID}`);
-  url.searchParams.set("user.fields", "protected,profile_image_url");
+  url.searchParams.set("user.fields", "protected,profile_image_url,withheld");
   const response = await lookup(
     url,
     bearer,
@@ -262,6 +270,7 @@ async function lookupPreviewAuthor(
   );
   const username = response?.data.username;
   if (response === undefined || username === undefined) return undefined;
+  if (response.data.withheld != null) return { author: username };
   return {
     author: username,
     name: displayNameOf(response.data.name),
@@ -309,8 +318,12 @@ function previewActor(authorID: string, users: readonly unknown[]): Actor | unde
       actor = {
         authorID,
         author: profile.data.username,
-        authorName: displayNameOf(profile.data.name),
-        authorImage: profileImageOf(profile.data.profile_image_url),
+        ...(profile.data.withheld == null
+          ? {
+              authorName: displayNameOf(profile.data.name),
+              authorImage: profileImageOf(profile.data.profile_image_url),
+            }
+          : {}),
       };
   }
   return actor;
