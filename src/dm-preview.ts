@@ -23,36 +23,42 @@ export type DmPreviewSource = { sender?: DmSender | undefined } & (
 /** APNs の上限に収める平文の大きさ (12 バイトの nonce と 16 バイトの tag を足し、Base64URL にして 3400 文字以内)。 */
 const MAX_PLAINTEXT_BYTES = 2522;
 
-/** 上限に収めるために省いたもの。ログには、この名前だけを出す。 */
+/**
+ * 上限に収めるために、省く順のどこまで省いたか。前の段 (あったもの) も省いている。ログには、この名前だけを出す。
+ * 省く順を変えた版の前後では、同じ名前でも省いたものが違う (#75、#77)。
+ */
 type Trimmed = "none" | "profile_image" | "name" | "key_change" | "sender";
 
 /**
- * 上限に収まらないときに省く順。アイコンの URL、名前、鍵変更、送った人の順に省く。
+ * 上限に収まらないときに省く順。鍵変更、アイコンの URL、名前、送った人の順に省く。
+ * X Chat の鍵変更と暗号化したイベントはどちらも大きく、鍵変更を残すと、名前とアイコンが入らなかった
+ * (2026-11-12、#75、#77)。1 対 1 の会話の鍵はめったに変わらず、端末は本文表示の設定のときに保存した鍵変更で
+ * 照合できる。設定の後に鍵が変わると、設定し直すまで本文は開けないが、端末は確かめられない送った人として出す
+ * (tweetbot #450)。オーナーの判断で、本文がいつも開けることより、名前とアイコンを出すことを選んだ。
  * 名前を省いても、端末は @ユーザー名を題に出す。
- * 鍵変更を送った人より先に省くのは、X Chat の鍵変更と暗号化したイベントがどちらも大きく、送った人が先に落ちると
- * 実機の X Chat ではほとんど送った人が出なかったため (2026-11-12、#75)。1 対 1 の会話の鍵はめったに変わらず、
- * 端末は本文表示の設定のときに保存した鍵変更で照合できる。鍵が変わって本文を開けないときも、端末は確かめられない
- * 送った人として出す (tweetbot #450)。
  */
 function smaller(source: DmPreviewSource): [DmPreviewSource, Trimmed][] {
+  const withoutKeyChange: DmPreviewSource =
+    source.kind === "x_chat" && source.conversation_key_change_event !== undefined
+      ? { ...source, conversation_key_change_event: undefined }
+      : source;
   const withoutImage: DmPreviewSource =
-    source.sender?.profile_image_url === undefined
-      ? source
-      : { ...source, sender: { ...source.sender, profile_image_url: undefined } };
+    withoutKeyChange.sender?.profile_image_url === undefined
+      ? withoutKeyChange
+      : {
+          ...withoutKeyChange,
+          sender: { ...withoutKeyChange.sender, profile_image_url: undefined },
+        };
   const withoutName: DmPreviewSource =
     withoutImage.sender?.name === undefined
       ? withoutImage
       : { ...withoutImage, sender: { ...withoutImage.sender, name: undefined } };
-  const withoutKeyChange: DmPreviewSource =
-    withoutName.kind === "x_chat"
-      ? { ...withoutName, conversation_key_change_event: undefined }
-      : withoutName;
-  const withoutSender: DmPreviewSource = { ...withoutKeyChange, sender: undefined };
+  const withoutSender: DmPreviewSource = { ...withoutName, sender: undefined };
   return [
     [source, "none"],
+    [withoutKeyChange, "key_change"],
     [withoutImage, "profile_image"],
     [withoutName, "name"],
-    [withoutKeyChange, "key_change"],
     [withoutSender, "sender"],
   ];
 }
