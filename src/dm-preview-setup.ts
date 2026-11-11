@@ -141,17 +141,35 @@ export async function handleDMPreview(
     const bounded: RelayDeps = {
       ...deps,
       fetch: async (input, init) => {
-        if (remaining <= 0) throw new Error("setup_unavailable");
+        if (remaining <= 0) throw new SetupFailure("budget");
         remaining -= 1;
         return deps.fetch(input, init);
       },
     };
     if (!(await store.dmPreviewRoute(value.route_id, managementHash))) return reply(410);
-    const material = await collectMaterial(
-      user.userID,
-      user.accessToken,
-      bounded,
-      () => remaining >= 2,
+    let collected: Awaited<ReturnType<typeof collectMaterial>>;
+    try {
+      collected = await collectMaterial(
+        user.userID,
+        user.accessToken,
+        bounded,
+        () => remaining >= 2,
+      );
+    } catch (error) {
+      // どこで読めなかったかを残す。値、ID、トークン、本文は出さない (#71)。
+      console.error(
+        JSON.stringify({ event: "dm_preview_setup", outcome: "failed", ...describeFailure(error) }),
+      );
+      return reply(503);
+    }
+    const { material } = collected;
+    console.info(
+      JSON.stringify({
+        event: "dm_preview_setup",
+        outcome: "prepared",
+        conversation_count: collected.conversationCount,
+        skipped: collected.skipped,
+      }),
     );
     if (!(await store.dmPreviewRoute(value.route_id, managementHash))) return reply(410);
     const keyBytes = Uint8Array.from(atob(input.key), (char) => char.charCodeAt(0));
@@ -282,7 +300,11 @@ const KeyRecord = z.object({
     .passthrough()
     .optional(),
 });
-const Keys = z.object({ data: z.union([KeyRecord, z.array(KeyRecord).min(1).max(100)]) });
+type KeyRecord = z.infer<typeof KeyRecord>;
+// 記録は 1 件ずつ確かめる。1 件の形が合わないだけで、ほかの鍵まで捨てないため (#71)。
+const Keys = z.object({
+  data: z.union([z.array(z.unknown()).max(100), z.record(z.string(), z.unknown())]),
+});
 const Conversations = z.object({
   meta: z
     .object({
@@ -290,72 +312,166 @@ const Conversations = z.object({
       has_more: z.boolean().optional(),
     })
     .optional(),
-  data: z
-    .array(
-      z.object({
-        id: z.string().regex(/^[0-9:-]{1,64}$/),
-        participant_ids: z.array(XUserID).length(2),
-      }),
-    )
-    .max(20)
-    .default([]),
+  data: z.array(z.unknown()).max(1000).default([]),
 });
+// 相手は participant_ids か会話の ID (`A-B`) から決める。participant_ids に本人が入るか、いつも入るかを
+// X の文書は書いていないので、どちらかが欠けていても読めるようにする (#71)。
+const Conversation = z.object({
+  id: z.string().max(64).optional(),
+  participant_ids: z.array(XUserID).min(1).max(2).optional(),
+});
+const RotationEvent = z.string().regex(/^[A-Za-z0-9+/]{1,16384}={0,2}$/);
 const History = z.object({
   meta: z
-    .object({
-      conversation_key_events: z
-        .array(z.string().regex(/^[A-Za-z0-9+/]{1,16384}={0,2}$/))
-        .max(100)
-        .default([]),
-    })
+    .object({ conversation_key_events: z.array(z.unknown()).max(100).default([]) })
     .default({ conversation_key_events: [] }),
 });
 
-async function collectMaterial(
+/** 鍵の材料を読めなかった段階。ログには段階の名前、HTTP の状態、X の problem の種類、形のずれた項目の名前だけを出す。 */
+type Stage = "own_keys" | "conversations" | "conversation_events" | "peer_keys";
+type Detail = {
+  status?: number;
+  problem?: string;
+  issues?: string[];
+  skipped?: Record<string, number>;
+};
+class SetupFailure extends Error {
+  constructor(
+    readonly stage: Stage | "no_recovery_key" | "no_key_changes" | "deadline" | "budget",
+    readonly detail: Detail = {},
+  ) {
+    super("setup_unavailable");
+  }
+}
+
+/** zod の失敗を、値を含まない項目の名前と種類にする (配列の位置は `#` にまとめる)。 */
+function issueNames(error: z.ZodError): string[] {
+  return [
+    ...new Set(
+      error.issues.map(
+        (issue) =>
+          `${issue.path.map((part) => (typeof part === "number" ? "#" : String(part))).join(".")}:${issue.code}`,
+      ),
+    ),
+  ].slice(0, 5);
+}
+
+/** X の problem の `type` の末尾 (`…/problems/not-authorized-for-resource` など) だけを取る。 */
+function problemName(errors: unknown[]): string {
+  const first = errors[0];
+  const type =
+    typeof first === "object" && first !== null && "type" in first ? first.type : undefined;
+  const name = typeof type === "string" ? type.split("/").pop() : undefined;
+  return name && /^[a-z][a-z-]{0,63}$/.test(name) ? name : "x_error";
+}
+
+/** 失敗をログの欄にする。段階の分からない例外は、名前だけを出す。 */
+function describeFailure(error: unknown): Record<string, unknown> {
+  if (error instanceof SetupFailure) return { stage: error.stage, ...error.detail };
+  const name = error instanceof Error ? error.name : "unknown";
+  return { stage: "unexpected", problem: /^[A-Za-z]{1,64}$/.test(name) ? name : "unknown" };
+}
+
+export async function collectMaterial(
   owner: string,
   token: string,
   deps: RelayDeps,
   canReadConversation: () => boolean,
+  deadline = Date.now() + 40_000,
 ) {
-  const deadline = Date.now() + 40_000;
-  async function get(path: string, query: Record<string, string>) {
-    if (deadline <= Date.now()) throw new Error("setup_unavailable");
+  async function get(stage: Stage, path: string, query: Record<string, string>) {
+    if (deadline <= Date.now()) throw new SetupFailure("deadline");
     const url = new URL(path, "https://api.x.com");
     url.search = new URLSearchParams(query).toString();
-    const response = await deps.fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      redirect: "manual",
-      signal: AbortSignal.timeout(Math.min(10_000, deadline - Date.now())),
-    });
+    let response: Response;
+    try {
+      response = await deps.fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        redirect: "manual",
+        signal: AbortSignal.timeout(Math.min(10_000, deadline - Date.now())),
+      });
+    } catch (error) {
+      if (error instanceof SetupFailure) throw error;
+      throw new SetupFailure(stage, { problem: describeFailure(error).problem as string });
+    }
     const bytes = await readBody(response, 131072);
-    if (response.status !== 200 || !bytes) throw new Error("setup_unavailable");
-    const value: unknown = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes),
-    );
-    const error = z.object({ errors: z.array(z.unknown()).optional() }).parse(value);
-    if (error.errors?.length) throw new Error("setup_unavailable");
+    if (response.status !== 200) throw new SetupFailure(stage, { status: response.status });
+    if (!bytes) throw new SetupFailure(stage, { status: 200, problem: "unreadable_body" });
+    let value: unknown;
+    try {
+      value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+    } catch {
+      throw new SetupFailure(stage, { status: 200, problem: "invalid_json" });
+    }
+    if (typeof value !== "object" || value === null)
+      throw new SetupFailure(stage, { status: 200, problem: "invalid_json" });
+    // data があれば、展開した相手を引けないときなどの部分的な errors では止めない (#71)。
+    const errors = "errors" in value && Array.isArray(value.errors) ? value.errors : [];
+    if (errors.length && !("data" in value) && !("meta" in value))
+      throw new SetupFailure(stage, { status: 200, problem: problemName(errors) });
     return value;
   }
+  function parse<T extends z.ZodType>(stage: Stage, schema: T, value: unknown): z.infer<T> {
+    const result = schema.safeParse(value);
+    if (!result.success) throw new SetupFailure(stage, { issues: issueNames(result.error) });
+    return result.data;
+  }
   const fields = "public_key_version,public_key,signing_public_key,identity_public_key_signature";
-  async function keys(user: string, recovery = false) {
-    const result = Keys.parse(
-      await get(`/2/users/${user}/public_keys`, {
+  async function keys(stage: Stage, user: string, recovery = false): Promise<KeyRecord[]> {
+    const { data } = parse(
+      stage,
+      Keys,
+      await get(stage, `/2/users/${user}/public_keys`, {
         "public_key.fields": fields + (recovery ? ",juicebox_config" : ""),
       }),
-    ).data;
-    return Array.isArray(result) ? result : [result];
+    );
+    return (Array.isArray(data) ? data : [data]).flatMap((row) => {
+      const record = KeyRecord.safeParse(row);
+      return record.success ? [record.data] : [];
+    });
   }
-  const ownKeys = await keys(owner, true);
+  /** 1 対 1 の会話の相手。participant_ids と会話の ID の両方があれば、食い違わないものだけを使う。 */
+  function peerOf(row: unknown): string | undefined {
+    const conversation = Conversation.safeParse(row);
+    if (!conversation.success) return undefined;
+    const { id, participant_ids: participants } = conversation.data;
+    const fromParticipants = participants?.filter((participant) => participant !== owner);
+    if (
+      participants &&
+      (fromParticipants?.length !== 1 || participants.length !== new Set(participants).size)
+    )
+      return undefined;
+    const members = /^([0-9]{1,19})-([0-9]{1,19})$/.exec(id ?? "")?.slice(1);
+    const fromID =
+      members?.includes(owner) && members[0] !== members[1]
+        ? members.find((member) => member !== owner)
+        : undefined;
+    const peer = fromParticipants?.[0] ?? fromID;
+    if (!peer || (fromID && fromID !== peer) || !XUserID.safeParse(peer).success) return undefined;
+    return peer;
+  }
+
+  const ownKeys = await keys("own_keys", owner, true);
   const recoverable = ownKeys
     .filter((key) => key.juicebox_config !== undefined)
     .sort((a, b) => (BigInt(a.public_key_version) > BigInt(b.public_key_version) ? -1 : 1))[0];
-  if (!recoverable?.juicebox_config) throw new Error("setup_unavailable");
-  const conversations: z.infer<typeof Conversations>["data"] = [];
-  const seen = new Set<string>();
+  if (!recoverable?.juicebox_config) throw new SetupFailure("no_recovery_key");
+
+  /** 飛ばした会話の数を、理由ごとに数える (ログに出す)。 */
+  const skipped: Record<string, number> = {};
+  const skip = (reason: string) => {
+    skipped[reason] = (skipped[reason] ?? 0) + 1;
+  };
+  const reason = (error: SetupFailure) =>
+    `${error.stage}:${error.detail.status ?? error.detail.problem ?? error.detail.issues?.[0] ?? "failed"}`;
+
+  const peers: string[] = [];
   let pagination: string | undefined;
-  for (let page = 0; page < 5 && conversations.length < 20; page += 1) {
-    const result = Conversations.parse(
-      await get("/2/chat/conversations", {
+  for (let page = 0; page < 5 && peers.length < 20; page += 1) {
+    const result = parse(
+      "conversations",
+      Conversations,
+      await get("conversations", "/2/chat/conversations", {
         max_results: "20",
         type: "direct",
         expansions: "participant_ids",
@@ -363,35 +479,64 @@ async function collectMaterial(
         ...(pagination === undefined ? {} : { pagination_token: pagination }),
       }),
     );
-    for (const conversation of result.data) {
-      if (!seen.has(conversation.id) && conversations.length < 20) {
-        seen.add(conversation.id);
-        conversations.push(conversation);
-      }
+    for (const row of result.data) {
+      const peer = peerOf(row);
+      if (!peer) skip("conversation_shape");
+      else if (!peers.includes(peer) && peers.length < 20) peers.push(peer);
     }
     const next = result.meta?.next_token;
     if (!next || result.meta?.has_more === false) break;
-    if (next === pagination) throw new Error("setup_unavailable");
+    if (next === pagination) throw new SetupFailure("conversations", { problem: "repeated_page" });
     pagination = next;
   }
+
   const records = new Map([[owner, ownKeys]]);
+  let signingKeyCount = ownKeys.length;
   const rotations: Record<string, string[]> = {};
-  for (const conversation of conversations) {
-    if (!canReadConversation()) break;
-    if (!conversation.participant_ids.includes(owner)) throw new Error("setup_unavailable");
-    const peer = conversation.participant_ids.find((id) => id !== owner);
-    if (!peer) continue;
-    const history = History.parse(
-      await get(`/2/chat/conversations/${peer}/events`, {
-        max_results: "1",
-        "chat_message_event.fields": "conversation_key_version",
-      }),
-    );
-    if (!history.meta.conversation_key_events.length) continue;
-    if (!records.has(peer)) records.set(peer, await keys(peer));
-    const members = [owner, peer].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
-    rotations[members.join(":")] = history.meta.conversation_key_events.slice(0, 4);
+  for (const peer of peers) {
+    if (!canReadConversation() || deadline <= Date.now()) {
+      skip(deadline <= Date.now() ? "deadline" : "budget");
+      continue;
+    }
+    try {
+      const history = parse(
+        "conversation_events",
+        History,
+        await get("conversation_events", `/2/chat/conversations/${peer}/events`, {
+          max_results: "1",
+          "chat_message_event.fields": "conversation_key_version",
+        }),
+      );
+      const events = history.meta.conversation_key_events.flatMap((event) =>
+        RotationEvent.safeParse(event).success ? [event as string] : [],
+      );
+      if (!events.length) {
+        skip("no_key_change");
+        continue;
+      }
+      if (!records.has(peer)) {
+        const peerKeys = await keys("peer_keys", peer);
+        if (!peerKeys.length) {
+          skip("peer_keys:none");
+          continue;
+        }
+        // アプリが保存する署名鍵は 100 件まで。超える会話は飛ばし、ほかの会話を残す。
+        if (signingKeyCount + peerKeys.length > 100) {
+          skip("signing_key_limit");
+          continue;
+        }
+        records.set(peer, peerKeys);
+        signingKeyCount += peerKeys.length;
+      }
+      const members = [owner, peer].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+      rotations[members.join(":")] = events.slice(0, 4);
+    } catch (error) {
+      // 1 つの会話を読めなくても、ほかの会話の本文は出せるので続ける。回数や時間の上限は、残りも読めない。
+      if (!(error instanceof SetupFailure)) throw error;
+      skip(error.stage === "deadline" || error.stage === "budget" ? error.stage : reason(error));
+    }
   }
+  if (!Object.keys(rotations).length) throw new SetupFailure("no_key_changes", { skipped });
   const signingKeys = [...records].flatMap(([userID, rows]) =>
     rows.map((row) => ({
       userID,
@@ -401,19 +546,23 @@ async function collectMaterial(
       identityPublicKeySignature: row.identity_public_key_signature,
     })),
   );
-  if (!Object.keys(rotations).length || signingKeys.length > 100)
-    throw new Error("setup_unavailable");
+  if (signingKeys.length > 100)
+    throw new SetupFailure("own_keys", { problem: "signing_key_limit" });
   return {
-    userID: owner,
-    identityKeyVersion: recoverable.public_key_version,
-    identityPublicKey: recoverable.public_key,
-    signingPublicKey: recoverable.signing_public_key,
-    recoveryConfiguration: btoa(
-      Array.from(encoder.encode(JSON.stringify(recoverable.juicebox_config)), (byte) =>
-        String.fromCharCode(byte),
-      ).join(""),
-    ),
-    signingKeys,
-    keyChangesByConversation: rotations,
+    material: {
+      userID: owner,
+      identityKeyVersion: recoverable.public_key_version,
+      identityPublicKey: recoverable.public_key,
+      signingPublicKey: recoverable.signing_public_key,
+      recoveryConfiguration: btoa(
+        Array.from(encoder.encode(JSON.stringify(recoverable.juicebox_config)), (byte) =>
+          String.fromCharCode(byte),
+        ).join(""),
+      ),
+      signingKeys,
+      keyChangesByConversation: rotations,
+    },
+    conversationCount: Object.keys(rotations).length,
+    skipped,
   };
 }

@@ -314,3 +314,272 @@ describe("DM message preview setup", () => {
     ).toEqual([]);
   });
 });
+
+describe("reading Twitter key material for DM message text", () => {
+  const otherPeer = "3333333333333333333";
+  const record = {
+    public_key_version: "7",
+    public_key: "public-key",
+    signing_public_key: "signing-key",
+    identity_public_key_signature: "signature",
+  };
+  type Override = (url: URL) => Response | Promise<Response> | undefined;
+
+  /** 同意を済ませ、X の応答の一部を差し替えて finish を呼ぶ。ログの欄も返す。 */
+  async function finishWith(override: Override) {
+    const f = await fixture();
+    const { callback } = await f.authorize();
+    await callback();
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation(async (input, init) => {
+      const url = new URL(new Request(input, init).url);
+      const replaced = await override(url);
+      if (replaced) {
+        f.calls.push(url);
+        return replaced;
+      }
+      if (!original) throw new Error("Missing fixture fetch");
+      return original(input, init);
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const infos = vi.spyOn(console, "info").mockImplementation(() => {});
+    const key = crypto.getRandomValues(new Uint8Array(32));
+    const response = await f.api("finish", { ...f.body, key: btoa(String.fromCharCode(...key)) });
+    const logs = [...errors.mock.calls, ...infos.mock.calls]
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes("dm_preview_setup"));
+    errors.mockRestore();
+    infos.mockRestore();
+    let material: { keyChangesByConversation: Record<string, string[]>; signingKeys: unknown[] } = {
+      keyChangesByConversation: {},
+      signingKeys: [],
+    };
+    if (response.status === 200) {
+      const sealed = new Uint8Array(await response.arrayBuffer());
+      const aes = await crypto.subtle.importKey("raw", key, "AES-GCM", false, ["decrypt"]);
+      const plaintext = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: sealed.slice(0, 12),
+          additionalData: enc.encode(
+            `twitter-studio/x-chat-setup/v1\n${owner}\n${f.body.route_id}\n${f.body.request_id}`,
+          ),
+        },
+        aes,
+        sealed.slice(12),
+      );
+      material = JSON.parse(new TextDecoder().decode(plaintext));
+    }
+    return { status: response.status, logs, material, calls: f.calls };
+  }
+
+  const conversations = (rows: unknown[], extra: Record<string, unknown> = {}) =>
+    Response.json({ data: rows, ...extra });
+  const keyEvents = (events: unknown[]) =>
+    Response.json({ meta: { conversation_key_events: events } });
+
+  test("a failed read is logged by stage and status without account IDs or tokens", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === `/2/users/${owner}/public_keys`
+        ? Response.json({ title: `user ${owner}` }, { status: 500 })
+        : undefined,
+    );
+    expect(result.status).toBe(503);
+    expect(result.logs).toHaveLength(1);
+    expect(JSON.parse(result.logs[0] ?? "")).toEqual({
+      event: "dm_preview_setup",
+      outcome: "failed",
+      stage: "own_keys",
+      status: 500,
+    });
+    for (const secret of [owner, peer, "test-user-token"])
+      expect(result.logs.join("\n")).not.toContain(secret);
+  });
+
+  test("a mismatched response shape is logged by field name and issue code only", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === "/2/chat/conversations" ? Response.json({ data: `${owner}` }) : undefined,
+    );
+    expect(result.status).toBe(503);
+    expect(JSON.parse(result.logs[0] ?? "")).toEqual({
+      event: "dm_preview_setup",
+      outcome: "failed",
+      stage: "conversations",
+      issues: ["data:invalid_type"],
+    });
+    expect(result.logs.join("\n")).not.toContain(owner);
+  });
+
+  test("an X application error without data is logged by its problem type", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === "/2/chat/conversations"
+        ? Response.json({
+            errors: [
+              {
+                type: "https://api.x.com/2/problems/not-authorized-for-resource",
+                detail: `Sorry, you are not authorized to see ${owner}`,
+              },
+            ],
+          })
+        : undefined,
+    );
+    expect(result.status).toBe(503);
+    expect(JSON.parse(result.logs[0] ?? "")).toMatchObject({
+      stage: "conversations",
+      problem: "not-authorized-for-resource",
+    });
+    expect(result.logs.join("\n")).not.toContain(owner);
+  });
+
+  test("key records with a missing field are dropped instead of failing the setup", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === `/2/users/${owner}/public_keys`
+        ? Response.json({
+            data: [
+              { public_key_version: "41", public_key: "old-key", signing_public_key: "old" },
+              {
+                ...record,
+                public_key_version: "42",
+                juicebox_config: { key_store_token_map_json: "{}" },
+              },
+            ],
+          })
+        : undefined,
+    );
+    expect(result.status).toBe(200);
+    expect(result.material.signingKeys).toHaveLength(2);
+  });
+
+  test("partial errors next to conversation data do not stop the setup", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === "/2/chat/conversations"
+        ? conversations([{ id: `${owner}-${peer}`, participant_ids: [owner, peer] }], {
+            errors: [{ type: "https://api.twitter.com/2/problems/resource-not-found" }],
+          })
+        : undefined,
+    );
+    expect(result.status).toBe(200);
+    expect(Object.keys(result.material.keyChangesByConversation)).toEqual([`${owner}:${peer}`]);
+  });
+
+  test.each([
+    ["participant IDs without the owner", { participant_ids: [peer] }],
+    ["the conversation ID", { id: `${peer}-${owner}` }],
+  ])("the peer is found from %s", async (_name, row) => {
+    const result = await finishWith((url) =>
+      url.pathname === "/2/chat/conversations" ? conversations([row]) : undefined,
+    );
+    expect(result.status).toBe(200);
+    expect(Object.keys(result.material.keyChangesByConversation)).toEqual([`${owner}:${peer}`]);
+  });
+
+  test("conversations that are not the owner's one-to-one chats are skipped", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === "/2/chat/conversations"
+        ? conversations([
+            { id: `${otherPeer}-${peer}`, participant_ids: [otherPeer, peer] },
+            { id: `${owner}-${otherPeer}`, participant_ids: [owner, peer] },
+            { id: "g123" },
+            { id: `${owner}-${peer}`, participant_ids: [owner, peer] },
+          ])
+        : undefined,
+    );
+    expect(result.status).toBe(200);
+    expect(Object.keys(result.material.keyChangesByConversation)).toEqual([`${owner}:${peer}`]);
+    expect(JSON.parse(result.logs[0] ?? "")).toMatchObject({
+      outcome: "prepared",
+      conversation_count: 1,
+      skipped: { conversation_shape: 3 },
+    });
+    expect(result.calls.some((url) => url.pathname.includes(otherPeer))).toBe(false);
+  });
+
+  test("one unreadable conversation is skipped and the others are still prepared", async () => {
+    const result = await finishWith((url) => {
+      if (url.pathname === "/2/chat/conversations")
+        return conversations([
+          { participant_ids: [owner, otherPeer] },
+          { participant_ids: [owner, peer] },
+        ]);
+      if (url.pathname === `/2/chat/conversations/${otherPeer}/events`)
+        return Response.json({}, { status: 403 });
+      return undefined;
+    });
+    expect(result.status).toBe(200);
+    expect(Object.keys(result.material.keyChangesByConversation)).toEqual([`${owner}:${peer}`]);
+    expect(JSON.parse(result.logs[0] ?? "")).toMatchObject({
+      skipped: { "conversation_events:403": 1 },
+    });
+  });
+
+  test("a peer whose keys would pass the app's 100 signing key limit is skipped", async () => {
+    const many = Array.from({ length: 100 }, (_, index) => ({
+      ...record,
+      public_key_version: String(index + 1),
+    }));
+    const result = await finishWith((url) => {
+      if (url.pathname === "/2/chat/conversations")
+        return conversations([
+          { participant_ids: [owner, otherPeer] },
+          { participant_ids: [owner, peer] },
+        ]);
+      if (url.pathname === `/2/chat/conversations/${otherPeer}/events`) return keyEvents(["ZGVm"]);
+      if (url.pathname === `/2/users/${otherPeer}/public_keys`)
+        return Response.json({ data: many });
+      return undefined;
+    });
+    expect(result.status).toBe(200);
+    expect(result.material.signingKeys.length).toBeLessThanOrEqual(100);
+    expect(Object.keys(result.material.keyChangesByConversation)).toEqual([`${owner}:${peer}`]);
+    expect(JSON.parse(result.logs[0] ?? "")).toMatchObject({ skipped: { signing_key_limit: 1 } });
+  });
+
+  test("without any encrypted conversation the setup fails and says why", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === `/2/chat/conversations/${peer}/events` ? keyEvents([]) : undefined,
+    );
+    expect(result.status).toBe(503);
+    expect(JSON.parse(result.logs[0] ?? "")).toEqual({
+      event: "dm_preview_setup",
+      outcome: "failed",
+      stage: "no_key_changes",
+      skipped: { no_key_change: 1 },
+    });
+  });
+
+  test("without a recoverable key the setup fails before reading conversations", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === `/2/users/${owner}/public_keys`
+        ? Response.json({ data: [record] })
+        : undefined,
+    );
+    expect(result.status).toBe(503);
+    expect(JSON.parse(result.logs[0] ?? "")).toMatchObject({ stage: "no_recovery_key" });
+    expect(result.calls.some((url) => url.pathname === "/2/chat/conversations")).toBe(false);
+  });
+
+  test("conversations left after the deadline are skipped, keeping those already read", async () => {
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now");
+    let reads = 0;
+    const result = await finishWith((url) => {
+      if (url.pathname === "/2/chat/conversations")
+        return conversations([
+          { participant_ids: [owner, peer] },
+          { participant_ids: [owner, otherPeer] },
+        ]);
+      if (url.pathname === `/2/users/${peer}/public_keys`) {
+        reads += 1;
+        // 1 つ目の会話を読み終えたところで、40 秒の締め切りを過ぎたことにする。
+        now.mockReturnValue(start + 60_000);
+        return Response.json({ data: [record] });
+      }
+      return undefined;
+    });
+    now.mockRestore();
+    expect(reads).toBe(1);
+    expect(result.status).toBe(200);
+    expect(Object.keys(result.material.keyChangesByConversation)).toEqual([`${owner}:${peer}`]);
+    expect(JSON.parse(result.logs[0] ?? "")).toMatchObject({ skipped: { deadline: 1 } });
+  });
+});

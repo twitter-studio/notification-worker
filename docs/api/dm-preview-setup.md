@@ -23,3 +23,7 @@ JSON本文は1KiB以下。PINや復元した秘密鍵は送らない。`request_
 [Xの会話一覧](https://docs.x.com/x-api/chat/get-chat-conversations)、[公開鍵](https://docs.x.com/x-api/chat/get-user-public-keys)、[会話イベント](https://docs.x.com/x-api/chat/get-chat-conversation-events)、[設計ADR-0009](https://github.com/twitter-studio/notification-docs/blob/main/docs/adr/0009-dm-preview-api-setup.md)。
 
 会話一覧は空ページを含め最大5ページまで送り、外部要求は本人照合を含め50回以内に制限する。取得できた最近の会話を最大20件準備する。設定APIからXの購読を作成・削除しないため、途中の失敗やPIN入力のキャンセルで新しい購読は残らない。
+
+会話の相手は、会話一覧の `participant_ids`（本人を含むかを問わない）か、会話IDの `<ユーザーID>-<ユーザーID>` から決め、決められない会話は飛ばす。形の合わない公開鍵の記録は捨て、`data` のある応答に付いた部分的な `errors` では止めない。1つの会話でイベントや相手の公開鍵を読めないとき、40秒の締め切りや外部要求の上限に達したとき、署名鍵の合計がアプリの上限（100件）を超えるときは、その会話を飛ばして読めた分で準備する。鍵変更を1件も取れなければ503を返す（#71）。
+
+`/finish` の結果は `{"event":"dm_preview_setup"}` のログに残す。失敗は段階（`own_keys`、`no_recovery_key`、`conversations`、`conversation_events`、`peer_keys`、`no_key_changes`、`deadline`、`budget`）、HTTPの状態、Xのproblemの種類、形のずれた項目の名前と種類、飛ばした会話の理由ごとの数だけを出す。値、ユーザーID、会話ID、トークン、本文は出さない。
