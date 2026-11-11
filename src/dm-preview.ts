@@ -23,7 +23,10 @@ export type DmPreviewSource = { sender?: DmSender | undefined } & (
 /** APNs の上限に収める平文の大きさ (12 バイトの nonce と 16 バイトの tag を足し、Base64URL にして 3400 文字以内)。 */
 const MAX_PLAINTEXT_BYTES = 2522;
 
-/** 上限に収めるために省いたもの。ログには、この名前だけを出す。 */
+/**
+ * 上限に収めるために、省く順のどこまで省いたか。前の段 (あったもの) も省いている。ログには、この名前だけを出す。
+ * 省く順を変えた版の前後では、同じ名前でも省いたものが違う (#75、#77)。
+ */
 type Trimmed = "none" | "profile_image" | "name" | "key_change" | "sender";
 
 /**

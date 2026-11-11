@@ -99,6 +99,19 @@ describe("DM の暗号化した中身の大きさ", () => {
     ],
   ];
 
+  it("鍵変更のない X Chat は、その段を飛ばしてアイコンの URL から省く", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const fitting = chatFitting((value) => ({
+      ...value,
+      sender: withoutImage,
+      conversation_key_change_event: undefined,
+    }));
+    const source = { ...fitting, conversation_key_change_event: undefined };
+    const plain = await open(await seal(source));
+    expect(plain.sender).toEqual({ id: sender.id, name: sender.name, username: sender.username });
+    expect(info.mock.calls).toEqual([[{ event: "dm_preview_sealed", outcome: "profile_image" }]]);
+  });
+
   it.each(levels)("%s", async (_name, shape, expected) => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const source = chatFitting(shape);
