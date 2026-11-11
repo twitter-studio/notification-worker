@@ -112,14 +112,7 @@ describe("DM の暗号化した中身の大きさ", () => {
       expected.keyChange ? "k".repeat(400) : undefined,
     );
     expect(plain.encoded_event).toBe(source.kind === "x_chat" ? source.encoded_event : "");
-    expect(info).toHaveBeenCalledWith({
-      event: "dm_preview_sealed",
-      kind: "x_chat",
-      sender: true,
-      image: true,
-      key_change: true,
-      trimmed: expected.trimmed,
-    });
+    expect(info.mock.calls).toEqual([[{ event: "dm_preview_sealed", outcome: expected.trimmed }]]);
     const logged = JSON.stringify(info.mock.calls);
     for (const value of [
       sender.id,
@@ -143,8 +136,6 @@ describe("DM の暗号化した中身の大きさ", () => {
     }));
     if (source.kind !== "x_chat") throw new Error("Expected X Chat");
     expect(await seal({ ...source, encoded_event: `${source.encoded_event}e` })).toBeUndefined();
-    expect(info).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "dm_preview_sealed", trimmed: "too_large" }),
-    );
+    expect(info.mock.calls).toEqual([[{ event: "dm_preview_sealed", outcome: "too_large" }]]);
   });
 });
