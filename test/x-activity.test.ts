@@ -1287,4 +1287,179 @@ describe("DM の送った人", () => {
     expect((await deliver(legacy, environment(), fetch)).plain.sender.name).toBe("Example Name");
     expect((await deliver(legacy, environment(), fetch)).plain.sender).not.toHaveProperty("name");
   });
+
+  const withUsers = (users: Record<string, unknown> | undefined, text: string | null = canary) => ({
+    data: {
+      ...legacy.data,
+      payload: {
+        direct_message_events: [
+          {
+            ...legacy.data.payload.direct_message_events[0],
+            message_create: {
+              target: { recipient_id: recipient },
+              sender_id: sender,
+              ...(text === null ? {} : { message_data: { text } }),
+            },
+          },
+        ],
+        ...(users === undefined ? {} : { users }),
+      },
+    },
+  });
+  const senderRecord = {
+    id: sender,
+    name: "Webhook Name",
+    username: "webhook_user",
+    profile_image_url: image,
+  };
+
+  it("通常の DM は、Webhook に入っている送った人を使い、照会しない", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(profile());
+    const { plain } = await deliver(
+      withUsers({ [sender]: { data: senderRecord }, [recipient]: { data: { id: recipient } } }),
+      environment(),
+      fetch,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    expect(plain.sender).toEqual(senderRecord);
+  });
+
+  it("Webhook の送った人が別の人なら使わず、照会する", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(profile());
+    const { plain } = await deliver(
+      withUsers({ [sender]: { data: { ...senderRecord, id: recipient } } }),
+      environment(),
+      fetch,
+    );
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(plain.sender.username).toBe("example");
+  });
+
+  it("本文のない通常の DM でも、送った人だけを届ける", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const { job, plain } = await deliver(
+      withUsers({ [sender]: { data: senderRecord } }, null),
+      environment(),
+      fetch,
+    );
+    expect(plain).toEqual({
+      kind: "legacy",
+      sender: senderRecord,
+      occurred_at: job.event.occurred_at,
+    });
+  });
+
+  it("本文も送った人もない通常の DM は、暗号文を付けない", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({}, { status: 404 }));
+    const { job } = await deliver(withUsers(undefined, null), environment(), fetch);
+    expect(job.event.dm_preview).toBeUndefined();
+  });
+
+  it("同じ人からの DM が 1 件の Webhook に並んでも、照会は 1 回にする", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => profile());
+    const relay = fakeRelay();
+    const message = legacy.data.payload.direct_message_events[0];
+    const input = {
+      data: {
+        ...legacy.data,
+        payload: {
+          direct_message_events: [message, { ...message, id: "6666666666666666667" }],
+        },
+      },
+    };
+    await post(input, {
+      relay: { ...relay, deps: { ...relay.deps, fetch } },
+      environment: environment(),
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(relay.queued).toHaveLength(2);
+    for (const job of relay.queued) expect(XJobSchema.parse(job).event.dm_preview).toBeDefined();
+  });
+
+  it("鍵のあるルートとないルートが混ざっても、照会は 1 回で、送った人は鍵のあるルートにだけ入る", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => profile());
+    const relay = fakeRelay();
+    const plainRoute = {
+      route_id: crypto.randomUUID(),
+      relay_token: `tsr_${"P".repeat(43)}`,
+      event_types: ["dm"],
+    };
+    await post(legacy, {
+      relay: { ...relay, deps: { ...relay.deps, fetch } },
+      environment: {
+        ...environment(),
+        X_RELAY_ROUTES: JSON.stringify({ [recipient]: [route(), plainRoute] }),
+      },
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    const jobs = relay.queued.map((job) => XJobSchema.parse(job));
+    expect(jobs.filter((job) => job.event.dm_preview !== undefined)).toHaveLength(1);
+    expect(
+      jobs.find((job) => job.event.route_id === plainRoute.route_id)?.event.dm_preview,
+    ).toBeUndefined();
+  });
+
+  it("X Chat で会話や鍵の版がなければ、照会しない", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(profile());
+    await deliver(
+      {
+        data: {
+          ...event("chat.received").data,
+          event_uuid: crypto.randomUUID(),
+          payload: { sender_id: sender, encoded_event: btoa("synthetic-chat-message") },
+        },
+      },
+      environment(),
+      fetch,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("照会が 1 秒で打ち切られても、送った人なしで本文を届ける", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        }),
+    );
+    const { plain } = await deliver(legacy, environment(), fetch);
+    expect(plain).toMatchObject({ kind: "legacy", excerpt: canary });
+    expect(plain).not.toHaveProperty("sender");
+  });
+
+  it("正規化で伸びて長すぎるアイコンの URL は入れない", async () => {
+    const long = `https://pbs.twimg.com/profile_images/1/${"\u00e9".repeat(120)}_normal.jpg`;
+    expect(long.length).toBeLessThanOrEqual(512);
+    expect(new URL(long).href.length).toBeGreaterThan(512);
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(profile({ profile_image_url: long }));
+    const { plain } = await deliver(legacy, environment(), fetch);
+    expect(plain.sender).not.toHaveProperty("profile_image_url");
+  });
+
+  it("送った人の ID・名前・@ユーザー名・アイコン・トークンを、ログにも中継にも出さない", async () => {
+    const lines: unknown[] = [];
+    for (const level of ["log", "info", "warn", "error"] as const)
+      vi.spyOn(console, level).mockImplementation((...args) => {
+        lines.push(args);
+      });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(profile());
+    const relay = fakeRelay();
+    const env = environment();
+    await post(legacy, { relay: { ...relay, deps: { ...relay.deps, fetch } }, environment: env });
+    const job = XJobSchema.parse(relay.queued[0]);
+    await handleXQueue([{ body: job, attempts: 1, ack: vi.fn(), retry: vi.fn() }], env, relay.deps);
+    const logged = JSON.stringify(lines);
+    const relayed = JSON.stringify(relay.sent);
+    for (const value of [sender, "Example Name", "example", image, "synthetic-preview-bearer"]) {
+      expect(logged).not.toContain(value);
+      expect(relayed).not.toContain(value);
+    }
+    expect(lines).toContainEqual([
+      { event: "x_preview_lookup", purpose: "dm_sender", outcome: "found", status: 200 },
+    ]);
+  });
 });

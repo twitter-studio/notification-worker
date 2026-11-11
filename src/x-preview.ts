@@ -53,6 +53,7 @@ export function isRestrictedPost(post: z.infer<typeof PostPreviewFields>): boole
 }
 
 function observeLookup(
+  purpose: "dm_sender" | undefined,
   outcome:
     | "found"
     | "http_error"
@@ -62,7 +63,12 @@ function observeLookup(
     | "transport_error",
   status?: number,
 ): void {
-  console.info({ event: "x_preview_lookup", outcome, ...(status === undefined ? {} : { status }) });
+  console.info({
+    event: "x_preview_lookup",
+    ...(purpose === undefined ? {} : { purpose }),
+    outcome,
+    ...(status === undefined ? {} : { status }),
+  });
 }
 
 async function lookup<T>(
@@ -71,6 +77,7 @@ async function lookup<T>(
   schema: z.ZodType<T>,
   usable: (data: T) => boolean,
   fetch: typeof globalThis.fetch,
+  purpose?: "dm_sender",
 ): Promise<T | undefined> {
   const signal = AbortSignal.timeout(1000);
   let status: number | undefined;
@@ -83,13 +90,13 @@ async function lookup<T>(
     });
     status = response.status;
     if (!response.ok) {
-      observeLookup("http_error", status);
+      observeLookup(purpose, "http_error", status);
       await response.body?.cancel().catch(() => {});
       return undefined;
     }
     const body = await readBody(response, 8192);
     if (body === undefined) {
-      observeLookup("invalid_response", status);
+      observeLookup(purpose, "invalid_response", status);
       return undefined;
     }
     const json: unknown = JSON.parse(
@@ -97,17 +104,18 @@ async function lookup<T>(
     );
     const parsed = schema.safeParse(json);
     if (!parsed.success) {
-      observeLookup("invalid_response", status);
+      observeLookup(purpose, "invalid_response", status);
       return undefined;
     }
     if (!usable(parsed.data)) {
-      observeLookup("unavailable_profile", status);
+      observeLookup(purpose, "unavailable_profile", status);
       return undefined;
     }
-    observeLookup("found", status);
+    observeLookup(purpose, "found", status);
     return parsed.data;
   } catch {
     observeLookup(
+      purpose,
       signal.aborted ? "timeout" : status === undefined ? "transport_error" : "invalid_response",
       status,
     );
@@ -144,7 +152,9 @@ function profileImageOf(value: string | undefined): string | undefined {
   if (value === undefined || value.length > 512) return undefined;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" &&
+    // 正規化で百分率符号化されて伸びることがあるので、端末が受ける長さは正規化の後に見る。
+    return url.href.length <= 512 &&
+      url.protocol === "https:" &&
       url.hostname === "pbs.twimg.com" &&
       url.port === "" &&
       url.username === "" &&
@@ -157,6 +167,20 @@ function profileImageOf(value: string | undefined): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** ユーザーの記録 (User Lookup の `data`、Webhook の `users[id].data`) から、DM の送った人を読む。 */
+export function dmSenderFrom(senderID: string, value: unknown): DmSender | undefined {
+  const profile = DmSenderProfile.safeParse(value);
+  if (!profile.success || profile.data.id !== senderID) return undefined;
+  const name = displayNameOf(profile.data.name);
+  const image = profileImageOf(profile.data.profile_image_url);
+  return {
+    id: senderID,
+    username: profile.data.username,
+    ...(name === undefined ? {} : { name }),
+    ...(image === undefined ? {} : { profile_image_url: image }),
+  };
 }
 
 /**
@@ -173,19 +197,12 @@ export async function lookupDmSender(
   const response = await lookup(
     url,
     bearer,
-    z.object({ data: DmSenderProfile }).refine(({ data }) => data.id === senderID),
-    () => true,
+    z.object({ data: z.unknown() }),
+    ({ data }) => dmSenderFrom(senderID, data) !== undefined,
     fetch,
+    "dm_sender",
   );
-  if (response === undefined) return undefined;
-  const name = displayNameOf(response.data.name);
-  const image = profileImageOf(response.data.profile_image_url);
-  return {
-    id: senderID,
-    username: response.data.username,
-    ...(name === undefined ? {} : { name }),
-    ...(image === undefined ? {} : { profile_image_url: image }),
-  };
+  return response === undefined ? undefined : dmSenderFrom(senderID, response.data);
 }
 
 export async function resolvePreview(

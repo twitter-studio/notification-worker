@@ -11,7 +11,7 @@ import { handleCallback, handleSetup } from "./setup";
 import { recordObservation } from "./telemetry";
 import { MIN_SECRET_LENGTH, verifyMockSignature } from "./verify";
 import { normalizeXEvent, verifyXSignature, xCRC } from "./x-activity";
-import { lookupDmSender, resolvePreview } from "./x-preview";
+import { type DmSender, lookupDmSender, resolvePreview } from "./x-preview";
 import { relayBinding, type XJob, xEventID } from "./x-queue";
 
 export type AppDeps = RelayDeps & { enqueueX: (job: XJob) => Promise<void> };
@@ -187,6 +187,16 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
     log("error", "invalid_configuration", { setting: "X_EVENT_ID_SECRET" });
     return problem(500, "Internal Server Error");
   }
+  // 1 件の Webhook に同じ人からの DM が並んでも、照会は送った人ごとに 1 回にする。
+  const senders = new Map<string, Promise<DmSender | undefined>>();
+  const lookupSender = (senderID: string, bearer: string) => {
+    let pending = senders.get(senderID);
+    if (pending === undefined) {
+      pending = lookupDmSender(senderID, bearer, deps.fetch);
+      senders.set(senderID, pending);
+    }
+    return pending;
+  };
   const jobs: XJob[] = (
     await Promise.all(
       pending.map(async ({ event, sourceID, previewSource, dmPreviewSource, dmSenderID }) => {
@@ -210,17 +220,26 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
                 isEnabled(env.ENABLE_X_POST_PREVIEW_LOOKUP),
               )
             : undefined,
+          // 通常の DM は Webhook に送った人が入っていればそれを使い、X Chat と、入っていないときだけ照会する。
           sealsDmPreview &&
+          dmPreviewSource?.sender === undefined &&
           dmSenderID !== undefined &&
           bearer &&
           isEnabled(env.ENABLE_X_NOTIFICATION_PREVIEW)
-            ? lookupDmSender(dmSenderID, bearer, deps.fetch)
+            ? lookupSender(dmSenderID, bearer)
             : undefined,
         ]);
-        const dmSource =
+        const withSender =
           dmPreviewSource === undefined || sender === undefined
             ? dmPreviewSource
             : { ...dmPreviewSource, sender };
+        // 本文も送った人もない通常の DM は、暗号化しても端末で出せるものがないので送らない。
+        const dmSource =
+          withSender?.kind === "legacy" &&
+          withSender.excerpt === undefined &&
+          withSender.sender === undefined
+            ? undefined
+            : withSender;
         return Promise.all(
           targets
             .filter((target) => target.eventTypes.includes(event.type))

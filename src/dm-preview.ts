@@ -9,7 +9,7 @@ export const SealedDmPreview = z
   .regex(/^[A-Za-z0-9_-]+$/);
 
 export type DmPreviewSource = { sender?: DmSender | undefined } & (
-  | { kind: "legacy"; excerpt: string }
+  | { kind: "legacy"; excerpt?: string | undefined }
   | {
       kind: "x_chat";
       sender_id: string;

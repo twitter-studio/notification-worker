@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { DmPreviewSource } from "./dm-preview";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
 import {
+  dmSenderFrom,
   excerptOf,
   isRestrictedPost,
   PostPreviewFields,
@@ -120,6 +121,11 @@ const Event = z.object({
           )
           .min(1)
           .max(10),
+        // 送った人と受け手の記録。X の文書の例では入るが、いつも入るとは書かれていないので、なくても受ける。
+        users: z
+          .record(z.string(), z.object({ data: z.unknown() }))
+          .optional()
+          .catch(undefined),
       }),
     }),
     z.object({
@@ -272,10 +278,19 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
       )
         return [];
       const excerpt = excerptOf(message_create.message_data?.text);
+      const sender = dmSenderFrom(
+        message_create.sender_id,
+        data.payload.users?.[message_create.sender_id]?.data,
+      );
       return [
         {
           sourceID: id,
-          dmPreviewSource: excerpt === undefined ? undefined : { kind: "legacy" as const, excerpt },
+          // 本文がない DM (画像だけなど) でも、送った人は端末に届ける。
+          dmPreviewSource: {
+            kind: "legacy" as const,
+            ...(excerpt === undefined ? {} : { excerpt }),
+            ...(sender === undefined ? {} : { sender }),
+          },
           dmSenderID: message_create.sender_id,
           previewSource: undefined,
           event: { type: "dm" as const, occurred_at },
