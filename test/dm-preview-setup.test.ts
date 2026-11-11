@@ -608,6 +608,20 @@ describe("reading Twitter key material for DM message text", () => {
     },
   );
 
+  test("a single peer key record next to partial errors is kept", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === `/2/users/${peer}/public_keys`
+        ? Response.json({
+            data: record,
+            errors: [{ type: "https://api.x.com/2/problems/resource-not-found" }],
+          })
+        : undefined,
+    );
+    expect(result.status).toBe(200);
+    expect(result.material.signingKeys).toHaveLength(2);
+    expect(result.log).toMatchObject({ partial: { "peer_keys:resource-not-found": 1 } });
+  });
+
   test("a peer whose keys cannot be read is skipped", async () => {
     const result = await finishWith((url) => {
       if (url.pathname === "/2/chat/conversations") return twoConversations.clone();
@@ -723,6 +737,19 @@ describe("reading Twitter key material for DM message text", () => {
     });
     expect(result.status).toBe(503);
     expect(result.log).toMatchObject({ stage: "deadline", during: "conversations" });
+  });
+
+  test("a request cut off by the overall deadline is logged as the deadline, not as that API", async () => {
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now");
+    const result = await finishWith((url) => {
+      if (url.pathname !== `/2/users/${owner}/public_keys`) return undefined;
+      // 締め切りの残りで切れたことにする。
+      now.mockReturnValue(start + 60_000);
+      throw new DOMException("timed out", "TimeoutError");
+    });
+    expect(result.status).toBe(503);
+    expect(result.log).toMatchObject({ stage: "deadline", during: "own_keys" });
   });
 
   test("conversations left after the deadline are skipped, keeping those already read", async () => {

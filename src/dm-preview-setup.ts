@@ -451,6 +451,8 @@ async function collectMaterial(
       bytes = await readBody(response, 131072);
     } catch (error) {
       if (error instanceof SetupFailure) throw new SetupFailure(error.stage, { during: stage });
+      // 全体の締め切りの残りで切れたものは、その API の時間切れと区別して残す。
+      if (deadline <= Date.now()) throw new SetupFailure("deadline", { during: stage });
       throw new SetupFailure(stage, { problem: errorName(error) });
     }
     let value: unknown;
@@ -472,7 +474,11 @@ async function collectMaterial(
       throw new SetupFailure(stage, { status, problem: "invalid_errors" });
     const errors: unknown[] = Array.isArray(listed) ? listed : [];
     if (errors.length) {
-      const filled = (content: unknown) => Array.isArray(content) && content.length > 0;
+      // 公開鍵の data は、記録 1 件のオブジェクトで返ることもある。
+      const filled = (content: unknown) =>
+        Array.isArray(content)
+          ? content.length > 0
+          : typeof content === "object" && content !== null && Object.keys(content).length > 0;
       const { data, meta } = value as {
         data?: unknown;
         meta?: { conversation_key_events?: unknown };
