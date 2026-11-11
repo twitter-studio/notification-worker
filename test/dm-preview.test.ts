@@ -74,30 +74,26 @@ describe("DM の暗号化した中身の大きさ", () => {
       { sender, keyChange: true, trimmed: "none" },
     ],
     [
-      "収まらなければ、まずアイコンの URL を省く",
-      (value) => ({ ...value, sender: withoutImage }),
+      "収まらなければ、まず鍵変更を省き、名前とアイコンは残す",
+      (value) => ({ ...value, conversation_key_change_event: undefined }),
+      { sender, keyChange: false, trimmed: "key_change" },
+    ],
+    [
+      "それでも収まらなければ、アイコンの URL を省く",
+      (value) => ({ ...value, sender: withoutImage, conversation_key_change_event: undefined }),
       {
         sender: { id: sender.id, name: sender.name, username: sender.username },
-        keyChange: true,
+        keyChange: false,
         trimmed: "profile_image",
       },
     ],
     [
-      "それでも収まらなければ名前を省き、@ユーザー名と鍵変更は残す",
-      (value) => ({ ...value, sender: handleOnly }),
-      { sender: { id: sender.id, username: sender.username }, keyChange: true, trimmed: "name" },
-    ],
-    [
-      "それでも収まらなければ鍵変更を省き、@ユーザー名は残す",
+      "それでも収まらなければ名前を省き、@ユーザー名は残す",
       (value) => ({ ...value, sender: handleOnly, conversation_key_change_event: undefined }),
-      {
-        sender: { id: sender.id, username: sender.username },
-        keyChange: false,
-        trimmed: "key_change",
-      },
+      { sender: { id: sender.id, username: sender.username }, keyChange: false, trimmed: "name" },
     ],
     [
-      "鍵変更を省いても収まらなければ、送った人も省く",
+      "名前を省いても収まらなければ、送った人も省く",
       (value) => ({ ...value, sender: undefined, conversation_key_change_event: undefined }),
       { sender: undefined, keyChange: false, trimmed: "sender" },
     ],
