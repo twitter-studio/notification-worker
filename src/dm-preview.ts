@@ -23,21 +23,38 @@ export type DmPreviewSource = { sender?: DmSender | undefined } & (
 /** APNs の上限に収める平文の大きさ (12 バイトの nonce と 16 バイトの tag を足し、Base64URL にして 3400 文字以内)。 */
 const MAX_PLAINTEXT_BYTES = 2522;
 
+/** 上限に収めるために省いたもの。ログには、この名前だけを出す。 */
+type Trimmed = "none" | "profile_image" | "name" | "key_change" | "sender";
+
 /**
- * 上限に収まらないときに省く順。本文を正しく出すことを、送った人を出すことより優先する。
- * アイコンの URL、送った人、鍵変更 (端末は保存済みの鍵変更で照合できる) の順に省く。
+ * 上限に収まらないときに省く順。アイコンの URL、名前、鍵変更、送った人の順に省く。
+ * 名前を省いても、端末は @ユーザー名を題に出す。
+ * 鍵変更を送った人より先に省くのは、X Chat の鍵変更と暗号化したイベントがどちらも大きく、送った人が先に落ちると
+ * 実機の X Chat ではほとんど送った人が出なかったため (2026-11-12、#75)。1 対 1 の会話の鍵はめったに変わらず、
+ * 端末は本文表示の設定のときに保存した鍵変更で照合できる。鍵が変わって本文を開けないときも、端末は確かめられない
+ * 送った人として出す (tweetbot #450)。
  */
-function smaller(source: DmPreviewSource): DmPreviewSource[] {
+function smaller(source: DmPreviewSource): [DmPreviewSource, Trimmed][] {
   const withoutImage: DmPreviewSource =
     source.sender?.profile_image_url === undefined
       ? source
       : { ...source, sender: { ...source.sender, profile_image_url: undefined } };
-  const withoutSender: DmPreviewSource = { ...withoutImage, sender: undefined };
+  const withoutName: DmPreviewSource =
+    withoutImage.sender?.name === undefined
+      ? withoutImage
+      : { ...withoutImage, sender: { ...withoutImage.sender, name: undefined } };
   const withoutKeyChange: DmPreviewSource =
-    withoutSender.kind === "x_chat"
-      ? { ...withoutSender, conversation_key_change_event: undefined }
-      : withoutSender;
-  return [source, withoutImage, withoutSender, withoutKeyChange];
+    withoutName.kind === "x_chat"
+      ? { ...withoutName, conversation_key_change_event: undefined }
+      : withoutName;
+  const withoutSender: DmPreviewSource = { ...withoutKeyChange, sender: undefined };
+  return [
+    [source, "none"],
+    [withoutImage, "profile_image"],
+    [withoutName, "name"],
+    [withoutKeyChange, "key_change"],
+    [withoutSender, "sender"],
+  ];
 }
 
 export async function dmPreviewKeyID(key: string): Promise<string> {
@@ -73,14 +90,19 @@ export async function sealDmPreview({
 }): Promise<string | undefined> {
   const encoder = new TextEncoder();
   let plaintext: Uint8Array | undefined;
-  for (const candidate of smaller(source)) {
+  let trimmed: Trimmed | "too_large" = "too_large";
+  for (const [candidate, dropped] of smaller(source)) {
     const encoded = encoder.encode(JSON.stringify({ ...candidate, occurred_at: occurredAt }));
     if (encoded.length <= MAX_PLAINTEXT_BYTES) {
       plaintext = encoded;
+      trimmed = dropped;
       break;
     }
     encoded.fill(0);
   }
+  // 結果の名前 (何を省いたか) だけを残す。DM の種類や送った人の有無は、ログの決まり (件数、設定の名前、
+  // エラーの名前だけ) の外なので出さない。
+  console.info({ event: "dm_preview_sealed", outcome: trimmed });
   if (plaintext === undefined) return undefined;
   const rawKey = Uint8Array.from(atob(key.replaceAll("-", "+").replaceAll("_", "/")), (char) =>
     char.charCodeAt(0),

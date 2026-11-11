@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type DmPreviewSource, sealDmPreview } from "../src/dm-preview";
 
 const recipient = "1111111111111111111";
@@ -55,44 +55,80 @@ function chatFitting(shape: (source: DmPreviewSource) => DmPreviewSource): DmPre
 }
 
 describe("DM の暗号化した中身の大きさ", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   const seal = (source: DmPreviewSource) =>
     sealDmPreview({ source, key: encodedKey, recipient, routeID, eventID, occurredAt });
+  const withoutImage = { ...sender, profile_image_url: undefined };
+  const handleOnly = { ...withoutImage, name: undefined };
 
-  it("上限に収まれば、送った人と鍵変更をそのまま入れる", async () => {
-    const source = chatFitting((value) => value);
-    expect(await open(await seal(source))).toEqual({ ...source, occurred_at: occurredAt });
-  });
+  /** 平文をちょうど上限にする形と、その形で開けたときに入っているはずの送った人と鍵変更。 */
+  const levels: [
+    string,
+    (value: DmPreviewSource) => DmPreviewSource,
+    { sender: unknown; keyChange: boolean; trimmed: string },
+  ][] = [
+    [
+      "上限に収まれば、送った人と鍵変更をそのまま入れる",
+      (value) => value,
+      { sender, keyChange: true, trimmed: "none" },
+    ],
+    [
+      "収まらなければ、まずアイコンの URL を省く",
+      (value) => ({ ...value, sender: withoutImage }),
+      {
+        sender: { id: sender.id, name: sender.name, username: sender.username },
+        keyChange: true,
+        trimmed: "profile_image",
+      },
+    ],
+    [
+      "それでも収まらなければ名前を省き、@ユーザー名と鍵変更は残す",
+      (value) => ({ ...value, sender: handleOnly }),
+      { sender: { id: sender.id, username: sender.username }, keyChange: true, trimmed: "name" },
+    ],
+    [
+      "それでも収まらなければ鍵変更を省き、@ユーザー名は残す",
+      (value) => ({ ...value, sender: handleOnly, conversation_key_change_event: undefined }),
+      {
+        sender: { id: sender.id, username: sender.username },
+        keyChange: false,
+        trimmed: "key_change",
+      },
+    ],
+    [
+      "鍵変更を省いても収まらなければ、送った人も省く",
+      (value) => ({ ...value, sender: undefined, conversation_key_change_event: undefined }),
+      { sender: undefined, keyChange: false, trimmed: "sender" },
+    ],
+  ];
 
-  it("収まらなければ、まずアイコンの URL を省く", async () => {
-    const source = chatFitting((value) => ({
-      ...value,
-      sender: { ...sender, profile_image_url: undefined },
-    }));
+  it.each(levels)("%s", async (_name, shape, expected) => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const source = chatFitting(shape);
     const plain = await open(await seal(source));
-    expect(plain.sender).toEqual({ id: sender.id, name: sender.name, username: sender.username });
-    expect(plain.conversation_key_change_event).toBe("k".repeat(400));
-  });
-
-  it("それでも収まらなければ、送った人を省き、鍵変更は残す", async () => {
-    const source = chatFitting((value) => ({ ...value, sender: undefined }));
-    const plain = await open(await seal(source));
-    expect(plain).not.toHaveProperty("sender");
-    expect(plain.conversation_key_change_event).toBe("k".repeat(400));
-  });
-
-  it("送った人を省いても収まらなければ、鍵変更も省く", async () => {
-    const source = chatFitting((value) => ({
-      ...value,
-      sender: undefined,
-      conversation_key_change_event: undefined,
-    }));
-    const plain = await open(await seal(source));
-    expect(plain).not.toHaveProperty("sender");
-    expect(plain).not.toHaveProperty("conversation_key_change_event");
+    expect(plain.sender).toEqual(expected.sender);
+    expect(plain.conversation_key_change_event).toBe(
+      expected.keyChange ? "k".repeat(400) : undefined,
+    );
     expect(plain.encoded_event).toBe(source.kind === "x_chat" ? source.encoded_event : "");
+    expect(info.mock.calls).toEqual([[{ event: "dm_preview_sealed", outcome: expected.trimmed }]]);
+    const logged = JSON.stringify(info.mock.calls);
+    for (const value of [
+      sender.id,
+      sender.name,
+      sender.username,
+      recipient,
+      routeID,
+      eventID,
+      "kkkk",
+      "eeee",
+    ])
+      expect(logged).not.toContain(value);
   });
 
-  it("本文だけでも収まらなければ送らない", async () => {
+  it("本文だけでも収まらなければ送らず、収まらなかったことだけをログに残す", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const source = chatFitting((value) => ({
       ...value,
       sender: undefined,
@@ -100,5 +136,6 @@ describe("DM の暗号化した中身の大きさ", () => {
     }));
     if (source.kind !== "x_chat") throw new Error("Expected X Chat");
     expect(await seal({ ...source, encoded_event: `${source.encoded_event}e` })).toBeUndefined();
+    expect(info.mock.calls).toEqual([[{ event: "dm_preview_sealed", outcome: "too_large" }]]);
   });
 });
