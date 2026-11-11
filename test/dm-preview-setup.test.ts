@@ -390,7 +390,14 @@ describe("reading Twitter key material for DM message text", () => {
     const text = lines.join("\n");
     for (const secret of [owner, peer, otherPeer, "test-user-token"])
       expect(text).not.toContain(secret);
-    return { status: response.status, log: JSON.parse(lines[0] ?? "{}"), material, calls: f.calls };
+    // ユーザー ID や会話 ID の形の数字を出さない。
+    expect(text).not.toMatch(/[0-9]{10,}/);
+    return {
+      status: response.status,
+      log: JSON.parse(lines[0] ?? "{}"),
+      material,
+      calls: f.calls,
+    };
   }
 
   const conversations = (rows: unknown[], extra: Record<string, unknown> = {}) =>
@@ -478,7 +485,7 @@ describe("reading Twitter key material for DM message text", () => {
       event: "dm_preview_setup",
       outcome: "prepared",
       conversation_count: 1,
-      partial: { "resource-not-found": 1 },
+      partial: { "conversations:resource-not-found": 1 },
     });
   });
 
@@ -674,6 +681,7 @@ describe("reading Twitter key material for DM message text", () => {
       conversation_count: 1,
       skipped: { material_size: 19 },
     });
+    expect(JSON.stringify(result.material).length).toBeLessThanOrEqual(131044);
   });
 
   test("without any encrypted conversation the setup fails and says why", async () => {
@@ -745,5 +753,125 @@ describe("reading Twitter key material for DM message text", () => {
     });
     expect(result.status).toBe(410);
     expect(result.log).toMatchObject({ outcome: "route_gone", conversation_count: 1 });
+  });
+
+  test("an own key response with partial errors stops the setup", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === `/2/users/${owner}/public_keys`
+        ? Response.json({
+            data: [recoverable],
+            errors: [{ type: "https://api.x.com/2/problems/resource-not-found" }],
+          })
+        : undefined,
+    );
+    expect(result.status).toBe(503);
+    expect(result.log).toMatchObject({ stage: "own_keys", problem: "resource-not-found" });
+  });
+
+  test("a newer own key without a recovery setting is counted and the recoverable key is used", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === `/2/users/${owner}/public_keys`
+        ? Response.json({ data: [{ ...record, public_key_version: "43" }, recoverable] })
+        : undefined,
+    );
+    expect(result.status).toBe(200);
+    expect(result.material.identityKeyVersion).toBe("42");
+    expect(result.log).toMatchObject({ skipped: { "own_keys:newer_without_recovery": 1 } });
+  });
+
+  test("a conversation whose events are refused with only meta is skipped with the problem type", async () => {
+    const result = await finishWith((url) => {
+      if (url.pathname === "/2/chat/conversations") return twoConversations.clone();
+      if (url.pathname === `/2/chat/conversations/${otherPeer}/events`)
+        return Response.json({
+          meta: { result_count: 0 },
+          errors: [{ type: "https://api.x.com/2/problems/not-authorized-for-resource" }],
+        });
+      return undefined;
+    });
+    expect(result.status).toBe(200);
+    expect(result.log).toMatchObject({
+      skipped: { "conversation_events:200:not-authorized-for-resource": 1 },
+    });
+  });
+
+  test.each([
+    ["an unreadable type", { participant_ids: [owner, otherPeer], type: "d".repeat(33) }],
+    ["too many participants", { participant_ids: [owner, otherPeer, peer] }],
+    ["an unreadable ID", { id: "1".repeat(65), participant_ids: [owner, otherPeer] }],
+    ["a non-numeric participant", { id: `${owner}-${otherPeer}`, participant_ids: [owner, "me"] }],
+  ])("a conversation with %s is skipped", async (_name, row) => {
+    const result = await finishWith((url) =>
+      url.pathname === "/2/chat/conversations"
+        ? conversations([row, { participant_ids: [owner, peer] }])
+        : undefined,
+    );
+    expect(result.status).toBe(200);
+    expect(Object.keys(result.material.keyChangesByConversation)).toEqual([`${owner}:${peer}`]);
+    expect(result.log).toMatchObject({ skipped: { conversation_shape: 1 } });
+    expect(result.calls.some((url) => url.pathname.includes(otherPeer))).toBe(false);
+  });
+
+  test("a repeated page token stops paging and keeps the peers already found", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === "/2/chat/conversations"
+        ? conversations([{ participant_ids: [owner, peer] }], {
+            meta: { has_more: true, next_token: "same-page" },
+          })
+        : undefined,
+    );
+    expect(result.status).toBe(200);
+    expect(result.log).toMatchObject({ skipped: { "conversations:repeated_page": 1 } });
+    expect(result.calls.filter((url) => url.pathname === "/2/chat/conversations")).toHaveLength(2);
+  });
+
+  test("paging stops when has_more is false even with a next token", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === "/2/chat/conversations"
+        ? conversations([{ participant_ids: [owner, peer] }], {
+            meta: { has_more: false, next_token: "next" },
+          })
+        : undefined,
+    );
+    expect(result.status).toBe(200);
+    expect(result.calls.filter((url) => url.pathname === "/2/chat/conversations")).toHaveLength(1);
+  });
+
+  test("a problem type carrying an ID is left out of the log", async () => {
+    const result = await finishWith((url) =>
+      url.pathname === `/2/users/${owner}/public_keys`
+        ? Response.json({ type: `https://api.x.com/2/problems/user${owner}` }, { status: 403 })
+        : undefined,
+    );
+    expect(result.status).toBe(503);
+    expect(result.log).toEqual({
+      event: "dm_preview_setup",
+      outcome: "failed",
+      stage: "own_keys",
+      status: 403,
+    });
+  });
+
+  test("a peer without any usable key is skipped", async () => {
+    const result = await finishWith((url) => {
+      if (url.pathname === "/2/chat/conversations") return twoConversations.clone();
+      if (url.pathname === `/2/chat/conversations/${otherPeer}/events`) return keyEvents(["ZGVm"]);
+      if (url.pathname === `/2/users/${otherPeer}/public_keys`) return Response.json({ data: [] });
+      return undefined;
+    });
+    expect(result.status).toBe(200);
+    expect(result.log).toMatchObject({ skipped: { "peer_keys:none": 1 } });
+  });
+
+  test("a failure outside reading Twitter is still logged once as unexpected", async () => {
+    vi.spyOn(crypto.subtle, "importKey").mockRejectedValueOnce(new TypeError("broken"));
+    const result = await finishWith(() => undefined);
+    expect(result.status).toBe(503);
+    expect(result.log).toEqual({
+      event: "dm_preview_setup",
+      outcome: "failed",
+      stage: "unexpected",
+      problem: "TypeError",
+    });
   });
 });

@@ -136,73 +136,82 @@ export async function handleDMPreview(
       deps,
     );
     if (!user || user.userID !== route.recipient) return reply(403);
-    // トークン交換と本人照合の2回を含め、無料プランの外部要求50回の内側に収める。
-    let remaining = 48;
-    const bounded: RelayDeps = {
-      ...deps,
-      fetch: async (input, init) => {
-        if (remaining <= 0) throw new SetupFailure("budget");
-        remaining -= 1;
-        return deps.fetch(input, init);
-      },
-    };
-    if (!(await store.dmPreviewRoute(value.route_id, managementHash))) return reply(410);
     // どこで読めなかったか、何を飛ばしたかを、結果が決まってから 1 行残す。値、ID、トークン、本文は出さない (#71)。
     const log = (outcome: string, fields: Record<string, unknown>) =>
       (outcome === "prepared" ? console.info : console.error)(
         JSON.stringify({ event: "dm_preview_setup", outcome, ...fields }),
       );
-    let collected: Awaited<ReturnType<typeof collectMaterial>>;
     try {
-      collected = await collectMaterial(
-        user.userID,
-        user.accessToken,
-        bounded,
-        () => remaining >= 2,
-      );
-    } catch (error) {
-      log("failed", describeFailure(error));
-      return reply(503);
-    }
-    const { material, summary } = collected;
-    if (!(await store.dmPreviewRoute(value.route_id, managementHash))) {
-      log("route_gone", summary);
-      return reply(410);
-    }
-    const keyBytes = Uint8Array.from(atob(input.key), (char) => char.charCodeAt(0));
-    const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
-    keyBytes.fill(0);
-    const nonce = crypto.getRandomValues(new Uint8Array(12));
-    const plaintext = encoder.encode(JSON.stringify(material));
-    if (plaintext.length > materialLimit) {
-      plaintext.fill(0);
-      log("too_large", summary);
-      return reply(413);
-    }
-    try {
-      const aad = encoder.encode(
-        `twitter-studio/x-chat-setup/v1\n${route.recipient}\n${value.route_id.toLowerCase()}\n${value.request_id.toLowerCase()}`,
-      );
-      const encrypted = new Uint8Array(
-        await crypto.subtle.encrypt(
-          { name: "AES-GCM", iv: nonce, additionalData: aad },
-          key,
-          plaintext,
-        ),
-      );
-      const sealed = new Uint8Array(nonce.length + encrypted.length);
-      sealed.set(nonce);
-      sealed.set(encrypted, nonce.length);
+      // トークン交換と本人照合の2回を含め、無料プランの外部要求50回の内側に収める。
+      let remaining = 48;
+      const bounded: RelayDeps = {
+        ...deps,
+        fetch: async (input, init) => {
+          if (remaining <= 0) throw new SetupFailure("budget");
+          remaining -= 1;
+          return deps.fetch(input, init);
+        },
+      };
+      if (!(await store.dmPreviewRoute(value.route_id, managementHash))) {
+        log("route_gone", {});
+        return reply(410);
+      }
+      let collected: Awaited<ReturnType<typeof collectMaterial>>;
+      try {
+        collected = await collectMaterial(
+          user.userID,
+          user.accessToken,
+          bounded,
+          () => remaining >= 2,
+        );
+      } catch (error) {
+        log("failed", describeFailure(error));
+        return reply(503);
+      }
+      const { material, summary } = collected;
       if (!(await store.dmPreviewRoute(value.route_id, managementHash))) {
         log("route_gone", summary);
         return reply(410);
       }
-      log("prepared", summary);
-      return new Response(sealed, {
-        headers: { ...headers, "Content-Type": "application/octet-stream" },
-      });
-    } finally {
-      plaintext.fill(0);
+      const keyBytes = Uint8Array.from(atob(input.key), (char) => char.charCodeAt(0));
+      const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
+      keyBytes.fill(0);
+      const nonce = crypto.getRandomValues(new Uint8Array(12));
+      const plaintext = encoder.encode(JSON.stringify(material));
+      if (plaintext.length > materialLimit) {
+        plaintext.fill(0);
+        log("too_large", summary);
+        return reply(413);
+      }
+      try {
+        const aad = encoder.encode(
+          `twitter-studio/x-chat-setup/v1\n${route.recipient}\n${value.route_id.toLowerCase()}\n${value.request_id.toLowerCase()}`,
+        );
+        const encrypted = new Uint8Array(
+          await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv: nonce, additionalData: aad },
+            key,
+            plaintext,
+          ),
+        );
+        const sealed = new Uint8Array(nonce.length + encrypted.length);
+        sealed.set(nonce);
+        sealed.set(encrypted, nonce.length);
+        if (!(await store.dmPreviewRoute(value.route_id, managementHash))) {
+          log("route_gone", summary);
+          return reply(410);
+        }
+        log("prepared", summary);
+        return new Response(sealed, {
+          headers: { ...headers, "Content-Type": "application/octet-stream" },
+        });
+      } finally {
+        plaintext.fill(0);
+      }
+    } catch (error) {
+      // 材料を集める処理の外 (Durable Object の呼び出し、暗号化) の失敗も、段階の分からない 503 にしない。
+      log("failed", { stage: "unexpected", problem: errorName(error) });
+      return reply(503);
     }
   }
   if (url.pathname === "/oauth/callback") {
@@ -418,14 +427,14 @@ async function collectMaterial(
   });
 
   /**
-   * X の API を 1 回呼ぶ。`errors` が付いた応答は、`required` の中身が空でないときだけ部分的な失敗として通す
-   * (展開した相手を引けないときなど。#71)。
+   * X の API を 1 回呼ぶ。`errors` が付いた応答は、`keep` の中身が空でないときだけ部分的な失敗として通す
+   * (展開した相手を引けないときなど。#71)。`never` は errors があれば止める。
    */
   async function get(
     stage: Stage,
     path: string,
     query: Record<string, string>,
-    required: "data" | "meta",
+    keep: "data" | "events" | "never",
   ): Promise<object> {
     if (deadline <= Date.now()) throw new SetupFailure("deadline", { during: stage });
     const url = new URL(path, "https://api.x.com");
@@ -459,10 +468,17 @@ async function collectMaterial(
       throw new SetupFailure(stage, { status, problem: "invalid_json" });
     const errors = "errors" in value && Array.isArray(value.errors) ? value.errors : [];
     if (errors.length) {
-      const content = required in value ? (value as Record<string, unknown>)[required] : undefined;
-      const kept = Array.isArray(content) ? content.length > 0 : content != null;
+      const filled = (content: unknown) => Array.isArray(content) && content.length > 0;
+      const { data, meta } = value as {
+        data?: unknown;
+        meta?: { conversation_key_events?: unknown };
+      };
+      const kept =
+        keep === "data"
+          ? filled(data)
+          : keep === "events" && (filled(data) || filled(meta?.conversation_key_events));
       if (!kept) throw new SetupFailure(stage, { status, problem: problem ?? "x_error" });
-      count(partial, problem ?? "x_error");
+      count(partial, `${stage}:${problem ?? "x_error"}`);
     }
     return value;
   }
@@ -480,7 +496,8 @@ async function collectMaterial(
         stage,
         `/2/users/${user}/public_keys`,
         { "public_key.fields": fields + (recovery ? ",juicebox_config" : "") },
-        "data",
+        // 本人の鍵は、引けなかった記録が新しい版かもしれないので、部分的な errors でも止める。
+        recovery ? "never" : "data",
       ),
     );
     const rows = (Array.isArray(data) ? data : [data]).map((row) => ({
@@ -498,12 +515,16 @@ async function collectMaterial(
   }
   /** 1 対 1 の会話の相手。participant_ids と会話の ID の両方があれば、食い違わないものだけを使う。 */
   function peerOf(row: unknown): string | undefined {
-    const type = ConversationType.safeParse(row);
-    if (type.success && type.data.type.toLowerCase() !== "direct") return undefined;
+    // 項目があるのに読めない行は、グループかどうかを決められないので飛ばす。
+    if (typeof row !== "object" || row === null) return undefined;
+    if ("type" in row) {
+      const type = ConversationType.safeParse(row);
+      if (!type.success || type.data.type.toLowerCase() !== "direct") return undefined;
+    }
     let fromID: string | undefined;
-    const id = ConversationID.safeParse(row);
-    if (id.success) {
-      if (id.data.id.startsWith("g")) return undefined;
+    if ("id" in row) {
+      const id = ConversationID.safeParse(row);
+      if (!id.success || id.data.id.startsWith("g")) return undefined;
       const members = /^([0-9]{1,19})-([0-9]{1,19})$/.exec(id.data.id)?.slice(1);
       if (members) {
         if (!members.includes(owner) || members[0] === members[1]) return undefined;
@@ -512,6 +533,7 @@ async function collectMaterial(
     }
     let fromParticipants: string | undefined;
     const listed = Participants.safeParse(row);
+    if ("participant_ids" in row && !listed.success) return undefined;
     if (listed.success && listed.data.participant_ids.length) {
       const ids = listed.data.participant_ids;
       const others = ids.filter((participant) => participant !== owner);
@@ -565,6 +587,13 @@ async function collectMaterial(
       })
     )
       throw new SetupFailure("own_keys", { problem: "newer_key_unreadable" });
+    // 復旧の設定のない新しい版は止めずに数える。X の文書は、どの版にも juicebox_config が付くかを書いておらず、
+    // 実際のアカウントで確かめた CLI (#413) も同じ選び方で準備できたため。
+    const newerWithoutRecovery = own.records.filter(
+      ({ record }) => BigInt(record.public_key_version) > newest,
+    ).length;
+    if (newerWithoutRecovery)
+      count(skipped, "own_keys:newer_without_recovery", newerWithoutRecovery);
 
     const peers: string[] = [];
     let pagination: string | undefined;
@@ -638,7 +667,7 @@ async function collectMaterial(
             "conversation_events",
             `/2/chat/conversations/${peer}/events`,
             { max_results: "1", "chat_message_event.fields": "conversation_key_version" },
-            "meta",
+            "events",
           ),
         );
         const listed = history.meta.conversation_key_events;
