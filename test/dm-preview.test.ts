@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type DmPreviewSource, sealDmPreview } from "../src/dm-preview";
 
 const recipient = "1111111111111111111";
@@ -55,6 +55,27 @@ function chatFitting(shape: (source: DmPreviewSource) => DmPreviewSource): DmPre
 }
 
 describe("DM の暗号化した中身の大きさ", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("何を省いたかだけをログに残し、中身は出さない", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const source = chatFitting((value) => ({
+      ...value,
+      sender: { ...sender, profile_image_url: undefined },
+      conversation_key_change_event: undefined,
+    }));
+    await sealDmPreview({ source, key: encodedKey, recipient, routeID, eventID, occurredAt });
+    expect(info).toHaveBeenCalledWith({
+      event: "dm_preview_sealed",
+      kind: "x_chat",
+      sender: true,
+      trimmed: "key_change",
+    });
+    const logged = JSON.stringify(info.mock.calls);
+    for (const value of [sender.id, sender.name, sender.username, recipient, "kkkk"])
+      expect(logged).not.toContain(value);
+  });
+
   const seal = (source: DmPreviewSource) =>
     sealDmPreview({ source, key: encodedKey, recipient, routeID, eventID, occurredAt });
 
@@ -73,14 +94,18 @@ describe("DM の暗号化した中身の大きさ", () => {
     expect(plain.conversation_key_change_event).toBe("k".repeat(400));
   });
 
-  it("それでも収まらなければ、送った人を省き、鍵変更は残す", async () => {
-    const source = chatFitting((value) => ({ ...value, sender: undefined }));
+  it("それでも収まらなければ、鍵変更を省き、送った人は残す", async () => {
+    const source = chatFitting((value) => ({
+      ...value,
+      sender: { ...sender, profile_image_url: undefined },
+      conversation_key_change_event: undefined,
+    }));
     const plain = await open(await seal(source));
-    expect(plain).not.toHaveProperty("sender");
-    expect(plain.conversation_key_change_event).toBe("k".repeat(400));
+    expect(plain.sender).toEqual({ id: sender.id, name: sender.name, username: sender.username });
+    expect(plain).not.toHaveProperty("conversation_key_change_event");
   });
 
-  it("送った人を省いても収まらなければ、鍵変更も省く", async () => {
+  it("鍵変更を省いても収まらなければ、送った人も省く", async () => {
     const source = chatFitting((value) => ({
       ...value,
       sender: undefined,
