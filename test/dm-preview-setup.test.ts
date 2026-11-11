@@ -772,6 +772,19 @@ describe("reading Twitter key material for DM message text", () => {
     expect(result.log).toMatchObject({ stage: "own_keys", problem: "resource-not-found" });
   });
 
+  test.each([
+    ["an object", { type: "https://api.x.com/2/problems/resource-not-found" }],
+    ["a string", "resource-not-found"],
+  ])("an own key response whose errors field is %s stops the setup", async (_name, errors) => {
+    const result = await finishWith((url) =>
+      url.pathname === `/2/users/${owner}/public_keys`
+        ? Response.json({ data: [recoverable], errors })
+        : undefined,
+    );
+    expect(result.status).toBe(503);
+    expect(result.log).toMatchObject({ stage: "own_keys", problem: "invalid_errors" });
+  });
+
   test("a newer own key without a recovery setting is counted and the recoverable key is used", async () => {
     const result = await finishWith((url) =>
       url.pathname === `/2/users/${owner}/public_keys`

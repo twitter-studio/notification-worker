@@ -466,7 +466,11 @@ async function collectMaterial(
     if (!bytes) throw new SetupFailure(stage, { status, problem: "unreadable_body" });
     if (typeof value !== "object" || value === null || Array.isArray(value))
       throw new SetupFailure(stage, { status, problem: "invalid_json" });
-    const errors = "errors" in value && Array.isArray(value.errors) ? value.errors : [];
+    // errors が配列でない形なら、エラーがないとはみなさない (本人の鍵の never をすり抜けないため)。
+    const listed = "errors" in value ? value.errors : undefined;
+    if (listed != null && !Array.isArray(listed))
+      throw new SetupFailure(stage, { status, problem: "invalid_errors" });
+    const errors: unknown[] = Array.isArray(listed) ? listed : [];
     if (errors.length) {
       const filled = (content: unknown) => Array.isArray(content) && content.length > 0;
       const { data, meta } = value as {
