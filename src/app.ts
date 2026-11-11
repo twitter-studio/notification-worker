@@ -190,17 +190,17 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
   // 1 件の Webhook に同じ人からの DM が並んでも、照会は送った人ごとに 1 回にする。
   const senders = new Map<string, Promise<DmSender | undefined>>();
   const lookupSender = (senderID: string, bearer: string) => {
-    let pending = senders.get(senderID);
-    if (pending === undefined) {
-      pending = lookupDmSender(senderID, bearer, deps.fetch);
-      senders.set(senderID, pending);
+    let request = senders.get(senderID);
+    if (request === undefined) {
+      request = lookupDmSender(senderID, bearer, deps.fetch);
+      senders.set(senderID, request);
     }
-    return pending;
+    return request;
   };
   const jobs: XJob[] = (
     await Promise.all(
       pending.map(async ({ event, sourceID, previewSource, dmPreviewSource, dmSenderID }) => {
-        // 送った人は、端末向けに暗号化するルートがあるときだけ、DM 1 件につき 1 回引く。
+        // 送った人は、端末向けに暗号化するルートがあるときだけ引く。
         const sealsDmPreview =
           dmPreviewSource !== undefined &&
           targets.some(
