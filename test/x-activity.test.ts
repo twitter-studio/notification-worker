@@ -1329,6 +1329,8 @@ describe("DM の送った人", () => {
     ["ほかのホスト", "https://example.com/profile_images/1/example_normal.jpg"],
     ["アイコン以外のパス", "https://pbs.twimg.com/media/example.jpg"],
     ["クエリ付き", `${image}?name=large`],
+    ["末尾が空のクエリ", `${image}?`],
+    ["末尾が空のフラグメント", `${image}#`],
   ])("アイコンの URL が%sなら入れない", async (_name, url) => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

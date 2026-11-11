@@ -160,7 +160,9 @@ function displayNameOf(name: string | undefined): string | undefined {
 
 /** アイコンは X の画像の配信元の https の URL だけを使う (端末がこの URL から画像を取る)。 */
 function profileImageOf(value: string | undefined): string | undefined {
-  if (value === undefined || value.length > 512) return undefined;
+  // 末尾が空の `?` や `#` も、クエリやフラグメントとして使わない (中継の ADR-0009 と同じ)。
+  if (value === undefined || value.length > 512 || value.includes("?") || value.includes("#"))
+    return undefined;
   try {
     const url = new URL(value);
     // 正規化で百分率符号化されて伸びることがあるので、端末が受ける長さは正規化の後に見る。
