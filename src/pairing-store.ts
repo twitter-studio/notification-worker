@@ -38,6 +38,8 @@ const settingsWindow = 10 * 60_000;
 const settingsWritesPerWindow = 30;
 
 export type StoredRoute = PairingRoute & {
+  /** このルートをつないだコードのハッシュ。接続のログインの許可を、その接続でつないだルートにだけ移すために使う。 */
+  pairedCode?: string;
   /** 最後に接続した時刻と、X のログインで出したコードでつないだか。持ち主が一覧で、覚えのない接続を見つけるため (#51)。 */
   connectedAt?: number;
   viaLogin?: boolean;
@@ -59,6 +61,8 @@ export type Login = {
   eventTypes: NotificationType[];
   redirectURI: string;
   expires: number;
+  /** 接続の後、続けて DM 通知の本文の設定にこのログインの許可を使う (ADR-0009 の 2026-11-12 の変更)。 */
+  dmPreview?: boolean;
   /** X から戻った (使い切り)。 */
   used?: boolean;
   /**
@@ -162,7 +166,97 @@ export function applyRouteChanges(
   return { kind: "changed", route: next };
 }
 
+/** 接続のログインで得た、DM 通知の本文の設定に使う X の読み取りトークン。 */
+export type DMPreviewGrant = {
+  accessToken: string;
+  userID: string;
+  expires: number;
+  /** その接続で出したコードのハッシュ。そのコードでつないだルートにだけ移せる。 */
+  codeHash: string;
+};
+/** 接続のログインの許可を、本文の設定に使える時間。アプリは接続を終えるとすぐに設定を始める。 */
+export const dmPreviewGrantLifetime = 20_000;
+
 export class PairingStore extends DurableObject<Env> {
+  /**
+   * 接続のログインで得た読み取りトークン。接続した管理キーと本人で引き、本文の設定を始めたら、その要求に移す。
+   * メモリだけに置き、ストレージに書かない (トークンを保存しない。ADR-0009)。Durable Object が入れ替わると失われ、
+   * アプリはブラウザでのログインに戻る。
+   */
+  private readonly dmPreviewGrants = new Map<string, DMPreviewGrant>();
+
+  private liveGrants(): Map<string, DMPreviewGrant> {
+    const now = Date.now();
+    for (const [key, grant] of this.dmPreviewGrants)
+      if (grant.expires <= now) this.dmPreviewGrants.delete(key);
+    return this.dmPreviewGrants;
+  }
+
+  /**
+   * 接続のログインの後、本文の設定に使う許可を置く。同じ管理キーと本人の前の許可は置き換える。
+   * 期限は、渡された値にかかわらず、置いた時から `dmPreviewGrantLifetime` までに切り詰める。
+   */
+  holdDMPreviewGrant(managementHash: string, recipient: string, grant: DMPreviewGrant): void {
+    const grants = this.liveGrants();
+    const key = `connect\n${managementHash}\n${recipient}`;
+    grants.delete(key);
+    // 外から何度でもログインできるので、数に上限を付ける。外すのは、まだ移していない古いものだけ。
+    // 移した許可は、アプリが `/finish` を呼ぶのを待っているので外さず、新しい許可を持たない (アプリはブラウザに戻る)。
+    while (grants.size >= 16) {
+      const oldest = [...grants.keys()].find((item) => item.startsWith("connect\n"));
+      if (oldest === undefined) return;
+      grants.delete(oldest);
+    }
+    grants.set(key, {
+      ...grant,
+      expires: Math.min(grant.expires, Date.now() + dmPreviewGrantLifetime),
+    });
+    this.armCleanup();
+  }
+
+  /** 本文の設定を始めたとき、その管理キーと本人の許可を、この要求に移す。許可がなければ false。 */
+  claimDMPreviewGrant(claim: {
+    managementHash: string;
+    recipient: string;
+    routeID: string;
+    requestID: string;
+    appState: string;
+  }): boolean {
+    const grants = this.liveGrants();
+    const key = `connect\n${claim.managementHash}\n${claim.recipient}`;
+    const grant = grants.get(key);
+    // そのログインで出したコードでつないだルートにだけ移す。`/connect` の管理キーのハッシュは外から指定できるので、
+    // 同じ管理キーで前からルートを持つ人 (手放した古い端末など) が、本人のログインの許可を横から使えないようにする。
+    const route = this.read().routes.find(
+      (item) =>
+        item.routeID === claim.routeID &&
+        item.managementHash === claim.managementHash &&
+        item.recipient === claim.recipient,
+    );
+    if (!grant || grant.userID !== claim.recipient || route?.pairedCode !== grant.codeHash)
+      return false;
+    grants.delete(key);
+    grants.set(
+      `request\n${claim.routeID}\n${claim.managementHash}\n${claim.requestID}\n${claim.appState}`,
+      grant,
+    );
+    return true;
+  }
+
+  /** 本文の設定を終える (またはやめる) とき、その要求に移した許可を取り出す。使い切り。 */
+  takeDMPreviewGrant(
+    routeID: string,
+    managementHash: string,
+    requestID: string,
+    appState: string,
+  ): DMPreviewGrant | undefined {
+    const grants = this.liveGrants();
+    const key = `request\n${routeID}\n${managementHash}\n${requestID}\n${appState}`;
+    const grant = grants.get(key);
+    grants.delete(key);
+    return grant;
+  }
+
   dmPreviewRoute(routeID: string, managementHash: string): { recipient: string } | undefined {
     const route = this.read().routes.find(
       (item) => item.routeID === routeID && item.managementHash === managementHash,
@@ -180,8 +274,16 @@ export class PairingStore extends DurableObject<Env> {
 
   private saveDMPreviews(sessions: DMPreviewSession[]): void {
     this.ctx.storage.kv.put("dm_previews", sessions);
-    if (sessions.length)
-      void this.ctx.storage.setAlarm(Math.min(...sessions.map((item) => item.expires)));
+    this.armCleanup(sessions);
+  }
+
+  /** いちばん早く切れる要求か許可の時刻に、片付けの alarm を置く。期限の切れたトークンをメモリに残さない。 */
+  private armCleanup(sessions = this.dmPreviews()): void {
+    const times = [
+      ...sessions.map((item) => item.expires),
+      ...[...this.liveGrants().values()].map((grant) => grant.expires),
+    ];
+    if (times.length) void this.ctx.storage.setAlarm(Math.min(...times));
   }
 
   override alarm(): void {
@@ -391,6 +493,7 @@ export class PairingStore extends DurableObject<Env> {
         if (code.eventTypes !== undefined) existing.eventTypes = code.eventTypes;
         existing.connectedAt = Date.now();
         existing.viaLogin = code.managementHash !== undefined;
+        existing.pairedCode = codeHash;
       } else {
         if (code.usedBy !== undefined) return "invalid";
         const manual = xRelayTargets(this.env, true);
@@ -416,6 +519,7 @@ export class PairingStore extends DurableObject<Env> {
           ...(code.eventTypes === undefined ? {} : { eventTypes: code.eventTypes }),
           connectedAt: Date.now(),
           viaLogin: code.managementHash !== undefined,
+          pairedCode: codeHash,
         });
       }
       code.usedBy = { managementHash: route.managementHash, routeID: route.routeID };

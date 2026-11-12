@@ -188,7 +188,12 @@ async function ageUnsure(env: Env, user: string) {
 // テストの途中で失敗しても、次のテストに保存した状態を残さない。
 afterEach(async () => {
   const stub = testEnv().PAIRING_ROUTES?.getByName("routes");
-  if (stub) await runInDurableObject(stub, (_instance, state) => state.storage.deleteAll());
+  if (stub)
+    await runInDurableObject(stub, (instance, state) => {
+      // 接続のログインの許可は、ストレージではなくメモリにある。
+      (instance as unknown as { dmPreviewGrants: Map<string, unknown> }).dmPreviewGrants.clear();
+      return state.storage.deleteAll();
+    });
 });
 
 function connectEnv(user: string, overrides: Partial<Env> = {}): Env {
@@ -256,12 +261,14 @@ async function startLogin(
   user: string,
   types: string,
   manager: string,
+  extra: Record<string, string> = {},
 ) {
   const query = new URLSearchParams({
     x_user_id: user,
     types,
     app_state: appState,
     management_hash: await toHex(manager),
+    ...extra,
   });
   const page = await handle(new Request(`https://worker.test/connect?${query}`), env, x.deps);
   const started =
@@ -612,7 +619,12 @@ describe("connecting with an X login", () => {
       connectEnv("2"),
       x.deps,
     );
-    expect(await version.json()).toEqual({ version: 3, x_login: true, dm_preview_setup: true });
+    expect(await version.json()).toEqual({
+      version: 3,
+      x_login: true,
+      dm_preview_setup: true,
+      dm_preview_login: true,
+    });
 
     const env = connectEnv("2");
     // 引数が合わなくても、始めたアプリが分かればアプリへ戻す。分からなければ、文字のページで断る。
@@ -1363,5 +1375,166 @@ describe("keeping Worker subscriptions in step with connections", () => {
     expect(saved).not.toContain("user-token");
     expect(saved).not.toContain(clientSecret);
     expect(saved).not.toContain("x-code");
+  });
+});
+
+/** Durable Object のメモリにある、接続のログインの許可の数。 */
+async function heldGrants(env: Env): Promise<number> {
+  const stub = env.PAIRING_ROUTES?.getByName("routes");
+  if (!stub) throw new Error("Missing store");
+  return runInDurableObject(
+    stub,
+    (instance) =>
+      (instance as unknown as { dmPreviewGrants: Map<string, unknown> }).dmPreviewGrants.size,
+  );
+}
+
+describe("connecting with DM message previews in one login", () => {
+  /** 本文の設定を、接続のログインの許可で始める (アプリが接続の直後に呼ぶ)。 */
+  function startDMPreview(
+    env: Env,
+    x: ReturnType<typeof fakeX>,
+    manager: string,
+    route_id: string,
+  ) {
+    return handle(
+      new Request("https://worker.test/v1/pairing/dm-preview/start", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${manager}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          route_id,
+          request_id: crypto.randomUUID(),
+          app_state: appState,
+          use_connect_login: true,
+        }),
+      }),
+      env,
+      x.deps,
+    );
+  }
+
+  test("tells the owner on the confirmation page that the login also reads DM key information", async () => {
+    const user = "6161616161616161616";
+    const manager = `tpm_${"P".repeat(43)}`;
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const query = new URLSearchParams({
+      x_user_id: user,
+      types: "dm",
+      app_state: appState,
+      management_hash: await toHex(manager),
+      dm_preview: "1",
+    });
+    const page = await (
+      await handle(
+        new Request(`https://worker.test/connect?${query}`, {
+          headers: { "Accept-Language": "ja" },
+        }),
+        env,
+        x.deps,
+      )
+    ).text();
+    expect(page).toContain("DMの暗号の鍵の情報も一度だけ読み取ります");
+    expect(formOf(page).get("dm_preview")).toBe("1");
+  });
+
+  test("keeps the login's read token in memory only, for the DM preview setup started right after", async () => {
+    const user = "6262626262626262626";
+    const manager = `tpm_${"D".repeat(43)}`;
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const login = await startLogin(env, x, user, "mention,dm", manager, { dm_preview: "1" });
+    expect(login.authorize.searchParams.get("scope")?.split(" ").sort()).toEqual([
+      "dm.read",
+      "tweet.read",
+      "users.read",
+    ]);
+    const back = appRedirect(
+      await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
+    );
+    // トークンはストレージに書かない。
+    const stub = env.PAIRING_ROUTES?.getByName("routes");
+    if (!stub) throw new Error("Missing store");
+    const saved = await runInDurableObject(stub, (_instance, state) =>
+      JSON.stringify([...state.storage.kv.list()]),
+    );
+    expect(saved).not.toContain("user-token");
+    const paired = await pairWithCode(env, x.deps, user, back.code ?? "", manager);
+    expect(paired.status).toBe(204);
+    // 同じアカウントにルートを持つ、ほかの端末の管理キーでは使えない。
+    const other = `tpm_${"E".repeat(43)}`;
+    const otherLogin = await startLogin(env, x, user, "mention", other);
+    const otherBack = appRedirect(
+      await callback(env, x, `code=x-code&state=${otherLogin.state}`, otherLogin.cookie),
+    );
+    const otherPaired = await pairWithCode(env, x.deps, user, otherBack.code ?? "", other);
+    expect(otherPaired.status).toBe(204);
+    expect((await startDMPreview(env, x, other, otherPaired.route_id)).status).toBe(410);
+    expect(await heldGrants(env)).toBe(1);
+    const exchanges = x.calls.filter((call) => call.path === "/2/oauth2/token").length;
+    const started = await startDMPreview(env, x, manager, paired.route_id);
+    expect(started.status).toBe(201);
+    expect(await started.json()).toEqual({ authorized: true });
+    // 使い切り。
+    expect((await startDMPreview(env, x, manager, paired.route_id)).status).toBe(410);
+    // 本文の設定では、トークンを交換し直さない。
+    expect(x.calls.filter((call) => call.path === "/2/oauth2/token")).toHaveLength(exchanges);
+  });
+
+  test("holds no token when the app did not ask for DM previews, and refuses the flag without DMs", async () => {
+    const user = "6363636363636363636";
+    const manager = `tpm_${"F".repeat(43)}`;
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const login = await startLogin(env, x, user, "dm", manager);
+    const back = appRedirect(
+      await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
+    );
+    const paired = await pairWithCode(env, x.deps, user, back.code ?? "", manager);
+    expect((await startDMPreview(env, x, manager, paired.route_id)).status).toBe(410);
+
+    const refused = await startLogin(env, x, user, "mention", manager, { dm_preview: "1" });
+    expect(appRedirect(refused.page)).toEqual({ state: appState, error: "invalid_request" });
+
+    // 確かめのページのフォームに、DM を選ばずに付け足しても断る。
+    const query = new URLSearchParams({
+      x_user_id: user,
+      types: "mention",
+      app_state: appState,
+      management_hash: await toHex(manager),
+    });
+    const page = await handle(new Request(`https://worker.test/connect?${query}`), env, x.deps);
+    const form = formOf(await page.text());
+    form.set("dm_preview", "1");
+    const posted = await confirmLogin(env, x, form, setCookie(page, "__Host-tweetbot-confirm"));
+    expect(appRedirect(posted)).toEqual({ state: appState, error: "invalid_request" });
+  });
+
+  test("holds no token when the connection fails after the login", async () => {
+    const user = "6464646464646464646";
+    const manager = `tpm_${"G".repeat(43)}`;
+    const env = connectEnv(user);
+    // ほかのアカウントでログインした。
+    const stranger = fakeX({ me: "9" });
+    const wrong = await startLogin(env, stranger, user, "dm", manager, { dm_preview: "1" });
+    expect(
+      appRedirect(await callback(env, stranger, `code=x-code&state=${wrong.state}`, wrong.cookie))
+        .error,
+    ).toBe("wrong_account");
+    // 購読を作れなかった。
+    const failing = fakeX({ me: user, failCreate: "dm.received" });
+    const failed = await startLogin(env, failing, user, "dm", manager, { dm_preview: "1" });
+    expect(
+      appRedirect(await callback(env, failing, `code=x-code&state=${failed.state}`, failed.cookie))
+        .error,
+    ).toBe("subscription_failed");
+    // 本人が許可しなかった。
+    const denied = await startLogin(env, failing, user, "dm", manager, { dm_preview: "1" });
+    expect(
+      appRedirect(
+        await callback(env, failing, `error=access_denied&state=${denied.state}`, denied.cookie),
+      ).error,
+    ).toBe("denied");
+    expect(await heldGrants(env)).toBe(0);
   });
 });

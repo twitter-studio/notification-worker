@@ -5,10 +5,13 @@ import { type ConnectConfig, connectConfig, setupConfig } from "./connect-config
 import { confirmationPage } from "./connect-page";
 import type { X_NOTIFICATION_TYPES } from "./normalize";
 import { issuePairingCode } from "./pairing";
-import { pairingStore } from "./pairing-store";
+import { dmPreviewGrantLifetime, pairingStore } from "./pairing-store";
 import type { RelayDeps } from "./relay";
 import { XUserID } from "./x-activity";
 import { ensureSubscriptions, readJSON, scopesFor } from "./x-subscriptions";
+
+/** DM 通知の本文の設定に要る scope。接続のログインの許可を使うときは、接続の scope がこれを含むことを確かめる。 */
+export const dmPreviewScopes = ["tweet.read", "users.read", "dm.read"] as const;
 
 type Store = NonNullable<ReturnType<typeof pairingStore>>;
 type NotificationType = (typeof X_NOTIFICATION_TYPES)[number];
@@ -158,6 +161,7 @@ type StartParams = {
   appState: string;
   managementHash: string;
   eventTypes: NotificationType[];
+  dmPreview: boolean;
 };
 
 const StartQuery = z.strictObject({
@@ -165,6 +169,8 @@ const StartQuery = z.strictObject({
   types: z.string().max(100),
   app_state: z.string().regex(Random),
   management_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  /** 接続の後、続けて DM 通知の本文の設定にこのログインの許可を使う。DM を選んだときだけ受ける。 */
+  dm_preview: z.literal("1").optional(),
 });
 
 /** アプリが `/connect` に付けた引数を読む。読めなければ、断ったわけを返す (始めたアプリが分かれば、そのアプリへ)。 */
@@ -180,7 +186,11 @@ function readStart(
   const types = parsed.success
     ? NotificationTypes.min(1).safeParse(parsed.data.types.split(","))
     : undefined;
-  if (!parsed.success || !types?.success)
+  if (
+    !parsed.success ||
+    !types?.success ||
+    (parsed.data.dm_preview !== undefined && !types.data.includes("dm"))
+  )
     return { ok: false, response: refuse(params, 400, "Bad Request", "invalid_request") };
   const { x_user_id, app_state, management_hash } = parsed.data;
   // 本当の守りは、ログインの後に本人の ID を確かめること (connect)。ここで断るのは、許可していない X アカウントに
@@ -194,6 +204,7 @@ function readStart(
       appState: app_state,
       managementHash: management_hash,
       eventTypes: [...new Set(types.data)],
+      dmPreview: parsed.data.dm_preview !== undefined,
     },
   };
 }
@@ -220,9 +231,11 @@ function confirmStart(
       types: read.value.eventTypes.join(","),
       app_state: read.value.appState,
       management_hash: read.value.managementHash,
+      ...(read.value.dmPreview ? { dm_preview: "1" } : {}),
       confirm: nonce,
     },
     /^ja\b/i.test(request.headers.get("Accept-Language") ?? ""),
+    read.value.dmPreview,
   );
   const response = new Response(page, {
     status: 200,
@@ -271,7 +284,7 @@ async function start(
   if (nonce === undefined || confirm.length !== 1 || confirm[0] !== nonce) return forbidden();
   const read = readStart(form, config, limited);
   if (!read.ok) return read.response;
-  const { recipient, appState, managementHash, eventTypes } = read.value;
+  const { recipient, appState, managementHash, eventTypes, dmPreview } = read.value;
   const state = random();
   const verifier = random();
   const browser = random();
@@ -286,6 +299,7 @@ async function start(
     eventTypes,
     redirectURI,
     expires: Date.now() + loginLifetime,
+    ...(dmPreview ? { dmPreview: true } : {}),
   });
   const authorize = new URL("https://x.com/i/oauth2/authorize");
   authorize.search = new URLSearchParams({
@@ -450,5 +464,18 @@ async function connect(
     eventTypes: login.eventTypes,
   });
   if (!issued) return fail("busy");
+  // DM の本文の設定も選んでいたら、このログインの読み取りトークンを、続けて始める本文の設定のために少しだけ持つ。
+  // 本文の設定に要る scope は、DM を選んだ接続の scope に含まれる (含まなければ持たない)。
+  // 置けなくても接続は終わっている。アプリはブラウザでのログインに戻る。
+  const granted = new Set(scopesFor(login.eventTypes));
+  if (login.dmPreview && dmPreviewScopes.every((scope) => granted.has(scope)))
+    await store
+      .holdDMPreviewGrant(login.managementHash, login.recipient, {
+        accessToken,
+        userID,
+        expires: Date.now() + dmPreviewGrantLifetime,
+        codeHash: await hex(issued.code),
+      })
+      .catch(() => undefined);
   return toApp({ state: login.appState, code: issued.code });
 }

@@ -168,4 +168,4 @@ pnpm build   # デプロイはしない (--dry-run)
 
 対応するTweetbotの「プッシュ通知 → DM通知の本文 → DM通知で本文を表示」から設定する。ファイルの書き出しやMacへの転送は不要。Twitterの読み取り許可後、PINはTweetbotにだけ入力する。WorkerはPIN・復元後の秘密鍵を受け取らず、認可トークンを保存しない。DM通知はWorker接続時にDMを選択して用意する。本文表示の設定は通知種類や購読を変更しない。最近の1対1の会話を最大20件準備し、新しい会話や鍵変更には再設定する。
 
-アプリの対応確認には `GET /v1/pairing` の `dm_preview_setup` を使う。[APIの約束](docs/api/dm-preview-setup.md)を参照。古いWorkerは更新が必要。本番配置と実アカウントを使った検証は、オーナーの承認後に行う。
+アプリの対応確認には `GET /v1/pairing` の `dm_preview_setup` を使う。接続のログインで続けて設定できるか (`dm_preview_login`) も、ここで分かる。[APIの約束](docs/api/dm-preview-setup.md)を参照。古いWorkerは更新が必要。本番配置と実アカウントを使った検証は、オーナーの承認後に行う。

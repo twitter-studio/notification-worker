@@ -22,6 +22,8 @@ const text = {
     worker: "Worker",
     types: "Notifications",
     dm: "DM notifications will also go through this Worker.",
+    dmPreview:
+      "To show message text in DM notifications, this login is also used once to read your DM encryption key information.",
     next: "Continuing opens the Twitter login. Log in with the account you are connecting.",
     continue: "Continue",
   },
@@ -33,6 +35,8 @@ const text = {
     worker: "Worker",
     types: "受け取る通知",
     dm: "DMの通知も、このWorkerを通して届きます。",
+    dmPreview:
+      "DM通知で本文を表示するため、このログインで、DMの暗号の鍵の情報も一度だけ読み取ります。",
     next: "続けると、Twitterのログインの画面に進みます。つなぐアカウントでログインしてください。",
     continue: "続行",
   },
@@ -58,6 +62,7 @@ export function confirmationPage(
   types: readonly NotificationType[],
   fields: Record<string, string>,
   japanese: boolean,
+  dmPreview = false,
 ): string {
   const t = japanese ? text.ja : text.en;
   const items = types
@@ -92,7 +97,7 @@ button { margin-top: 1.5rem; width: 100%; padding: 0.8rem; font-size: 1.05rem; f
 <dt>${html(t.worker)}</dt>
 <dd>${html(host)}</dd>
 <dt>${html(t.types)}</dt>
-<dd><ul>${items}</ul>${types.includes("dm") ? `<p class="dm">${html(t.dm)}</p>` : ""}</dd>
+<dd><ul>${items}</ul>${types.includes("dm") ? `<p class="dm">${html(t.dm)}</p>` : ""}${dmPreview ? `<p class="dm">${html(t.dmPreview)}</p>` : ""}</dd>
 </dl>
 <p>${html(t.next)}</p>
 <form method="post" action="/connect">${hidden}<button type="submit">${html(t.continue)}</button></form>
