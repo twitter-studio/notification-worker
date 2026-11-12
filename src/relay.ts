@@ -12,8 +12,6 @@ export type RelayOutcome =
   | { kind: "unauthorized"; status: 401 | 403 }
   /** 中継の API が受けない (413、415、422 など)。やり直さない。 */
   | { kind: "rejected" }
-  /** 公開試験の期限切れ。中継へは送らない。 */
-  | { kind: "expired" }
   /**
    * 中継の API でない先の答え (リダイレクト、404、405)。RELAY_URL の誤り。リダイレクトには、資格情報とイベントをほかの先へ
    * 送らないため、従わない。
@@ -62,9 +60,6 @@ export async function sendToRelay(
   let retryAfterSeconds = 1;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (budget.remaining <= 0) break;
-    const remainingMs =
-      config.expiresAt === undefined ? REQUEST_TIMEOUT_MS : config.expiresAt - Date.now();
-    if (remainingMs <= 0) return { kind: "expired" };
     budget.remaining--;
     let response: Response;
     try {
@@ -77,7 +72,7 @@ export async function sendToRelay(
         body: JSON.stringify(event),
         // リダイレクトに従わない (設定の誤りで、イベントをほかの先へ送らない。従った回数も、外へ送る回数に数えられる)。
         redirect: "manual",
-        signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remainingMs)),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch {
       // つながらない、時間切れ。少し待ってやり直す。

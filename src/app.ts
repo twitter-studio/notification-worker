@@ -1,5 +1,5 @@
 import { readBody } from "./body";
-import { ConfigError, isEnabled, publicRelayTrialExpired, relayConfig } from "./config";
+import { ConfigError, isEnabled, relayConfig } from "./config";
 import { handleConnect } from "./connect";
 import { dmPreviewKeyID, sealDmPreview } from "./dm-preview";
 import { handleDMPreview } from "./dm-preview-setup";
@@ -37,7 +37,6 @@ const STOP_KINDS: ReadonlySet<RelayOutcome["kind"]> = new Set([
   "retry_later",
   "unauthorized",
   "misdirected",
-  "expired",
 ]);
 
 async function handleMockWebhook(request: Request, env: Env, deps: RelayDeps): Promise<Response> {
@@ -162,8 +161,7 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
     });
     return problem(422, "Unprocessable Content");
   }
-  if (normalized.kind === "dropped" || publicRelayTrialExpired(env))
-    return Response.json({ counts: { dropped: 1 } });
+  if (normalized.kind === "dropped") return Response.json({ counts: { dropped: 1 } });
   const { recipient } = normalized;
   const events = (normalized.kind === "batch" ? normalized.events : [normalized]).filter(
     ({ event }) =>

@@ -1,11 +1,5 @@
 import { z } from "zod";
-import {
-  isEnabled,
-  publicRelayTrialExpired,
-  type RelayConfig,
-  RelayRouteID,
-  type XRelayTarget,
-} from "./config";
+import { isEnabled, type RelayConfig, RelayRouteID, type XRelayTarget } from "./config";
 import { dmPreviewKeyID, SealedDmPreview } from "./dm-preview";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS, X_NOTIFICATION_TYPES } from "./normalize";
 import { deliveryTargets } from "./pairing-store";
@@ -107,7 +101,6 @@ export async function handleXQueue(
     const eventTime = parsed.success ? Date.parse(parsed.data.event.occurred_at) : 0;
     if (
       !isEnabled(env.ENABLE_X_ACTIVITY) ||
-      publicRelayTrialExpired(env) ||
       !parsed.success ||
       eventTime < now - MAX_EVENT_AGE_MS ||
       eventTime > now + CLOCK_SKEW_MS
@@ -135,11 +128,6 @@ export async function handleXQueue(
         ...(target.routeID === undefined ? {} : { route_id: target.routeID }),
       };
       const outcome = await sendToRelay(target.config, event, deps, { remaining: 3 });
-      if (outcome.kind === "expired") {
-        recordObservation({ kind: "discarded", reason: "inactive_invalid_or_expired" });
-        message.ack();
-        continue;
-      }
       recordObservation({ kind: "delivery", type: parsed.data.event.type, outcome: outcome.kind });
       // 中継が資格情報を断った (401) ときは、やり直しても通らないので捨てる (notification-service の ADR-0007)。やり直すと、
       // 認証の通らない要求を中継へ繰り返し送る。利用者は delivery の記録 (unauthorized) で気づき、中継の資格情報を入れ替える。
@@ -161,10 +149,7 @@ export async function handleXQueue(
         outcome: "configuration_or_transport_error",
       });
     }
-    if (publicRelayTrialExpired(env)) {
-      recordObservation({ kind: "discarded", reason: "inactive_invalid_or_expired" });
-      message.ack();
-    } else if (message.attempts >= 6) {
+    if (message.attempts >= 6) {
       recordObservation({ kind: "discarded", reason: "attempt_limit" });
       message.ack();
     } else message.retry({ delaySeconds: delay });
