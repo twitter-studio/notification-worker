@@ -221,8 +221,8 @@ function setCookie(response: Response, name: string): string {
 }
 
 /**
- * `/connect` を開き、X の認可の URL と、ブラウザの Cookie を受け取る。確かめのページはない (2026-11-12 に外した)。
- * 断られたら、その応答が `started` (と、前の名前の `page`) に入る。
+ * `/connect` を開き、X の認可の URL と、ブラウザの Cookie を受け取る。断られたら、その応答が `started` に入る。
+ * `headers` は、アプリがブラウザを開く最初の要求に付ける見出し (管理キー)。
  */
 async function startLogin(
   env: Env,
@@ -231,6 +231,7 @@ async function startLogin(
   types: string,
   manager: string,
   extra: Record<string, string> = {},
+  headers: Record<string, string> = {},
 ) {
   const query = new URLSearchParams({
     x_user_id: user,
@@ -239,12 +240,15 @@ async function startLogin(
     management_hash: await toHex(manager),
     ...extra,
   });
-  const started = await handle(new Request(`https://worker.test/connect?${query}`), env, x.deps);
-  const page = started;
+  const started = await handle(
+    new Request(`https://worker.test/connect?${query}`, { headers }),
+    env,
+    x.deps,
+  );
   const cookie = setCookie(started, "__Host-tweetbot-connect");
   const authorize = new URL(started.headers.get("Location") ?? "https://invalid.test");
   x.setChallenge(authorize.searchParams.get("code_challenge") ?? "");
-  return { page, started, cookie, authorize, state: authorize.searchParams.get("state") ?? "" };
+  return { started, cookie, authorize, state: authorize.searchParams.get("state") ?? "" };
 }
 
 function callback(env: Env, x: ReturnType<typeof fakeX>, query: string, cookie: string) {
@@ -315,6 +319,8 @@ describe("connecting with an X login", () => {
     const login = await startLogin(env, x, user, "mention,reply,like", manager);
     expect(login.started.status).toBe(302);
     expect(login.started.headers.get("Cache-Control")).toBe("no-store");
+    // X へ移るとき、`/connect` の引数を Referer で渡さない。
+    expect(login.started.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(login.started.headers.getSetCookie()).toEqual([
       expect.stringMatching(
         /^__Host-tweetbot-connect=[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=600$/,
@@ -631,6 +637,8 @@ describe("connecting with an X login", () => {
       state: appState,
       error: "rate_limited",
     });
+    // 上限に当たったら、ログインを始めない (書き込まない)。
+    expect(await stored(limited, "logins")).toBeUndefined();
     expect(x.calls).toHaveLength(0);
   });
 
@@ -1258,7 +1266,17 @@ describe("connecting with DM message previews in one login", () => {
     const manager = `tpm_${"D".repeat(43)}`;
     const env = connectEnv(user);
     const x = fakeX({ me: user });
-    const login = await startLogin(env, x, user, "mention,dm", manager, { dm_preview: "1" });
+    const login = await startLogin(
+      env,
+      x,
+      user,
+      "mention,dm",
+      manager,
+      { dm_preview: "1" },
+      {
+        "X-Tweetbot-Management-Key": manager,
+      },
+    );
     expect(login.authorize.searchParams.get("scope")?.split(" ").sort()).toEqual([
       "dm.read",
       "tweet.read",
@@ -1309,7 +1327,45 @@ describe("connecting with DM message previews in one login", () => {
     expect((await startDMPreview(env, x, manager, paired.route_id)).status).toBe(410);
 
     const refused = await startLogin(env, x, user, "mention", manager, { dm_preview: "1" });
-    expect(appRedirect(refused.page)).toEqual({ state: appState, error: "invalid_request" });
+    expect(appRedirect(refused.started)).toEqual({ state: appState, error: "invalid_request" });
+  });
+
+  test("holds no DM grant for a link without this app's management key", async () => {
+    const user = "6565656565656565656";
+    const manager = `tpm_${"K".repeat(43)}`;
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    // 他人が作ったリンク (見出しがない) や、ほかの管理キーの見出しでは、接続はできても、許可は持たない。
+    for (const headers of [{}, { "X-Tweetbot-Management-Key": `tpm_${"L".repeat(43)}` }]) {
+      const login = await startLogin(env, x, user, "dm", manager, { dm_preview: "1" }, headers);
+      const back = appRedirect(
+        await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
+      );
+      expect(back.code).toMatch(/^tpc_/);
+      expect(await heldGrants(env)).toBe(0);
+    }
+  });
+
+  test("keeps the owner's login when other logins for the account are started, up to three waiting", async () => {
+    const user = "6666666666666666661";
+    const manager = `tpm_${"M".repeat(43)}`;
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    // リンクの展開などで同じアカウントの /connect が開かれても、待っているログインが 3 つまでなら、本人のログインは続けられる。
+    const owner = await startLogin(env, x, user, "mention", manager);
+    await startLogin(env, x, user, "mention", `tpm_${"N".repeat(43)}`);
+    await startLogin(env, x, user, "mention", `tpm_${"O".repeat(43)}`);
+    x.setChallenge(owner.authorize.searchParams.get("code_challenge") ?? "");
+    expect(
+      appRedirect(await callback(env, x, `code=x-code&state=${owner.state}`, owner.cookie)).code,
+    ).toMatch(/^tpc_/);
+    // 4 つ目で、いちばん古いものが外れる。外れたログインで戻ると、Tweetbot からやり直してもらう。
+    const evicted = await startLogin(env, x, user, "mention", manager);
+    for (const key of ["P", "R", "S"])
+      await startLogin(env, x, user, "mention", `tpm_${key.repeat(43)}`);
+    const response = await callback(env, x, `code=x-code&state=${evicted.state}`, evicted.cookie);
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Start again from Tweetbot.");
   });
 
   test("holds no token when the connection fails after the login", async () => {
@@ -1318,20 +1374,50 @@ describe("connecting with DM message previews in one login", () => {
     const env = connectEnv(user);
     // ほかのアカウントでログインした。
     const stranger = fakeX({ me: "9" });
-    const wrong = await startLogin(env, stranger, user, "dm", manager, { dm_preview: "1" });
+    const wrong = await startLogin(
+      env,
+      stranger,
+      user,
+      "dm",
+      manager,
+      { dm_preview: "1" },
+      {
+        "X-Tweetbot-Management-Key": manager,
+      },
+    );
     expect(
       appRedirect(await callback(env, stranger, `code=x-code&state=${wrong.state}`, wrong.cookie))
         .error,
     ).toBe("wrong_account");
     // 購読を作れなかった。
     const failing = fakeX({ me: user, failCreate: "dm.received" });
-    const failed = await startLogin(env, failing, user, "dm", manager, { dm_preview: "1" });
+    const failed = await startLogin(
+      env,
+      failing,
+      user,
+      "dm",
+      manager,
+      { dm_preview: "1" },
+      {
+        "X-Tweetbot-Management-Key": manager,
+      },
+    );
     expect(
       appRedirect(await callback(env, failing, `code=x-code&state=${failed.state}`, failed.cookie))
         .error,
     ).toBe("subscription_failed");
     // 本人が許可しなかった。
-    const denied = await startLogin(env, failing, user, "dm", manager, { dm_preview: "1" });
+    const denied = await startLogin(
+      env,
+      failing,
+      user,
+      "dm",
+      manager,
+      { dm_preview: "1" },
+      {
+        "X-Tweetbot-Management-Key": manager,
+      },
+    );
     expect(
       appRedirect(
         await callback(env, failing, `error=access_denied&state=${denied.state}`, denied.cookie),

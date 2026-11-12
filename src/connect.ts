@@ -145,7 +145,7 @@ export async function handleConnect(
   // `/setup` で用意した Webhook の ID は Durable Object から読むので、回数を数えた後に読む。
   const config = await connectConfig(env, store);
   if (!config) return text(404, "Not Found");
-  if (url.pathname === "/connect") return start(url, config, store, limited);
+  if (url.pathname === "/connect") return start(request, url, config, store, limited);
   return finish(request, url, config, store, deps, limited);
 }
 
@@ -203,14 +203,21 @@ function readStart(
 }
 
 /**
+ * アプリがブラウザを開く最初の要求に付ける、管理キーの見出し (ASWebAuthenticationSession の追加の見出し)。
+ * `/connect` の URL は誰でも作れるが、この見出しは、管理キーを持つアプリにしか付けられない。
+ */
+export const managementKeyHeader = "X-Tweetbot-Management-Key";
+
+/**
  * `GET /connect`。ログインを始めて、すぐ X へ送る。
  *
- * 前は、X へ送る前に確かめのページを出していた (#51)。`/connect` の URL は誰でも作れるので、他人の管理キーのハッシュを入れた URL を
- * 開かされても、本人が気づいて止められるようにするため。2026-11-12 に、オーナーの判断でページを外した (使いにくさの方を重く見た)。
- * 残る危険 (端末に `tweetbot-worker` の戻り先を奪うアプリがあり、本人が X の許可の画面で許可したとき、他人の管理キーにコードが
- * 結び付く) は、ADR-0008 に書いた。X の許可の画面は、毎回アプリの名前と権限を出す。
+ * 確かめのページは出さない (ADR-0008)。他人の管理キーのハッシュを入れた URL を開かされて X で許可すると、端末に
+ * `tweetbot-worker` の戻り先を奪うアプリがあれば、他人がルートを足せる余地が残る (#51、オーナーが受け入れた)。
+ * DM 通知の本文の設定に許可を使う (`dm_preview`) のは、管理キーの見出しが合うときだけにする。合わない URL で許可を持つと、
+ * 同じ 1 回の許可で DM の鍵の材料まで他人に渡るため。
  */
 async function start(
+  request: Request,
   url: URL,
   config: ConnectConfig,
   store: Store,
@@ -218,7 +225,12 @@ async function start(
 ): Promise<Response> {
   const read = readStart(url.searchParams, config, limited);
   if (!read.ok) return read.response;
-  const { recipient, appState, managementHash, eventTypes, dmPreview } = read.value;
+  const { recipient, appState, managementHash, eventTypes } = read.value;
+  const presented = request.headers.get(managementKeyHeader) ?? "";
+  const dmPreview =
+    read.value.dmPreview &&
+    /^tpm_[A-Za-z0-9_-]{43}$/.test(presented) &&
+    (await hex(presented)) === managementHash;
   const state = random();
   const verifier = random();
   const browser = random();

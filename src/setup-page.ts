@@ -1,5 +1,5 @@
 /** HTML に埋める値をエスケープする。 */
-export function html(value: string): string {
+function html(value: string): string {
   return value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")

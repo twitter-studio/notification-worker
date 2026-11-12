@@ -122,9 +122,11 @@ async function fixture() {
     const started = await api("start");
     expect(started.status).toBe(201);
     const { url } = z.object({ url: z.string() }).parse(await started.json());
-    // 確かめのページはない (2026-11-12 に外した)。開くとすぐ X へ送る。
+    // 開くとすぐ X へ送る (確かめのページはない)。
     const consent = await handle(new Request(url), env, deps);
     expect(consent.status).toBe(302);
+    expect(consent.headers.get("Cache-Control")).toBe("no-store");
+    expect(consent.headers.get("Referrer-Policy")).toBe("no-referrer");
     const oauth = new URL(consent.headers.get("Location") ?? "");
     expect(oauth.searchParams.get("scope")).toBe("tweet.read users.read dm.read");
     expect(oauth.searchParams.get("code_challenge_method")).toBe("S256");
@@ -461,13 +463,12 @@ describe("DM message preview setup", () => {
     expect((await f.api("start", f.body, "wrong")).status).toBe(401);
     const response = await f.api("start");
     const { url } = z.object({ url: z.string() }).parse(await response.json());
-    expect(
-      (await handle(new Request(url, { method: "POST", body: "confirm=fake" }), f.env, f.deps))
-        .status,
-    ).toBe(404);
-    // 開けるのは 1 回だけ。2 回目は、もう X の同意を待っているので 410。
+    expect((await handle(new Request(url, { method: "POST" }), f.env, f.deps)).status).toBe(404);
+    // 開けるのは 1 回だけ。2 回目は、もう X の同意を待っているので 410 で、空のページにせず、やり直し方を出す。
     expect((await handle(new Request(url), f.env, f.deps)).status).toBe(302);
-    expect((await handle(new Request(url), f.env, f.deps)).status).toBe(410);
+    const again = await handle(new Request(url), f.env, f.deps);
+    expect(again.status).toBe(410);
+    expect(await again.text()).toContain("Try again from Tweetbot");
     expect(f.calls).toHaveLength(0);
   });
 

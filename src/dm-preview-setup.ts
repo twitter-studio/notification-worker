@@ -54,8 +54,8 @@ function reply(status: number, body?: unknown): Response {
     ? new Response(null, { status, headers })
     : Response.json(body, { status, headers });
 }
-function redirect(location: string, cookies: string[] = [], status = 302): Response {
-  const response = new Response(null, { status, headers: { ...headers, Location: location } });
+function redirect(location: string, cookies: string[] = []): Response {
+  const response = new Response(null, { status: 302, headers: { ...headers, Location: location } });
   for (const cookie of cookies) response.headers.append("Set-Cookie", cookie);
   return response;
 }
@@ -92,6 +92,16 @@ export async function handleDMPreview(
   // state の形が合わなければ、Durable Object を読まない (上限の中で流し続けられても、呼び出しを増やさない)。
   const state = url.searchParams.get("state") ?? "";
   const knownState = /^dmp_[A-Za-z0-9_-]{43}$/.test(state);
+  // ブラウザに本文のない応答を返すと空のページになり、閉じた利用者には「キャンセルした」と出る (#84)。
+  const startAgain = (status: number) => {
+    const ja = /^ja\b/i.test(request.headers.get("Accept-Language") ?? "");
+    return new Response(
+      ja
+        ? "この設定は、もう始まっているか、期限が切れています。Tweetbotでもう一度お試しください。"
+        : "This setup has already started or expired. Try again from Tweetbot.",
+      { status, headers: { ...headers, "Content-Type": "text/plain; charset=utf-8" } },
+    );
+  };
   const toAppLimited = (appState: string, cookies: string[] = []) =>
     redirect(
       `${callback}?${new URLSearchParams({ state: appState, error: "rate_limited" })}`,
@@ -267,10 +277,10 @@ export async function handleDMPreview(
   if (url.pathname === "/oauth/callback") {
     if (request.method !== "GET") return reply(405);
     const session = knownState ? await store.readDMPreview(state) : undefined;
-    if (session?.kind !== "authorizing") return limited ? tooMany() : reply(400);
+    if (session?.kind !== "authorizing") return limited ? tooMany() : startAgain(400);
     const browser = cookieValue(request, browserCookie);
     if (!browser || (await hex(browser)) !== session.browserHash)
-      return limited ? tooMany() : reply(400);
+      return limited ? tooMany() : startAgain(400);
     const code = url.searchParams.get("code");
     const error = url.searchParams.has("error") || !code || code.length > 512;
     // 上限の中でも、本人が断ったことは先に伝える (接続の流れと同じ)。上限の中では書き込まない。
@@ -296,12 +306,11 @@ export async function handleDMPreview(
       [cookie(browserCookie, "", 0)],
     );
   }
-  // `GET /dm-preview` は、すぐ X へ送る。前は確かめのページを出していたが、接続の流れと同じく外した (2026-11-12、オーナーの判断)。
-  // 要求は、管理キーで認証した `/start` でしか作れない。
+  // `GET /dm-preview` は、確かめのページを出さずに X へ送る (ADR-0008)。要求は、管理キーで認証した `/start` でしか作れない。
   if (url.pathname !== "/dm-preview" || request.method !== "GET") return reply(404);
   const session = knownState ? await store.readDMPreview(state) : undefined;
   if (session?.kind !== "prepared" || !config.allowed.has(session.recipient))
-    return limited ? tooMany() : reply(410);
+    return limited ? tooMany() : startAgain(410);
   if (limited) return toAppLimited(session.appState);
   const browser = random();
   const verifier = random();
