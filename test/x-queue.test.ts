@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { relayConfig } from "../src/config";
-import { sendToRelay } from "../src/relay";
 import { handleXQueue, relayBinding, XJobSchema, xEventID } from "../src/x-queue";
 import { fakeRelay, testEnv } from "./helpers";
 
@@ -10,47 +9,6 @@ const event = {
   occurred_at: new Date().toISOString(),
 } as const;
 const enabled = () => testEnv({ ENABLE_X_ACTIVITY: "true" });
-it("公開試験の期限をまたぐと中継HTTPを再試行しない", async () => {
-  const expiresAt = Date.now() + 500;
-  const clock = vi.spyOn(Date, "now").mockReturnValue(expiresAt - 500);
-  const fetch = vi.fn(
-    async () => new Response(null, { status: 503, headers: { "Retry-After": "1" } }),
-  );
-  try {
-    const outcome = await sendToRelay(
-      { ...relayConfig(enabled()), expiresAt },
-      { ...event, event_id: "test-event" },
-      {
-        fetch,
-        sleep: async () => {
-          clock.mockReturnValue(expiresAt);
-        },
-      },
-      { remaining: 3 },
-    );
-    expect(outcome).toEqual({ kind: "expired" });
-    expect(fetch).toHaveBeenCalledTimes(1);
-  } finally {
-    clock.mockRestore();
-  }
-});
-it("公開試験中は専用の送り先と資格情報を使い、期限後はsandboxへ戻さず停止する", () => {
-  const config = {
-    ...enabled(),
-    PUBLIC_RELAY_TRIAL_UNTIL: String(Date.now() + 60_000),
-    PUBLIC_RELAY_TRIAL_ORIGIN: "https://public.example",
-    PUBLIC_RELAY_TRIAL_TOKEN: `tsr_${"x".repeat(43)}`,
-  };
-  expect(relayConfig(config)).toEqual({
-    endpoint: new URL("https://public.example/v1/notifications"),
-    token: config.PUBLIC_RELAY_TRIAL_TOKEN,
-    expiresAt: Number(config.PUBLIC_RELAY_TRIAL_UNTIL),
-  });
-  expect(() =>
-    relayConfig({ ...config, PUBLIC_RELAY_TRIAL_UNTIL: String(Date.now() - 1) }),
-  ).toThrow();
-  expect(() => relayConfig({ ...config, PUBLIC_RELAY_TRIAL_TOKEN: "" })).toThrow();
-});
 async function job() {
   // 試験の環境 (vitest.config.ts) は、手で配送先を設定した形で X_USER_ID を置いている。
   const recipient = enabled().X_USER_ID ?? "";
@@ -115,43 +73,6 @@ describe("Xイベントの永続Queueからの配信", () => {
       );
       expect(JSON.stringify(errors.mock.calls)).not.toContain(enabled().RELAY_TOKEN);
     } finally {
-      errors.mockRestore();
-    }
-  });
-  it("送信の待機中に公開試験の期限を迎えたjobは拒否ではなく期限切れとして記録する", async () => {
-    const expiresAt = Date.now() + 500;
-    const environment = {
-      ...enabled(),
-      PUBLIC_RELAY_TRIAL_UNTIL: String(expiresAt),
-      PUBLIC_RELAY_TRIAL_ORIGIN: "https://public.example",
-      PUBLIC_RELAY_TRIAL_TOKEN: `tsr_${"x".repeat(43)}`,
-    };
-    const input = await job();
-    const item = message({
-      ...input,
-      relay_binding: await relayBinding(relayConfig(environment), environment.X_USER_ID ?? ""),
-    });
-    const clock = vi.spyOn(Date, "now").mockReturnValue(expiresAt - 500);
-    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    const relay = fakeRelay([new Response(null, { status: 503, headers: { "Retry-After": "1" } })]);
-    try {
-      await handleXQueue([item], environment, {
-        ...relay.deps,
-        sleep: async () => {
-          clock.mockReturnValue(expiresAt);
-        },
-      });
-      expect(relay.sent).toHaveLength(1);
-      expect(item.ack).toHaveBeenCalledOnce();
-      expect(item.retry).not.toHaveBeenCalled();
-      expect(errors).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({
-          stage: "discarded",
-          reason: "inactive_invalid_or_expired",
-        }),
-      );
-    } finally {
-      clock.mockRestore();
       errors.mockRestore();
     }
   });

@@ -838,12 +838,7 @@ export class PairingStore extends DurableObject<Env> {
 }
 
 export function pairingStore(env: Env) {
-  if (
-    env.PUBLIC_RELAY_TRIAL_UNTIL !== undefined ||
-    env.PUBLIC_RELAY_TRIAL_ORIGIN !== undefined ||
-    !/^tpa_[A-Za-z0-9_-]{43}$/.test(env.PAIRING_ADMIN_TOKEN ?? "")
-  )
-    return undefined;
+  if (!/^tpa_[A-Za-z0-9_-]{43}$/.test(env.PAIRING_ADMIN_TOKEN ?? "")) return undefined;
   return env.PAIRING_ROUTES?.getByName("routes");
 }
 

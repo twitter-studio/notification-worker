@@ -17,7 +17,6 @@ export type RelayConfig = {
   /** 中継の API の受け付けの入口 (`<RELAY_URL>/v1/notifications`)。 */
   endpoint: URL;
   token: string;
-  expiresAt?: number;
 };
 
 const RELAY_TOKEN = /^tsr_[A-Za-z0-9_-]{43}$/;
@@ -62,17 +61,8 @@ declare global {
     X_NOTIFICATION_TYPES?: string;
     ENABLE_X_NOTIFICATION_PREVIEW?: string;
     ENABLE_X_POST_PREVIEW_LOOKUP?: string;
-    PUBLIC_RELAY_TRIAL_UNTIL?: string;
-    PUBLIC_RELAY_TRIAL_ORIGIN?: string;
-    PUBLIC_RELAY_TRIAL_TOKEN?: string;
     X_EVENT_NOT_BEFORE?: string;
   }
-}
-
-export function publicRelayTrialExpired(env: Env): boolean {
-  return (
-    env.PUBLIC_RELAY_TRIAL_UNTIL !== undefined && Number(env.PUBLIC_RELAY_TRIAL_UNTIL) <= Date.now()
-  );
 }
 
 /**
@@ -80,28 +70,10 @@ export function publicRelayTrialExpired(env: Env): boolean {
  * 要求ごとに外から URL を変えさせない (送り先は、利用者が置いた設定だけで決める)。
  */
 export function relayConfig(env: Env): RelayConfig {
-  const trial = usesPublicRelayTrial(env);
-  if (
-    trial &&
-    (!/^[0-9]{13}$/.test(env.PUBLIC_RELAY_TRIAL_UNTIL ?? "") ||
-      Number(env.PUBLIC_RELAY_TRIAL_UNTIL) <= Date.now() ||
-      env.PUBLIC_RELAY_TRIAL_ORIGIN === undefined)
-  )
-    throw new ConfigError("PUBLIC_RELAY_TRIAL_UNTIL");
-  const origin = trial ? env.PUBLIC_RELAY_TRIAL_ORIGIN : env.RELAY_URL;
-  const token = trial ? env.PUBLIC_RELAY_TRIAL_TOKEN : env.RELAY_TOKEN;
-  const endpoint = relayEndpoint(origin);
-  if (token === undefined || !RELAY_TOKEN.test(token))
-    throw new ConfigError(trial ? "PUBLIC_RELAY_TRIAL_TOKEN" : "RELAY_TOKEN");
-  return {
-    endpoint,
-    token,
-    ...(trial ? { expiresAt: Number(env.PUBLIC_RELAY_TRIAL_UNTIL) } : {}),
-  };
-}
-
-function usesPublicRelayTrial(env: Env): boolean {
-  return env.PUBLIC_RELAY_TRIAL_UNTIL !== undefined || env.PUBLIC_RELAY_TRIAL_ORIGIN !== undefined;
+  const endpoint = relayEndpoint(env.RELAY_URL);
+  const token = env.RELAY_TOKEN;
+  if (token === undefined || !RELAY_TOKEN.test(token)) throw new ConfigError("RELAY_TOKEN");
+  return { endpoint, token };
 }
 
 /** 置いていない値。空の文字 (手で空の値を置いたとき) も、置いていないものとして扱う。 */
@@ -120,20 +92,14 @@ export function xRelayTargets(env: Env, allowPairingOnly = false): XRelayTarget[
     relayEndpoint(env.RELAY_URL);
     return [];
   }
-  // 期限付きの公開試験には、試験専用の資格情報だけを使う。
-  if (usesPublicRelayTrial(env) || unset(env.X_RELAY_ROUTES)) {
+  if (unset(env.X_RELAY_ROUTES)) {
     const recipient = XUserID.safeParse(env.X_USER_ID);
     if (!recipient.success) throw new ConfigError("X_USER_ID");
     const types = env.X_NOTIFICATION_TYPES;
     const parsed = NotificationTypes.safeParse(types === "" ? [] : types?.split(","));
-    if (
-      !usesPublicRelayTrial(env) &&
-      types !== undefined &&
-      (!parsed.success || parsed.data.includes("dm"))
-    )
+    if (types !== undefined && (!parsed.success || parsed.data.includes("dm")))
       throw new ConfigError("X_NOTIFICATION_TYPES");
-    const eventTypes =
-      !usesPublicRelayTrial(env) && parsed.success ? parsed.data : defaultNotificationTypes;
+    const eventTypes = parsed.success ? parsed.data : defaultNotificationTypes;
     return [{ recipient: recipient.data, config: relayConfig(env), eventTypes }];
   }
 
@@ -189,7 +155,7 @@ function xRelayRouteEntries(value: string) {
  * `xRelayTargets` は重なった鍵を外して返すので、ペアリングの鍵との重なりはこちらで数える。
  */
 export function manualDmPreviewKeys(env: Env): string[] {
-  if (usesPublicRelayTrial(env) || unset(env.X_RELAY_ROUTES)) return [];
+  if (unset(env.X_RELAY_ROUTES)) return [];
   return xRelayRouteEntries(env.X_RELAY_ROUTES).flatMap(([, targets]) =>
     targets.flatMap(({ dm_preview_key }) => (dm_preview_key === undefined ? [] : [dm_preview_key])),
   );

@@ -1267,7 +1267,7 @@ describe("Xアカウントごとの複数端末配送", () => {
     expect(relay.sent).toHaveLength(1);
   });
 
-  it("曖昧な配送先を拒み、公開試験中は試験専用の送り先だけを使う", async () => {
+  it("曖昧な配送先を拒む", async () => {
     const relay = fakeRelay();
     for (const value of [
       {},
@@ -1278,24 +1278,6 @@ describe("Xアカウントごとの複数端末配送", () => {
       expect((await post(event(), { environment: environment(value), relay })).status).toBe(500);
     }
     expect(relay.queued).toEqual([]);
-    const trial = testEnv({
-      ENABLE_X_ACTIVITY: "true",
-      X_RELAY_ROUTES: JSON.stringify(routes),
-      PUBLIC_RELAY_TRIAL_UNTIL: String(Date.now() + 60_000),
-      PUBLIC_RELAY_TRIAL_ORIGIN: "https://public.example",
-      PUBLIC_RELAY_TRIAL_TOKEN: `tsr_${"Z".repeat(43)}`,
-    });
-    expect(await (await post(event(), { environment: trial, relay })).json()).toEqual({
-      counts: { queued: 1 },
-    });
-    const jobs = relay.queued.map((body) => ({ body, attempts: 1, ack: vi.fn(), retry: vi.fn() }));
-    await handleXQueue(jobs, trial, relay.deps);
-    expect(relay.sent).toHaveLength(1);
-    expect(relay.sent[0]).toMatchObject({
-      url: "https://public.example/v1/notifications",
-      authorization: `Bearer ${trial.PUBLIC_RELAY_TRIAL_TOKEN}`,
-    });
-    expect(relay.sent[0]?.body).not.toHaveProperty("route_id");
   });
 });
 
