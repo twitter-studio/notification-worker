@@ -10,7 +10,7 @@
 
 JSON本文は1KiB以下。PINや復元した秘密鍵は送らない。`request_id` と `app_state` は最初から最後まで同じ値を使う。Workerから受け取ったURLは、元のWorkerと同じHTTPS originで、`/dm-preview` のURLか確認してから開く。
 
-アプリはASWebAuthenticationSessionでURLを開く。Workerが確認ページ・PKCE・ブラウザCookieを検証し、Twitterから戻った認可コードを短期間だけ保管する。戻り先は `tweetbot-worker://dm-preview?state=<app_state>`。失敗時は `error=denied` も付く。戻り先のスキーム・host・state・引数の重複を照合してから `/finish` を呼ぶ。カスタムURLに一時鍵や暗号文は載せない。
+アプリはASWebAuthenticationSessionでURLを開く。Workerが確認ページ・PKCE・ブラウザCookieを検証し、Twitterから戻った認可コードを短期間だけ保管する。戻り先は `tweetbot-worker://dm-preview?state=<app_state>`。失敗時は `error=denied` も付く。確認ページや戻り先で、認証前の入口の上限 (`CONNECT_LIMITER`) に当たったときは `error=rate_limited` を付けて戻す。アプリは要求を取り消し、待つように伝える。どの要求か分からないときは、待つように書いた文のページ (429) を出す (#84)。戻り先のスキーム・host・state・引数の重複を照合してから `/finish` を呼ぶ。カスタムURLに一時鍵や暗号文は載せない。
 
 ## 接続のログインで続けて設定する (2026-11-12)
 

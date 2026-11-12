@@ -386,6 +386,62 @@ describe("DM message preview setup", () => {
     expect(f.calls).toHaveLength(0);
   });
 
+  test("sends the app back with rate_limited when a browser page hits the limit, without a blank page", async () => {
+    const f = await fixture();
+    const started = await f.api("start");
+    const { url } = z.object({ url: z.string() }).parse(await started.json());
+    const env = f.env as Env & { CONNECT_LIMITER: unknown };
+    const limit = () => {
+      env.CONNECT_LIMITER = { limit: async () => ({ success: false }) };
+    };
+    const allow = () => {
+      env.CONNECT_LIMITER = { limit: async () => ({ success: true }) };
+    };
+    // 確かめのページ: どのログインか分かるので、アプリへ戻す。
+    limit();
+    const page = await handle(new Request(url), f.env, f.deps);
+    expect(page.status).toBe(302);
+    expect(page.headers.get("Location")).toBe(
+      `tweetbot-worker://dm-preview?state=${f.body.app_state}&error=rate_limited`,
+    );
+    // どのログインか分からなければ、待つように書いた文のページを出す。
+    const unknown = await handle(
+      new Request(`${base}/dm-preview?state=dmp_${"U".repeat(43)}`, {
+        headers: { "Accept-Language": "ja" },
+      }),
+      f.env,
+      f.deps,
+    );
+    expect(unknown.status).toBe(429);
+    expect(await unknown.text()).toContain("1分ほど待ってから");
+    // アプリからの API は、今までどおり 429。
+    expect((await f.api("finish", { ...f.body, key: btoa("k".repeat(32)) })).status).toBe(429);
+    allow();
+    expect(f.calls).toHaveLength(0);
+  });
+
+  test("sends the app back with rate_limited when the callback hits the limit, without exchanging the code", async () => {
+    const f = await fixture();
+    const { callback, state } = await f.authorize();
+    (f.env as Env & { CONNECT_LIMITER: unknown }).CONNECT_LIMITER = {
+      limit: async () => ({ success: false }),
+    };
+    const back = await callback();
+    expect(back.status).toBe(302);
+    expect(back.headers.get("Location")).toBe(
+      `tweetbot-worker://dm-preview?state=${f.body.app_state}&error=rate_limited`,
+    );
+    // ほかのブラウザから開いた戻り先は、アプリへ戻さない。
+    const stranger = await handle(
+      new Request(`${base}/oauth/callback?state=${state}&code=test-code`),
+      f.env,
+      f.deps,
+    );
+    expect(stranger.status).toBe(429);
+    expect(await stranger.text()).toContain("Wait a minute");
+    expect(f.calls).toHaveLength(0);
+  });
+
   test("requires the route owner and rejects forged consent without calling Twitter", async () => {
     const f = await fixture();
     expect((await f.api("start", f.body, `tpm_${"X".repeat(43)}`)).status).toBe(404);

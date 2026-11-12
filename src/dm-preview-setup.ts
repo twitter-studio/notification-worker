@@ -73,14 +73,28 @@ export async function handleDMPreview(
   const config = await connectConfig(env, store);
   if (!store || !config) return reply(404);
   const url = new URL(request.url);
-  if (
-    !(
-      await config.limiter.limit({
-        key: `dm-preview:${sourceKey(request.headers.get("CF-Connecting-IP") ?? "unknown")}`,
-      })
-    ).success
-  )
-    return reply(429);
+  const limited = !(
+    await config.limiter.limit({
+      key: `dm-preview:${sourceKey(request.headers.get("CF-Connecting-IP") ?? "unknown")}`,
+    })
+  ).success;
+  // アプリからの API は 429 を返す (アプリが待つように伝える)。ブラウザのページは、本文のない 429 を返すと空のページになり、
+  // 閉じた利用者には「キャンセルした」と出る。どのログインか分かればアプリへ戻し、分からなければ文のページを出す (#84)。
+  if (limited && url.pathname.startsWith("/v1/pairing/dm-preview/")) return reply(429);
+  const tooMany = () => {
+    const ja = /^ja\b/i.test(request.headers.get("Accept-Language") ?? "");
+    return new Response(
+      ja
+        ? "続けて試したため、受け付けませんでした。1分ほど待ってから、Tweetbotでもう一度お試しください。"
+        : "Too many attempts. Wait a minute, then try again from Tweetbot.",
+      { status: 429, headers: { ...headers, "Content-Type": "text/plain; charset=utf-8" } },
+    );
+  };
+  const toAppLimited = (appState: string, cookies: string[] = []) =>
+    redirect(
+      `${callback}?${new URLSearchParams({ state: appState, error: "rate_limited" })}`,
+      cookies,
+    );
   if (url.pathname.startsWith("/v1/pairing/dm-preview/")) {
     if (
       !["start", "finish", "cancel"].some(
@@ -251,9 +265,13 @@ export async function handleDMPreview(
   if (url.pathname === "/oauth/callback") {
     if (request.method !== "GET") return reply(405);
     const session = await store.readDMPreview(url.searchParams.get("state") ?? "");
-    if (session?.kind !== "authorizing") return reply(400);
+    if (session?.kind !== "authorizing") return limited ? tooMany() : reply(400);
     const browser = cookieValue(request, browserCookie);
-    if (!browser || (await hex(browser)) !== session.browserHash) return reply(400);
+    if (!browser || (await hex(browser)) !== session.browserHash)
+      return limited ? tooMany() : reply(400);
+    // 認可コードは使い切りで、すぐに切れる。後で同じ戻り先を開き直せないので、アプリへ戻して初めからやり直してもらう
+    // (接続の流れと同じ)。要求はアプリが取り消す。
+    if (limited) return toAppLimited(session.appState, [cookie(browserCookie, "", 0)]);
     const code = url.searchParams.get("code");
     const error = url.searchParams.has("error") || !code || code.length > 512;
     if (error)
@@ -272,7 +290,9 @@ export async function handleDMPreview(
   if (url.pathname !== "/dm-preview" || !["GET", "POST"].includes(request.method))
     return reply(404);
   const session = await store.readDMPreview(url.searchParams.get("state") ?? "");
-  if (session?.kind !== "prepared" || !config.allowed.has(session.recipient)) return reply(410);
+  if (session?.kind !== "prepared" || !config.allowed.has(session.recipient))
+    return limited ? tooMany() : reply(410);
+  if (limited) return toAppLimited(session.appState);
   if (request.method === "GET") {
     const nonce = random();
     const ja = /^ja\b/i.test(request.headers.get("Accept-Language") ?? "");
