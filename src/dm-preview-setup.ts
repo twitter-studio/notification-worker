@@ -90,6 +90,9 @@ export async function handleDMPreview(
       { status: 429, headers: { ...headers, "Content-Type": "text/plain; charset=utf-8" } },
     );
   };
+  // state の形が合わなければ、Durable Object を読まない (上限の中で流し続けられても、呼び出しを増やさない)。
+  const state = url.searchParams.get("state") ?? "";
+  const knownState = /^dmp_[A-Za-z0-9_-]{43}$/.test(state);
   const toAppLimited = (appState: string, cookies: string[] = []) =>
     redirect(
       `${callback}?${new URLSearchParams({ state: appState, error: "rate_limited" })}`,
@@ -264,16 +267,23 @@ export async function handleDMPreview(
   }
   if (url.pathname === "/oauth/callback") {
     if (request.method !== "GET") return reply(405);
-    const session = await store.readDMPreview(url.searchParams.get("state") ?? "");
+    const session = knownState ? await store.readDMPreview(state) : undefined;
     if (session?.kind !== "authorizing") return limited ? tooMany() : reply(400);
     const browser = cookieValue(request, browserCookie);
     if (!browser || (await hex(browser)) !== session.browserHash)
       return limited ? tooMany() : reply(400);
-    // 認可コードは使い切りで、すぐに切れる。後で同じ戻り先を開き直せないので、アプリへ戻して初めからやり直してもらう
-    // (接続の流れと同じ)。要求はアプリが取り消す。
-    if (limited) return toAppLimited(session.appState, [cookie(browserCookie, "", 0)]);
     const code = url.searchParams.get("code");
     const error = url.searchParams.has("error") || !code || code.length > 512;
+    // 上限の中でも、本人が断ったことは先に伝える (接続の流れと同じ)。上限の中では書き込まない。
+    // 要求は 10 分で切れるか、同じルートの次の開始で置き換わる。
+    if (limited)
+      return error
+        ? redirect(
+            `${callback}?${new URLSearchParams({ state: session.appState, error: "denied" })}`,
+            [cookie(browserCookie, "", 0)],
+          )
+        : // 認可コードは使い切りで、すぐに切れる。後で同じ戻り先を開き直せないので、アプリへ戻して初めからやり直してもらう。
+          toAppLimited(session.appState, [cookie(browserCookie, "", 0)]);
     if (error)
       await store.takeDMPreview(
         session.routeID,
@@ -289,11 +299,11 @@ export async function handleDMPreview(
   }
   if (url.pathname !== "/dm-preview" || !["GET", "POST"].includes(request.method))
     return reply(404);
-  const session = await store.readDMPreview(url.searchParams.get("state") ?? "");
+  const session = knownState ? await store.readDMPreview(state) : undefined;
   if (session?.kind !== "prepared" || !config.allowed.has(session.recipient))
     return limited ? tooMany() : reply(410);
-  if (limited) return toAppLimited(session.appState);
   if (request.method === "GET") {
+    if (limited) return toAppLimited(session.appState);
     const nonce = random();
     const ja = /^ja\b/i.test(request.headers.get("Accept-Language") ?? "");
     const title = ja ? "DM通知で本文を表示" : "Show Message Text in DM Notifications";
@@ -315,18 +325,20 @@ export async function handleDMPreview(
     response.headers.append("Set-Cookie", cookie(confirmCookie, nonce));
     return response;
   }
+  // 確かめのページを開いたブラウザからの POST だと分かるまでは、アプリへ戻さない (接続の流れと同じ)。
   const origin = request.headers.get("Origin");
   if (
     (origin !== null && origin !== "null" && origin !== url.origin) ||
     !/^application\/x-www-form-urlencoded\b/i.test(request.headers.get("Content-Type") ?? "")
   )
-    return reply(403);
+    return limited ? tooMany() : reply(403);
   const body = await readBody(request, 256);
-  if (!body) return reply(413);
+  if (!body) return limited ? tooMany() : reply(413);
   const form = new URLSearchParams(new TextDecoder().decode(body));
   const nonce = cookieValue(request, confirmCookie);
   if (!nonce || form.getAll("confirm").length !== 1 || form.get("confirm") !== nonce)
-    return reply(403);
+    return limited ? tooMany() : reply(403);
+  if (limited) return toAppLimited(session.appState, [cookie(confirmCookie, "", 0)]);
   const browser = random();
   const verifier = random();
   const redirectURI = `${url.origin}/oauth/callback`;

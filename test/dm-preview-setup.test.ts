@@ -416,6 +416,34 @@ describe("DM message preview setup", () => {
     expect(await unknown.text()).toContain("1分ほど待ってから");
     // アプリからの API は、今までどおり 429。
     expect((await f.api("finish", { ...f.body, key: btoa("k".repeat(32)) })).status).toBe(429);
+    // 上限の中では書き込まないので、上限が明ければ同じページを開ける。
+    allow();
+    const reopened = await handle(new Request(url), f.env, f.deps);
+    expect(reopened.status).toBe(200);
+    const nonce = /name="confirm" value="([A-Za-z0-9_-]+)"/.exec(await reopened.text())?.[1] ?? "";
+    // 「続ける」の POST: 確かめの値が合わなければ、アプリへ戻さず文のページを出す。合えばアプリへ戻す。
+    limit();
+    const post = (confirm: string) =>
+      handle(
+        new Request(url, {
+          method: "POST",
+          headers: {
+            Origin: base,
+            "Content-Type": "application/x-www-form-urlencoded",
+            Cookie: reopened.headers.get("Set-Cookie") ?? "",
+          },
+          body: new URLSearchParams({ confirm }),
+        }),
+        f.env,
+        f.deps,
+      );
+    const forged = await post("forged");
+    expect(forged.status).toBe(429);
+    expect(await forged.text()).toContain("Wait a minute");
+    const confirmed = await post(nonce);
+    expect(confirmed.headers.get("Location")).toBe(
+      `tweetbot-worker://dm-preview?state=${f.body.app_state}&error=rate_limited`,
+    );
     allow();
     expect(f.calls).toHaveLength(0);
   });
@@ -431,6 +459,11 @@ describe("DM message preview setup", () => {
     expect(back.headers.get("Location")).toBe(
       `tweetbot-worker://dm-preview?state=${f.body.app_state}&error=rate_limited`,
     );
+    expect(back.headers.getSetCookie()).toContain(
+      "__Host-tweetbot-dm-preview=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
+    );
+    // 上限の中では書き込まないので、要求はブラウザでの同意を待つ状態のまま。
+    expect((await f.store.readDMPreview(state))?.kind).toBe("authorizing");
     // ほかのブラウザから開いた戻り先は、アプリへ戻さない。
     const stranger = await handle(
       new Request(`${base}/oauth/callback?state=${state}&code=test-code`),
@@ -439,6 +472,25 @@ describe("DM message preview setup", () => {
     );
     expect(stranger.status).toBe(429);
     expect(await stranger.text()).toContain("Wait a minute");
+    expect(f.calls).toHaveLength(0);
+  });
+
+  test("tells the app the owner declined even when the callback hits the limit", async () => {
+    const f = await fixture();
+    const { state, cookies } = await f.authorize();
+    (f.env as Env & { CONNECT_LIMITER: unknown }).CONNECT_LIMITER = {
+      limit: async () => ({ success: false }),
+    };
+    const back = await handle(
+      new Request(`${base}/oauth/callback?state=${state}&error=access_denied`, {
+        headers: { Cookie: cookies },
+      }),
+      f.env,
+      f.deps,
+    );
+    expect(back.headers.get("Location")).toBe(
+      `tweetbot-worker://dm-preview?state=${f.body.app_state}&error=denied`,
+    );
     expect(f.calls).toHaveLength(0);
   });
 
