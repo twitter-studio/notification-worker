@@ -122,24 +122,9 @@ async function fixture() {
     const started = await api("start");
     expect(started.status).toBe(201);
     const { url } = z.object({ url: z.string() }).parse(await started.json());
-    const page = await handle(new Request(url), env, deps);
-    const html = await page.text();
-    const nonce = /name="confirm" value="([A-Za-z0-9_-]+)"/.exec(html)?.[1];
-    expect(nonce).toBeDefined();
-    const consent = await handle(
-      new Request(url, {
-        method: "POST",
-        headers: {
-          Origin: base,
-          "Content-Type": "application/x-www-form-urlencoded",
-          Cookie: page.headers.get("Set-Cookie") ?? "",
-        },
-        body: new URLSearchParams({ confirm: nonce ?? "" }),
-      }),
-      env,
-      deps,
-    );
-    expect(consent.status).toBe(303);
+    // 確かめのページはない (2026-11-12 に外した)。開くとすぐ X へ送る。
+    const consent = await handle(new Request(url), env, deps);
+    expect(consent.status).toBe(302);
     const oauth = new URL(consent.headers.get("Location") ?? "");
     expect(oauth.searchParams.get("scope")).toBe("tweet.read users.read dm.read");
     expect(oauth.searchParams.get("code_challenge_method")).toBe("S256");
@@ -397,7 +382,7 @@ describe("DM message preview setup", () => {
     const allow = () => {
       env.CONNECT_LIMITER = { limit: async () => ({ success: true }) };
     };
-    // 確かめのページ: どのログインか分かるので、アプリへ戻す。
+    // どのログインか分かるので、アプリへ戻す。
     limit();
     const page = await handle(new Request(url), f.env, f.deps);
     expect(page.status).toBe(302);
@@ -416,35 +401,11 @@ describe("DM message preview setup", () => {
     expect(await unknown.text()).toContain("1分ほど待ってから");
     // アプリからの API は、今までどおり 429。
     expect((await f.api("finish", { ...f.body, key: btoa("k".repeat(32)) })).status).toBe(429);
-    // 上限の中では書き込まないので、上限が明ければ同じページを開ける。
+    // 上限の中では書き込まないので、上限が明ければ同じ URL で X へ進める。
     allow();
     const reopened = await handle(new Request(url), f.env, f.deps);
-    expect(reopened.status).toBe(200);
-    const nonce = /name="confirm" value="([A-Za-z0-9_-]+)"/.exec(await reopened.text())?.[1] ?? "";
-    // 「続ける」の POST: 確かめの値が合わなければ、アプリへ戻さず文のページを出す。合えばアプリへ戻す。
-    limit();
-    const post = (confirm: string) =>
-      handle(
-        new Request(url, {
-          method: "POST",
-          headers: {
-            Origin: base,
-            "Content-Type": "application/x-www-form-urlencoded",
-            Cookie: reopened.headers.get("Set-Cookie") ?? "",
-          },
-          body: new URLSearchParams({ confirm }),
-        }),
-        f.env,
-        f.deps,
-      );
-    const forged = await post("forged");
-    expect(forged.status).toBe(429);
-    expect(await forged.text()).toContain("Wait a minute");
-    const confirmed = await post(nonce);
-    expect(confirmed.headers.get("Location")).toBe(
-      `tweetbot-worker://dm-preview?state=${f.body.app_state}&error=rate_limited`,
-    );
-    allow();
+    expect(reopened.status).toBe(302);
+    expect(new URL(reopened.headers.get("Location") ?? "").host).toBe("x.com");
     expect(f.calls).toHaveLength(0);
   });
 
@@ -494,7 +455,7 @@ describe("DM message preview setup", () => {
     expect(f.calls).toHaveLength(0);
   });
 
-  test("requires the route owner and rejects forged consent without calling Twitter", async () => {
+  test("requires the route owner, and the browser page only takes GET, without calling Twitter", async () => {
     const f = await fixture();
     expect((await f.api("start", f.body, `tpm_${"X".repeat(43)}`)).status).toBe(404);
     expect((await f.api("start", f.body, "wrong")).status).toBe(401);
@@ -503,7 +464,10 @@ describe("DM message preview setup", () => {
     expect(
       (await handle(new Request(url, { method: "POST", body: "confirm=fake" }), f.env, f.deps))
         .status,
-    ).toBe(403);
+    ).toBe(404);
+    // 開けるのは 1 回だけ。2 回目は、もう X の同意を待っているので 410。
+    expect((await handle(new Request(url), f.env, f.deps)).status).toBe(302);
+    expect((await handle(new Request(url), f.env, f.deps)).status).toBe(410);
     expect(f.calls).toHaveLength(0);
   });
 

@@ -1,4 +1,12 @@
-import { html } from "./connect-page";
+/** HTML に埋める値をエスケープする。 */
+export function html(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 export type SetupMessage =
   | "start"

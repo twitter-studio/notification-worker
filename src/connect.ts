@@ -1,8 +1,7 @@
 import { z } from "zod";
-import { discardBody, readBody } from "./body";
+import { discardBody } from "./body";
 import { NotificationTypes } from "./config";
 import { type ConnectConfig, connectConfig, setupConfig } from "./connect-config";
-import { confirmationPage } from "./connect-page";
 import type { X_NOTIFICATION_TYPES } from "./normalize";
 import { issuePairingCode } from "./pairing";
 import { dmPreviewGrantLifetime, pairingStore } from "./pairing-store";
@@ -29,8 +28,6 @@ const loginLifetime = 10 * 60_000;
 const processingLease = 5 * 60_000;
 /** ログインを始めたブラウザに置く Cookie。`__Host-` で、この Worker のホストのパス全体だけに付く。 */
 const browserCookie = "__Host-tweetbot-connect";
-/** 確かめのページを開いたブラウザに置く Cookie。「続ける」のフォームの値と照らし合わせる。 */
-const confirmCookie = "__Host-tweetbot-confirm";
 export const Random = /^[A-Za-z0-9_-]{22,128}$/;
 const TokenReply = z.object({
   access_token: z.string().min(1).max(4096),
@@ -139,8 +136,7 @@ export async function handleConnect(
   const setup = setupConfig(env);
   if (!setup || !store) return text(404, "Not Found");
   const url = new URL(request.url);
-  const method = url.pathname === "/connect" ? ["GET", "POST"] : ["GET"];
-  if (!method.includes(request.method)) return text(405, "Method Not Allowed");
+  if (request.method !== "GET") return text(405, "Method Not Allowed");
   // 認証のない入口なので、接続元ごとに回数を絞る。絞らないと、持ち主の X アプリへのトークンの要求を外から繰り返させられる。
   // 上限を超えたら、X へは何も求めず、ログインも始めない (書き込まない)。始めたアプリが分かれば、そのアプリへ戻す。
   // X から戻ったときは、始めたアプリを知るために、上限を超えていてもログインを読む (読み出しは絞らない)。
@@ -149,10 +145,7 @@ export async function handleConnect(
   // `/setup` で用意した Webhook の ID は Durable Object から読むので、回数を数えた後に読む。
   const config = await connectConfig(env, store);
   if (!config) return text(404, "Not Found");
-  if (url.pathname === "/connect")
-    return request.method === "GET"
-      ? confirmStart(request, url, config, limited)
-      : start(request, url, config, store, limited);
+  if (url.pathname === "/connect") return start(url, config, store, limited);
   return finish(request, url, config, store, deps, limited);
 }
 
@@ -210,79 +203,20 @@ function readStart(
 }
 
 /**
- * `GET /connect`。X へ送る前に、確かめのページを出す。
- * `/connect` の URL は誰でも作れるので、他人の管理キーのハッシュを入れた URL を開かされても、本人が気づいて止められるようにする
- * (#51)。ログインはまだ始めない (書き込まない)。
+ * `GET /connect`。ログインを始めて、すぐ X へ送る。
+ *
+ * 前は、X へ送る前に確かめのページを出していた (#51)。`/connect` の URL は誰でも作れるので、他人の管理キーのハッシュを入れた URL を
+ * 開かされても、本人が気づいて止められるようにするため。2026-11-12 に、オーナーの判断でページを外した (使いにくさの方を重く見た)。
+ * 残る危険 (端末に `tweetbot-worker` の戻り先を奪うアプリがあり、本人が X の許可の画面で許可したとき、他人の管理キーにコードが
+ * 結び付く) は、ADR-0008 に書いた。X の許可の画面は、毎回アプリの名前と権限を出す。
  */
-function confirmStart(
-  request: Request,
-  url: URL,
-  config: ConnectConfig,
-  limited: boolean,
-): Response {
-  const read = readStart(url.searchParams, config, limited);
-  if (!read.ok) return read.response;
-  const nonce = random();
-  const page = confirmationPage(
-    url.host,
-    read.value.eventTypes,
-    {
-      x_user_id: read.value.recipient,
-      types: read.value.eventTypes.join(","),
-      app_state: read.value.appState,
-      management_hash: read.value.managementHash,
-      ...(read.value.dmPreview ? { dm_preview: "1" } : {}),
-      confirm: nonce,
-    },
-    /^ja\b/i.test(request.headers.get("Accept-Language") ?? ""),
-    read.value.dmPreview,
-  );
-  const response = new Response(page, {
-    status: 200,
-    headers: {
-      ...headers,
-      // no-referrer にすると、フォームの POST の Origin が "null" になり、同じオリジンから送ったと分からない (Fetch の決まり)。
-      // same-origin なら、X へ移るときには Referer を送らない (ページの URL の引数を X に渡さない)。
-      "Referrer-Policy": "same-origin",
-      "Content-Type": "text/html; charset=utf-8",
-      // 外のページの枠の中に出して、押させない。form-action は付けない: 送った後の 303 (x.com へ移る) まで止めるブラウザがある。
-      "Content-Security-Policy":
-        "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
-      "X-Frame-Options": "DENY",
-    },
-  });
-  // 続けるときのフォームの値と照らし合わせる。Strict なので、外のサイトから送らせたフォームには付かない。
-  response.headers.append(
-    "Set-Cookie",
-    `${confirmCookie}=${nonce}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${loginLifetime / 1000}`,
-  );
-  return response;
-}
-
-/** `POST /connect`。確かめのページで「続ける」を押したら、ログインを始めて X へ送る。 */
 async function start(
-  request: Request,
   url: URL,
   config: ConnectConfig,
   store: Store,
   limited: boolean,
 ): Promise<Response> {
-  const forbidden = () => text(403, "Start again from Tweetbot.");
-  if (!/^application\/x-www-form-urlencoded\b/i.test(request.headers.get("Content-Type") ?? ""))
-    return forbidden();
-  // ほかのオリジンから送らせたと分かるものは、ここで断る。Origin がない、または "null" (referrer policy で隠された) ときは、
-  // 下の確かめの値と Strict の Cookie に任せる (どちらも外のサイトからは用意できない)。
-  const origin = request.headers.get("Origin");
-  if (origin !== null && origin !== "null" && origin !== url.origin) return forbidden();
-  const body = await readBody(request, 2048);
-  if (body === undefined) return text(413, "Payload Too Large");
-  const form = new URLSearchParams(new TextDecoder().decode(body));
-  const confirm = form.getAll("confirm");
-  form.delete("confirm");
-  // 確かめのページを開いたブラウザでなければ断る。始めたアプリへも戻さない (外から送らせたものかもしれない)。
-  const nonce = cookieValue(request, confirmCookie);
-  if (nonce === undefined || confirm.length !== 1 || confirm[0] !== nonce) return forbidden();
-  const read = readStart(form, config, limited);
+  const read = readStart(url.searchParams, config, limited);
   if (!read.ok) return read.response;
   const { recipient, appState, managementHash, eventTypes, dmPreview } = read.value;
   const state = random();
@@ -311,20 +245,10 @@ async function start(
     code_challenge: base64URL(await sha256(verifier)),
     code_challenge_method: "S256",
   }).toString();
-  // フォームの POST の後なので、303 で GET に変えて X へ送る。確かめの Cookie は使い切り。
-  const response = new Response(null, {
-    status: 303,
-    headers: { ...headers, Location: authorize.href },
-  });
-  response.headers.append(
-    "Set-Cookie",
+  return redirect(
+    authorize.href,
     `${browserCookie}=${browser}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${loginLifetime / 1000}`,
   );
-  response.headers.append(
-    "Set-Cookie",
-    `${confirmCookie}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0`,
-  );
-  return response;
 }
 
 async function finish(

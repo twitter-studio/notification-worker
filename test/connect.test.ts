@@ -220,40 +220,9 @@ function setCookie(response: Response, name: string): string {
   );
 }
 
-/** 確かめのページのフォームが送る値。ブラウザと同じく、ページの hidden の値をそのまま送る。 */
-function formOf(page: string): URLSearchParams {
-  return new URLSearchParams(
-    [...page.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(
-      ([, name, value]) => [name ?? "", value ?? ""],
-    ),
-  );
-}
-
-/** 確かめのページで「続ける」を押す。 */
-function confirmLogin(
-  env: Env,
-  x: ReturnType<typeof fakeX>,
-  form: URLSearchParams,
-  cookie: string,
-) {
-  return handle(
-    new Request("https://worker.test/connect", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Origin: "https://worker.test",
-        ...(cookie ? { Cookie: cookie } : {}),
-      },
-      body: form,
-    }),
-    env,
-    x.deps,
-  );
-}
-
 /**
- * `/connect` を開いて確かめのページで続け、X の認可の URL と、ブラウザの Cookie を受け取る。
- * ページが出なければ (断られたら)、その応答を `started` に入れて返す。
+ * `/connect` を開き、X の認可の URL と、ブラウザの Cookie を受け取る。確かめのページはない (2026-11-12 に外した)。
+ * 断られたら、その応答が `started` (と、前の名前の `page`) に入る。
  */
 async function startLogin(
   env: Env,
@@ -270,16 +239,8 @@ async function startLogin(
     management_hash: await toHex(manager),
     ...extra,
   });
-  const page = await handle(new Request(`https://worker.test/connect?${query}`), env, x.deps);
-  const started =
-    page.status === 200
-      ? await confirmLogin(
-          env,
-          x,
-          formOf(await page.text()),
-          setCookie(page, "__Host-tweetbot-confirm"),
-        )
-      : page;
+  const started = await handle(new Request(`https://worker.test/connect?${query}`), env, x.deps);
+  const page = started;
   const cookie = setCookie(started, "__Host-tweetbot-connect");
   const authorize = new URL(started.headers.get("Location") ?? "https://invalid.test");
   x.setChallenge(authorize.searchParams.get("code_challenge") ?? "");
@@ -352,13 +313,12 @@ describe("connecting with an X login", () => {
     });
 
     const login = await startLogin(env, x, user, "mention,reply,like", manager);
-    expect(login.started.status).toBe(303);
+    expect(login.started.status).toBe(302);
     expect(login.started.headers.get("Cache-Control")).toBe("no-store");
     expect(login.started.headers.getSetCookie()).toEqual([
       expect.stringMatching(
         /^__Host-tweetbot-connect=[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=600$/,
       ),
-      "__Host-tweetbot-confirm=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0",
     ]);
     expect(login.authorize.origin + login.authorize.pathname).toBe(
       "https://x.com/i/oauth2/authorize",
@@ -674,67 +634,7 @@ describe("connecting with an X login", () => {
     expect(x.calls).toHaveLength(0);
   });
 
-  test("shows what will be connected before sending anyone to X, and begins nothing until it is confirmed", async () => {
-    const user = "2121212121212121212";
-    const env = connectEnv(user);
-    const x = fakeX({ me: user });
-    const query = new URLSearchParams({
-      x_user_id: user,
-      types: "mention,dm",
-      app_state: appState,
-      management_hash: await toHex(`tpm_${"P".repeat(43)}`),
-    });
-    const page = await handle(
-      new Request(`https://worker.test/connect?${query}`, {
-        headers: { "Accept-Language": "ja-JP,ja;q=0.9" },
-      }),
-      env,
-      x.deps,
-    );
-    expect(page.status).toBe(200);
-    expect(page.headers.get("Location")).toBeNull();
-    expect(page.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
-    expect(page.headers.get("Cache-Control")).toBe("no-store");
-    // no-referrer だと、ブラウザはフォームの POST の Origin を "null" にする。X へは Referer を送らない。
-    expect(page.headers.get("Referrer-Policy")).toBe("same-origin");
-    // 外のページの枠の中に出させない。スクリプトも動かさない。
-    expect(page.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
-    expect(page.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
-    expect(page.headers.get("X-Frame-Options")).toBe("DENY");
-    expect(page.headers.getSetCookie()).toEqual([
-      expect.stringMatching(
-        /^__Host-tweetbot-confirm=[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Strict; Max-Age=600$/,
-      ),
-    ]);
-    const html = await page.text();
-    // Tweetbot から始めたときだけ続けるよう求め、つなぐ Worker と種類を見せる。DM は目立たせる。
-    expect(html).toContain(
-      "Tweetbotで「Workerに接続」を押して、ここに来たときだけ続けてください。",
-    );
-    expect(html).toContain("worker.test");
-    expect(html).toContain("<li>メンション</li><li>DM</li>");
-    expect(html).toContain('<button type="submit">続行</button>');
-    expect(html).toContain("DMの通知も、このWorkerを通して届きます。");
-    expect(html).toContain('<form method="post" action="/connect">');
-    expect(Object.fromEntries(formOf(html))).toEqual({
-      ...Object.fromEntries(query),
-      confirm: setCookie(page, "__Host-tweetbot-confirm").split("=")[1],
-    });
-    // ページを出しただけでは、ログインを始めず、X にも何も求めない。
-    expect(await stored(env, "logins")).toBeUndefined();
-    expect(x.calls).toHaveLength(0);
-
-    // 言語が日本語でなければ英語で出す。DM を選んでいなければ、DM のことは出さない。
-    query.set("types", "reply");
-    const english = await (
-      await handle(new Request(`https://worker.test/connect?${query}`), env, x.deps)
-    ).text();
-    expect(english).toContain("Continue only if you tapped Connect Worker in Tweetbot");
-    expect(english).toContain("<li>Replies</li>");
-    expect(english).not.toContain("DM notifications");
-  });
-
-  test("begins a login only from the confirmation page that this browser opened", async () => {
+  test("starts the login right away on GET /connect, without a confirmation page", async () => {
     const user = "2222222222222222221";
     const env = connectEnv(user);
     const x = fakeX({ me: user });
@@ -744,79 +644,19 @@ describe("connecting with an X login", () => {
       app_state: appState,
       management_hash: await toHex(`tpm_${"Q".repeat(43)}`),
     });
-    const open = () => handle(new Request(`https://worker.test/connect?${query}`), env, x.deps);
-    const page = await open();
-    const form = formOf(await page.text());
-    const cookie = setCookie(page, "__Host-tweetbot-confirm");
-    const other = setCookie(await open(), "__Host-tweetbot-confirm");
-    const post = (body: BodyInit, headers: Record<string, string>) =>
-      handle(
-        new Request("https://worker.test/connect", { method: "POST", headers, body }),
-        env,
-        x.deps,
-      );
-    const formHeaders = {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Origin: "https://worker.test",
-    };
-    const without = (name: string) => {
-      const copy = new URLSearchParams(form);
-      copy.delete(name);
-      return copy;
-    };
-    const doubled = new URLSearchParams(form);
-    doubled.append("confirm", form.get("confirm") ?? "");
-
-    // 外のサイトから送らせたフォーム (Cookie が付かない、ほかのページの Cookie、違う Origin) や、形の違う送り方は断る。
-    for (const [body, headers] of [
-      [form, formHeaders],
-      [form, { ...formHeaders, Cookie: other }],
-      [form, { ...formHeaders, Origin: "https://attacker.test", Cookie: cookie }],
-      [without("confirm"), { ...formHeaders, Cookie: cookie }],
-      [doubled, { ...formHeaders, Cookie: cookie }],
-      [form.toString(), { ...formHeaders, "Content-Type": "text/plain", Cookie: cookie }],
-    ] as const) {
-      const response = await post(body, headers);
-      expect(response.status).toBe(403);
-      expect(response.headers.get("Location")).toBeNull();
-    }
-    expect((await post("a".repeat(4096), { ...formHeaders, Cookie: cookie })).status).toBe(413);
-    expect(await stored(env, "logins")).toBeUndefined();
-    expect(x.calls).toHaveLength(0);
-
-    // 回数の上限を超えていたら、始めたアプリへ戻し、ログインは始めない。
-    const limited = connectEnv(user, {
-      CONNECT_LIMITER: { limit: async () => ({ success: false }) },
-    });
-    expect(appRedirect(await confirmLogin(limited, x, form, cookie))).toEqual({
-      state: appState,
-      error: "rate_limited",
-    });
-    expect(await stored(env, "logins")).toBeUndefined();
-
-    const started = await confirmLogin(env, x, form, cookie);
-    expect(started.status).toBe(303);
+    const started = await handle(new Request(`https://worker.test/connect?${query}`), env, x.deps);
+    expect(started.status).toBe(302);
     expect(new URL(started.headers.get("Location") ?? "").host).toBe("x.com");
-    // referrer policy で Origin を隠したブラウザ ("null") や、Origin を付けないブラウザでも、確かめの値と Cookie が合えば続けられる。
-    for (const origin of ["null", undefined]) {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Cookie: cookie,
-        ...(origin === undefined ? {} : { Origin: origin }),
-      };
-      expect((await post(form, headers)).status).toBe(303);
+    expect(await started.text()).toBe("");
+    expect(await stored(env, "logins")).toHaveLength(1);
+    // フォームの送信は、もう受けない。戻り先も GET だけ。
+    for (const path of ["/connect", "/oauth/callback"]) {
+      expect(
+        (await handle(new Request(`https://worker.test${path}`, { method: "POST" }), env, x.deps))
+          .status,
+      ).toBe(405);
     }
-    expect(await stored(env, "logins")).toHaveLength(3);
-    // 戻り先は GET だけ。
-    expect(
-      (
-        await handle(
-          new Request("https://worker.test/oauth/callback", { method: "POST" }),
-          env,
-          x.deps,
-        )
-      ).status,
-    ).toBe(405);
+    expect(x.calls).toHaveLength(0);
   });
 
   test("lists how and when each route was last connected, also after connecting it again", async () => {
@@ -1413,31 +1253,6 @@ describe("connecting with DM message previews in one login", () => {
     );
   }
 
-  test("tells the owner on the confirmation page that the login also reads DM key information", async () => {
-    const user = "6161616161616161616";
-    const manager = `tpm_${"P".repeat(43)}`;
-    const env = connectEnv(user);
-    const x = fakeX({ me: user });
-    const query = new URLSearchParams({
-      x_user_id: user,
-      types: "dm",
-      app_state: appState,
-      management_hash: await toHex(manager),
-      dm_preview: "1",
-    });
-    const page = await (
-      await handle(
-        new Request(`https://worker.test/connect?${query}`, {
-          headers: { "Accept-Language": "ja" },
-        }),
-        env,
-        x.deps,
-      )
-    ).text();
-    expect(page).toContain("DMの暗号の鍵の情報も一度だけ読み取ります");
-    expect(formOf(page).get("dm_preview")).toBe("1");
-  });
-
   test("keeps the login's read token in memory only, for the DM preview setup started right after", async () => {
     const user = "6262626262626262626";
     const manager = `tpm_${"D".repeat(43)}`;
@@ -1495,19 +1310,6 @@ describe("connecting with DM message previews in one login", () => {
 
     const refused = await startLogin(env, x, user, "mention", manager, { dm_preview: "1" });
     expect(appRedirect(refused.page)).toEqual({ state: appState, error: "invalid_request" });
-
-    // 確かめのページのフォームに、DM を選ばずに付け足しても断る。
-    const query = new URLSearchParams({
-      x_user_id: user,
-      types: "mention",
-      app_state: appState,
-      management_hash: await toHex(manager),
-    });
-    const page = await handle(new Request(`https://worker.test/connect?${query}`), env, x.deps);
-    const form = formOf(await page.text());
-    form.set("dm_preview", "1");
-    const posted = await confirmLogin(env, x, form, setCookie(page, "__Host-tweetbot-confirm"));
-    expect(appRedirect(posted)).toEqual({ state: appState, error: "invalid_request" });
   });
 
   test("holds no token when the connection fails after the login", async () => {
