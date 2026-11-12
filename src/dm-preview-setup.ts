@@ -22,12 +22,17 @@ const browserCookie = "__Host-tweetbot-dm-preview";
 const confirmCookie = "__Host-tweetbot-dm-confirm";
 const headers = { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" };
 const encoder = new TextEncoder();
-const Start = z.strictObject({
+const RequestBody = z.strictObject({
   route_id: RelayRouteID,
   request_id: z.uuid(),
   app_state: z.string().regex(Random),
 });
-const Finish = Start.extend({ key: z.string().regex(/^[A-Za-z0-9+/]{43}=$/) });
+/**
+ * `use_connect_login` は、接続のログインの許可で設定する (ブラウザを開かない)。許可がなければ 410 で、アプリはブラウザでの
+ * ログインに戻る (ADR-0009 の 2026-11-12 の変更)。
+ */
+const Start = RequestBody.extend({ use_connect_login: z.literal(true).optional() });
+const Finish = RequestBody.extend({ key: z.string().regex(/^[A-Za-z0-9+/]{43}=$/) });
 type Base = {
   state: string;
   routeID: string;
@@ -100,6 +105,17 @@ export async function handleDMPreview(
     const route = await store.dmPreviewRoute(value.route_id, managementHash);
     if (!route || !config.allowed.has(route.recipient)) return reply(404);
     if (url.pathname.endsWith("/start")) {
+      if ("use_connect_login" in value && value.use_connect_login === true) {
+        // 回数の制限 (30 秒に 1 回) は使わない。許可がなくて断ったとき、アプリがすぐブラウザでのログインを始められるように。
+        const claimed = await store.claimDMPreviewGrant({
+          managementHash,
+          recipient: route.recipient,
+          routeID: value.route_id,
+          requestID: value.request_id,
+          appState: value.app_state,
+        });
+        return claimed ? reply(201, { authorized: true }) : reply(410);
+      }
       const state = `dmp_${random()}`;
       const created = await store.beginDMPreview({
         state,
@@ -116,25 +132,42 @@ export async function handleDMPreview(
     }
     if (url.pathname.endsWith("/cancel")) {
       await store.takeDMPreview(value.route_id, managementHash, value.request_id, value.app_state);
+      await store.takeDMPreviewGrant(
+        value.route_id,
+        managementHash,
+        value.request_id,
+        value.app_state,
+      );
       return reply(204);
     }
     if (!url.pathname.endsWith("/finish")) return reply(404);
     const input = Finish.parse(value);
-    const session = await store.takeDMPreview(
+    // 接続のログインの許可で始めた要求なら、そのトークンを使う (本人は接続のときに確かめてある)。
+    const granted = await store.takeDMPreviewGrant(
       value.route_id,
       managementHash,
       value.request_id,
       value.app_state,
     );
-    if (session?.kind !== "authorized") return reply(410);
-    const user = await identify(
-      session.code,
-      session.redirectURI,
-      session.verifier,
-      scopes,
-      config,
-      deps,
-    );
+    let user: { accessToken: string; userID: string } | undefined;
+    if (granted !== undefined) user = granted;
+    else {
+      const session = await store.takeDMPreview(
+        value.route_id,
+        managementHash,
+        value.request_id,
+        value.app_state,
+      );
+      if (session?.kind !== "authorized") return reply(410);
+      user = await identify(
+        session.code,
+        session.redirectURI,
+        session.verifier,
+        scopes,
+        config,
+        deps,
+      );
+    }
     if (!user || user.userID !== route.recipient) return reply(403);
     // どこで読めなかったか、何を飛ばしたかを、結果が決まってから 1 行残す。値、ID、トークン、本文は出さない (#71)。
     const log = (outcome: string, fields: Record<string, unknown>) =>

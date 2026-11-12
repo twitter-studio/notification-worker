@@ -145,7 +145,12 @@ test("pairing is opt-in and reports the settings version", async () => {
   expect((await handle(request, testEnv(), deps)).status).toBe(404);
   const enabled = await handle(request, testEnv({ PAIRING_ADMIN_TOKEN: admin }), deps);
   expect(enabled.status).toBe(200);
-  expect(await enabled.json()).toEqual({ version: 3, x_login: false, dm_preview_setup: false });
+  expect(await enabled.json()).toEqual({
+    version: 3,
+    x_login: false,
+    dm_preview_setup: false,
+    dm_preview_login: false,
+  });
 });
 
 test("a fresh Worker can have no manual routes when pairing is enabled", async () => {

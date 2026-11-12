@@ -256,12 +256,14 @@ async function startLogin(
   user: string,
   types: string,
   manager: string,
+  extra: Record<string, string> = {},
 ) {
   const query = new URLSearchParams({
     x_user_id: user,
     types,
     app_state: appState,
     management_hash: await toHex(manager),
+    ...extra,
   });
   const page = await handle(new Request(`https://worker.test/connect?${query}`), env, x.deps);
   const started =
@@ -612,7 +614,12 @@ describe("connecting with an X login", () => {
       connectEnv("2"),
       x.deps,
     );
-    expect(await version.json()).toEqual({ version: 3, x_login: true, dm_preview_setup: true });
+    expect(await version.json()).toEqual({
+      version: 3,
+      x_login: true,
+      dm_preview_setup: true,
+      dm_preview_login: true,
+    });
 
     const env = connectEnv("2");
     // 引数が合わなくても、始めたアプリが分かればアプリへ戻す。分からなければ、文字のページで断る。
@@ -1363,5 +1370,105 @@ describe("keeping Worker subscriptions in step with connections", () => {
     expect(saved).not.toContain("user-token");
     expect(saved).not.toContain(clientSecret);
     expect(saved).not.toContain("x-code");
+  });
+});
+
+describe("connecting with DM message previews in one login", () => {
+  /** 本文の設定を、接続のログインの許可で始める (アプリが接続の直後に呼ぶ)。 */
+  function startDMPreview(
+    env: Env,
+    x: ReturnType<typeof fakeX>,
+    manager: string,
+    route_id: string,
+  ) {
+    return handle(
+      new Request("https://worker.test/v1/pairing/dm-preview/start", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${manager}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          route_id,
+          request_id: crypto.randomUUID(),
+          app_state: appState,
+          use_connect_login: true,
+        }),
+      }),
+      env,
+      x.deps,
+    );
+  }
+
+  test("tells the owner on the confirmation page that the login also reads DM key information", async () => {
+    const user = "6161616161616161616";
+    const manager = `tpm_${"P".repeat(43)}`;
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const query = new URLSearchParams({
+      x_user_id: user,
+      types: "dm",
+      app_state: appState,
+      management_hash: await toHex(manager),
+      dm_preview: "1",
+    });
+    const page = await (
+      await handle(
+        new Request(`https://worker.test/connect?${query}`, {
+          headers: { "Accept-Language": "ja" },
+        }),
+        env,
+        x.deps,
+      )
+    ).text();
+    expect(page).toContain("DMの暗号の鍵の情報も一度だけ読み取ります");
+    expect(formOf(page).get("dm_preview")).toBe("1");
+  });
+
+  test("keeps the login's read token in memory only, for the DM preview setup started right after", async () => {
+    const user = "6262626262626262626";
+    const manager = `tpm_${"D".repeat(43)}`;
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const login = await startLogin(env, x, user, "mention,dm", manager, { dm_preview: "1" });
+    expect(login.authorize.searchParams.get("scope")?.split(" ").sort()).toEqual([
+      "dm.read",
+      "tweet.read",
+      "users.read",
+    ]);
+    const back = appRedirect(
+      await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
+    );
+    // トークンはストレージに書かない。
+    const stub = env.PAIRING_ROUTES?.getByName("routes");
+    if (!stub) throw new Error("Missing store");
+    const saved = await runInDurableObject(stub, (_instance, state) =>
+      JSON.stringify([...state.storage.kv.list()]),
+    );
+    expect(saved).not.toContain("user-token");
+    const paired = await pairWithCode(env, x.deps, user, back.code ?? "", manager);
+    expect(paired.status).toBe(204);
+    // ほかの端末の管理キーでは使えない。
+    const stranger = `tpm_${"E".repeat(43)}`;
+    expect((await startDMPreview(env, x, stranger, paired.route_id)).status).toBe(404);
+    const started = await startDMPreview(env, x, manager, paired.route_id);
+    expect(started.status).toBe(201);
+    expect(await started.json()).toEqual({ authorized: true });
+    // 使い切り。
+    expect((await startDMPreview(env, x, manager, paired.route_id)).status).toBe(410);
+    expect(x.calls.filter((call) => call.path === "/2/oauth2/token")).toHaveLength(1);
+  });
+
+  test("holds no token when the app did not ask for DM previews, and refuses the flag without DMs", async () => {
+    const user = "6363636363636363636";
+    const manager = `tpm_${"F".repeat(43)}`;
+    const env = connectEnv(user);
+    const x = fakeX({ me: user });
+    const login = await startLogin(env, x, user, "dm", manager);
+    const back = appRedirect(
+      await callback(env, x, `code=x-code&state=${login.state}`, login.cookie),
+    );
+    const paired = await pairWithCode(env, x.deps, user, back.code ?? "", manager);
+    expect((await startDMPreview(env, x, manager, paired.route_id)).status).toBe(410);
+
+    const refused = await startLogin(env, x, user, "mention", manager, { dm_preview: "1" });
+    expect(appRedirect(refused.page)).toEqual({ state: appState, error: "invalid_request" });
   });
 });

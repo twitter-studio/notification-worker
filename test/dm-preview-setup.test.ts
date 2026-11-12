@@ -212,6 +212,86 @@ describe("DM message preview setup", () => {
     ).toBe(true);
   });
 
+  test("uses the connect login's grant without a browser or a second token exchange, once", async () => {
+    const f = await fixture();
+    await f.store.holdDMPreviewGrant(f.hash, owner, {
+      accessToken: "connect-user-token",
+      userID: owner,
+      expires: Date.now() + 20_000,
+    });
+    const started = await f.api("start", { ...f.body, use_connect_login: true });
+    expect(started.status).toBe(201);
+    expect(await started.json()).toEqual({ authorized: true });
+    const key = crypto.getRandomValues(new Uint8Array(32));
+    const response = await f.api("finish", { ...f.body, key: btoa(String.fromCharCode(...key)) });
+    expect(response.status, f.calls.map((url) => url.pathname).join(",")).toBe(200);
+    const sealed = new Uint8Array(await response.arrayBuffer());
+    const aes = await crypto.subtle.importKey("raw", key, "AES-GCM", false, ["decrypt"]);
+    const plaintext = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: sealed.slice(0, 12),
+        additionalData: enc.encode(
+          `twitter-studio/x-chat-setup/v1\n${owner}\n${f.body.route_id}\n${f.body.request_id}`,
+        ),
+      },
+      aes,
+      sealed.slice(12),
+    );
+    expect(JSON.parse(new TextDecoder().decode(plaintext))).toMatchObject({ userID: owner });
+    // 本人は接続のときに確かめてあるので、トークンの交換も本人の読み直しもしない。
+    expect(f.calls.map((url) => url.pathname)).not.toContain("/2/oauth2/token");
+    expect(f.calls.map((url) => url.pathname)).not.toContain("/2/users/me");
+    expect(
+      f.fetch.mock.calls.map(([, init]) => new Headers(init?.headers).get("Authorization")),
+    ).toContain("Bearer connect-user-token");
+    // 許可は使い切り。同じ要求でも、新しい要求でも、もう使えない。
+    expect(
+      (await f.api("finish", { ...f.body, key: btoa(String.fromCharCode(...key)) })).status,
+    ).toBe(410);
+    expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(410);
+  });
+
+  test("falls back to a browser login when there is no grant, without using the start interval", async () => {
+    const f = await fixture();
+    expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(410);
+    // ほかの管理キー (ほかの端末) の許可は使えない。
+    await f.store.holdDMPreviewGrant(await hex(`tpm_${"Z".repeat(43)}`), owner, {
+      accessToken: "other-device-token",
+      userID: owner,
+      expires: Date.now() + 20_000,
+    });
+    expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(410);
+    // 期限の切れた許可も使えない。
+    await f.store.holdDMPreviewGrant(f.hash, owner, {
+      accessToken: "expired-token",
+      userID: owner,
+      expires: Date.now() - 1,
+    });
+    expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(410);
+    // 断った直後でも、ブラウザでのログインを始められる。
+    const started = await f.api("start");
+    expect(started.status).toBe(201);
+    expect(await started.json()).toEqual({
+      url: expect.stringMatching(/\/dm-preview\?state=dmp_/),
+    });
+    expect(f.calls).toHaveLength(0);
+  });
+
+  test("drops a claimed grant when the app cancels", async () => {
+    const f = await fixture();
+    await f.store.holdDMPreviewGrant(f.hash, owner, {
+      accessToken: "connect-user-token",
+      userID: owner,
+      expires: Date.now() + 20_000,
+    });
+    expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(201);
+    expect((await f.api("cancel")).status).toBe(204);
+    const key = btoa(String.fromCharCode(...new Uint8Array(32)));
+    expect((await f.api("finish", { ...f.body, key })).status).toBe(410);
+    expect(f.calls).toHaveLength(0);
+  });
+
   test("requires the route owner and rejects forged consent without calling Twitter", async () => {
     const f = await fixture();
     expect((await f.api("start", f.body, `tpm_${"X".repeat(43)}`)).status).toBe(404);

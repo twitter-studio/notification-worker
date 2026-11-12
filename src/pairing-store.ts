@@ -59,6 +59,8 @@ export type Login = {
   eventTypes: NotificationType[];
   redirectURI: string;
   expires: number;
+  /** 接続の後、続けて DM 通知の本文の設定にこのログインの許可を使う (ADR-0009 の 2026-11-12 の変更)。 */
+  dmPreview?: boolean;
   /** X から戻った (使い切り)。 */
   used?: boolean;
   /**
@@ -162,7 +164,68 @@ export function applyRouteChanges(
   return { kind: "changed", route: next };
 }
 
+/** 接続のログインで得た、DM 通知の本文の設定に使う X の読み取りトークン。 */
+export type DMPreviewGrant = { accessToken: string; userID: string; expires: number };
+/** 接続のログインの許可を、本文の設定に使える時間。アプリは接続を終えるとすぐに設定を始める。 */
+export const dmPreviewGrantLifetime = 20_000;
+
 export class PairingStore extends DurableObject<Env> {
+  /**
+   * 接続のログインで得た読み取りトークン。接続した管理キーと本人で引き、本文の設定を始めたら、その要求に移す。
+   * メモリだけに置き、ストレージに書かない (トークンを保存しない。ADR-0009)。Durable Object が入れ替わると失われ、
+   * アプリはブラウザでのログインに戻る。
+   */
+  private readonly dmPreviewGrants = new Map<string, DMPreviewGrant>();
+
+  private liveGrants(): Map<string, DMPreviewGrant> {
+    const now = Date.now();
+    for (const [key, grant] of this.dmPreviewGrants)
+      if (grant.expires <= now) this.dmPreviewGrants.delete(key);
+    return this.dmPreviewGrants;
+  }
+
+  /** 接続のログインの後、本文の設定に使う許可を置く。同じ管理キーと本人の前の許可は置き換える。 */
+  holdDMPreviewGrant(managementHash: string, recipient: string, grant: DMPreviewGrant): void {
+    const grants = this.liveGrants();
+    // 外から何度でもログインできるので、数に上限を付けて古いものから外す。
+    while (grants.size >= 16) grants.delete(grants.keys().next().value as string);
+    grants.set(`connect\n${managementHash}\n${recipient}`, grant);
+  }
+
+  /** 本文の設定を始めたとき、その管理キーと本人の許可を、この要求に移す。許可がなければ false。 */
+  claimDMPreviewGrant(claim: {
+    managementHash: string;
+    recipient: string;
+    routeID: string;
+    requestID: string;
+    appState: string;
+  }): boolean {
+    const grants = this.liveGrants();
+    const key = `connect\n${claim.managementHash}\n${claim.recipient}`;
+    const grant = grants.get(key);
+    grants.delete(key);
+    if (!grant || grant.userID !== claim.recipient) return false;
+    grants.set(
+      `request\n${claim.routeID}\n${claim.managementHash}\n${claim.requestID}\n${claim.appState}`,
+      grant,
+    );
+    return true;
+  }
+
+  /** 本文の設定を終える (またはやめる) とき、その要求に移した許可を取り出す。使い切り。 */
+  takeDMPreviewGrant(
+    routeID: string,
+    managementHash: string,
+    requestID: string,
+    appState: string,
+  ): DMPreviewGrant | undefined {
+    const grants = this.liveGrants();
+    const key = `request\n${routeID}\n${managementHash}\n${requestID}\n${appState}`;
+    const grant = grants.get(key);
+    grants.delete(key);
+    return grant;
+  }
+
   dmPreviewRoute(routeID: string, managementHash: string): { recipient: string } | undefined {
     const route = this.read().routes.find(
       (item) => item.routeID === routeID && item.managementHash === managementHash,
