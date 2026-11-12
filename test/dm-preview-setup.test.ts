@@ -348,6 +348,29 @@ describe("DM message preview setup", () => {
     }
   });
 
+  test("keeps claimed grants when the grants are full, and holds no new one", async () => {
+    const f = await fixture();
+    const grant = {
+      accessToken: "claimed-token",
+      userID: owner,
+      expires: Date.now() + 20_000,
+      codeHash: f.pairedCode,
+    };
+    // 16 件とも移した後 (`/finish` を待っている) にする。
+    await runInDurableObject(f.store, (instance) => {
+      const grants = (instance as unknown as { dmPreviewGrants: Map<string, unknown> })
+        .dmPreviewGrants;
+      for (let index = 0; index < 16; index += 1) grants.set(`request\n${index}`, grant);
+    });
+    await f.store.holdDMPreviewGrant(f.hash, owner, grant);
+    const keys = await runInDurableObject(f.store, (instance) => [
+      ...(instance as unknown as { dmPreviewGrants: Map<string, unknown> }).dmPreviewGrants.keys(),
+    ]);
+    expect(keys).toHaveLength(16);
+    expect(keys.every((key) => key.startsWith("request\n"))).toBe(true);
+    expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(410);
+  });
+
   test("drops a claimed grant when the app cancels", async () => {
     const f = await fixture();
     await f.store.holdDMPreviewGrant(f.hash, owner, {

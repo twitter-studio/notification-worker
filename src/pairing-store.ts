@@ -200,12 +200,11 @@ export class PairingStore extends DurableObject<Env> {
     const grants = this.liveGrants();
     const key = `connect\n${managementHash}\n${recipient}`;
     grants.delete(key);
-    // 外から何度でもログインできるので、数に上限を付ける。外すのは、まだ移していない古いものから
-    // (移した許可は、アプリが `/finish` を呼ぶのを待っている)。
+    // 外から何度でもログインできるので、数に上限を付ける。外すのは、まだ移していない古いものだけ。
+    // 移した許可は、アプリが `/finish` を呼ぶのを待っているので外さず、新しい許可を持たない (アプリはブラウザに戻る)。
     while (grants.size >= 16) {
-      const oldest =
-        [...grants.keys()].find((item) => item.startsWith("connect\n")) ??
-        (grants.keys().next().value as string);
+      const oldest = [...grants.keys()].find((item) => item.startsWith("connect\n"));
+      if (oldest === undefined) return;
       grants.delete(oldest);
     }
     grants.set(key, {
