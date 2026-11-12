@@ -15,7 +15,12 @@ const enc = new TextEncoder();
 
 afterEach(async () => {
   const store = pairingStore(testEnv({ PAIRING_ADMIN_TOKEN: `tpa_${"A".repeat(43)}` }));
-  if (store) await runInDurableObject(store, (_instance, ctx) => ctx.storage.deleteAll());
+  if (store)
+    await runInDurableObject(store, (instance, ctx) => {
+      // 接続のログインの許可は、ストレージではなくメモリにある。
+      (instance as unknown as { dmPreviewGrants: Map<string, unknown> }).dmPreviewGrants.clear();
+      return ctx.storage.deleteAll();
+    });
 });
 
 async function fixture() {
@@ -157,6 +162,8 @@ async function fixture() {
     api,
     body,
     store,
+    /** ルートをつないだコードのハッシュ。接続のログインの許可は、このコードでつないだルートにだけ移せる。 */
+    pairedCode: code,
     env,
     deps,
     calls,
@@ -218,6 +225,7 @@ describe("DM message preview setup", () => {
       accessToken: "connect-user-token",
       userID: owner,
       expires: Date.now() + 20_000,
+      codeHash: f.pairedCode,
     });
     const started = await f.api("start", { ...f.body, use_connect_login: true });
     expect(started.status).toBe(201);
@@ -260,6 +268,7 @@ describe("DM message preview setup", () => {
       accessToken: "other-device-token",
       userID: owner,
       expires: Date.now() + 20_000,
+      codeHash: f.pairedCode,
     });
     expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(410);
     // 期限の切れた許可も使えない。
@@ -267,6 +276,7 @@ describe("DM message preview setup", () => {
       accessToken: "expired-token",
       userID: owner,
       expires: Date.now() - 1,
+      codeHash: f.pairedCode,
     });
     expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(410);
     // 断った直後でも、ブラウザでのログインを始められる。
@@ -278,12 +288,73 @@ describe("DM message preview setup", () => {
     expect(f.calls).toHaveLength(0);
   });
 
+  test("moves a grant only to the route connected with the code issued by that login", async () => {
+    const f = await fixture();
+    // 同じ管理キーと本人でも、ほかのコードでつないだルート (前からある端末など) には移さない。
+    await f.store.holdDMPreviewGrant(f.hash, owner, {
+      accessToken: "connect-user-token",
+      userID: owner,
+      expires: Date.now() + 20_000,
+      codeHash: "another-code",
+    });
+    expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(410);
+    expect(f.calls).toHaveLength(0);
+  });
+
+  test("refuses a claimed grant that expired before finishing, without calling Twitter", async () => {
+    const f = await fixture();
+    await f.store.holdDMPreviewGrant(f.hash, owner, {
+      accessToken: "connect-user-token",
+      userID: owner,
+      expires: Date.now() + 200,
+      codeHash: f.pairedCode,
+    });
+    expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(201);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const key = btoa(String.fromCharCode(...new Uint8Array(32)));
+    expect((await f.api("finish", { ...f.body, key })).status).toBe(410);
+    expect(f.calls).toHaveLength(0);
+  });
+
+  test("uses a claimed grant only for the same request, and never logs the token", async () => {
+    const f = await fixture();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const infos = vi.spyOn(console, "info").mockImplementation(() => {});
+    const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await f.store.holdDMPreviewGrant(f.hash, owner, {
+        accessToken: "connect-user-token",
+        userID: owner,
+        expires: Date.now() + 20_000,
+        codeHash: f.pairedCode,
+      });
+      expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(201);
+      const key = btoa(String.fromCharCode(...new Uint8Array(32)));
+      for (const other of [{ request_id: crypto.randomUUID() }, { app_state: "T".repeat(43) }]) {
+        expect((await f.api("finish", { ...f.body, ...other, key })).status).toBe(410);
+      }
+      expect(f.calls).toHaveLength(0);
+      expect((await f.api("finish", { ...f.body, key })).status).toBe(200);
+      const printed = JSON.stringify([
+        ...errors.mock.calls,
+        ...infos.mock.calls,
+        ...logs.mock.calls,
+      ]);
+      expect(printed).not.toContain("connect-user-token");
+    } finally {
+      errors.mockRestore();
+      infos.mockRestore();
+      logs.mockRestore();
+    }
+  });
+
   test("drops a claimed grant when the app cancels", async () => {
     const f = await fixture();
     await f.store.holdDMPreviewGrant(f.hash, owner, {
       accessToken: "connect-user-token",
       userID: owner,
       expires: Date.now() + 20_000,
+      codeHash: f.pairedCode,
     });
     expect((await f.api("start", { ...f.body, use_connect_login: true })).status).toBe(201);
     expect((await f.api("cancel")).status).toBe(204);

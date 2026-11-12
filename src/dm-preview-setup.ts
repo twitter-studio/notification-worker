@@ -4,6 +4,7 @@ import { RelayRouteID } from "./config";
 import {
   base64URL,
   cookieValue,
+  dmPreviewScopes,
   hex,
   identify,
   Random,
@@ -16,7 +17,7 @@ import { pairingStore } from "./pairing-store";
 import type { RelayDeps } from "./relay";
 import { XUserID } from "./x-activity";
 
-const scopes = ["tweet.read", "users.read", "dm.read"];
+const scopes = dmPreviewScopes;
 const callback = "tweetbot-worker://dm-preview";
 const browserCookie = "__Host-tweetbot-dm-preview";
 const confirmCookie = "__Host-tweetbot-dm-confirm";

@@ -10,6 +10,9 @@ import type { RelayDeps } from "./relay";
 import { XUserID } from "./x-activity";
 import { ensureSubscriptions, readJSON, scopesFor } from "./x-subscriptions";
 
+/** DM 通知の本文の設定に要る scope。接続のログインの許可を使うときは、接続の scope がこれを含むことを確かめる。 */
+export const dmPreviewScopes = ["tweet.read", "users.read", "dm.read"] as const;
+
 type Store = NonNullable<ReturnType<typeof pairingStore>>;
 type NotificationType = (typeof X_NOTIFICATION_TYPES)[number];
 
@@ -462,14 +465,16 @@ async function connect(
   });
   if (!issued) return fail("busy");
   // DM の本文の設定も選んでいたら、このログインの読み取りトークンを、続けて始める本文の設定のために少しだけ持つ。
-  // 本文の設定に要る scope (tweet.read、users.read、dm.read) は、DM を選んだ接続の scope にそろっている。
+  // 本文の設定に要る scope は、DM を選んだ接続の scope に含まれる (含まなければ持たない)。
   // 置けなくても接続は終わっている。アプリはブラウザでのログインに戻る。
-  if (login.dmPreview)
+  const granted = new Set(scopesFor(login.eventTypes));
+  if (login.dmPreview && dmPreviewScopes.every((scope) => granted.has(scope)))
     await store
       .holdDMPreviewGrant(login.managementHash, login.recipient, {
         accessToken,
         userID,
         expires: Date.now() + dmPreviewGrantLifetime,
+        codeHash: await hex(issued.code),
       })
       .catch(() => undefined);
   return toApp({ state: login.appState, code: issued.code });
