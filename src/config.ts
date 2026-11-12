@@ -61,6 +61,7 @@ declare global {
     X_NOTIFICATION_TYPES?: string;
     ENABLE_X_NOTIFICATION_PREVIEW?: string;
     ENABLE_X_POST_PREVIEW_LOOKUP?: string;
+    /** この時刻 (Unix epoch のミリ秒) 以前に起きた X のイベントを捨てる。運営の本番の Worker が、リポジトリの外の設定で使う。 */
     X_EVENT_NOT_BEFORE?: string;
   }
 }

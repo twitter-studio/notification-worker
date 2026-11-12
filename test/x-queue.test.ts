@@ -107,20 +107,34 @@ describe("Xイベントの永続Queueからの配信", () => {
       event: { ...input.event, occurred_at: new Date(Date.now() + 600000).toISOString() },
     };
     const relay = fakeRelay();
-    for (const [body, environment] of [
-      [input, testEnv({ ENABLE_X_ACTIVITY: "false" })],
-      [{ ...input, extra: "private" }, enabled()],
-      [old, enabled()],
-      [future, enabled()],
-      [input, testEnv({ ENABLE_X_ACTIVITY: "true", RELAY_TOKEN: `tsr_${"B".repeat(43)}` })],
-      [input, testEnv({ ENABLE_X_ACTIVITY: "true", X_USER_ID: "999" })],
-    ] as const) {
-      const item = message(body);
-      await handleXQueue([item], environment, relay.deps);
-      expect(item.ack).toHaveBeenCalledOnce();
-      expect(item.retry).not.toHaveBeenCalled();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const [body, environment, reason] of [
+        [input, testEnv({ ENABLE_X_ACTIVITY: "false" }), "inactive_invalid_or_expired"],
+        [{ ...input, extra: "private" }, enabled(), "inactive_invalid_or_expired"],
+        [old, enabled(), "inactive_invalid_or_expired"],
+        [future, enabled(), "inactive_invalid_or_expired"],
+        [
+          input,
+          testEnv({ ENABLE_X_ACTIVITY: "true", RELAY_TOKEN: `tsr_${"B".repeat(43)}` }),
+          "relay_changed",
+        ],
+        [input, testEnv({ ENABLE_X_ACTIVITY: "true", X_USER_ID: "999" }), "relay_changed"],
+      ] as const) {
+        errors.mockClear();
+        const item = message(body);
+        await handleXQueue([item], environment, relay.deps);
+        expect(item.ack).toHaveBeenCalledOnce();
+        expect(item.retry).not.toHaveBeenCalled();
+        // 監視は、console.error に出る破棄の理由と attention_count で気づく (ops/README.md)。
+        expect(errors).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ stage: "discarded", reason, attention_count: 1 }),
+        );
+      }
+      expect(relay.sent).toEqual([]);
+    } finally {
+      errors.mockRestore();
     }
-    expect(relay.sent).toEqual([]);
   });
   it("イベントIDは種類や時刻に依存せず、鍵と本人とツイートで変わる", async () => {
     const first = await xEventID(enabled().X_EVENT_ID_SECRET, "111", event);
