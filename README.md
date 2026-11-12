@@ -15,7 +15,7 @@
 | `GET /webhooks/x`                         | XのCRC。既定では404                                                                                                                                                         |
 | `POST /webhooks/x`                        | XAA の署名を確認して、本人宛てで有効にした通知だけを Queue へ保存。既定では404                                                                                              |
 | `GET /setup`, `POST /setup`               | 許可した X アカウントでログインし、この Worker の Webhook を登録・確かめる ([手順](ops/production-setup.md#setup-で-webhook-を用意する))。X でのログインの設定がなければ404 |
-| `GET /connect`, `POST /connect`           | Tweetbot から X でログインして接続する。X でのログインの設定がなければ404                                                                                                   |
+| `GET /connect`                            | Tweetbot から X でログインして接続する (確かめのページは出さない)。X でのログインの設定がなければ404                                                                        |
 | `GET /oauth/callback`                     | `/setup` と `/connect` の X のログインの戻り先                                                                                                                              |
 | `GET /v1/pairing`, `POST /v1/pairing/...` | 接続の版の確かめと、接続・設定の API。接続の設定がなければ404                                                                                                               |
 

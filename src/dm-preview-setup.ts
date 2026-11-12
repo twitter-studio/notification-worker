@@ -20,7 +20,6 @@ import { XUserID } from "./x-activity";
 const scopes = dmPreviewScopes;
 const callback = "tweetbot-worker://dm-preview";
 const browserCookie = "__Host-tweetbot-dm-preview";
-const confirmCookie = "__Host-tweetbot-dm-confirm";
 const headers = { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" };
 const encoder = new TextEncoder();
 const RequestBody = z.strictObject({
@@ -55,13 +54,13 @@ function reply(status: number, body?: unknown): Response {
     ? new Response(null, { status, headers })
     : Response.json(body, { status, headers });
 }
-function redirect(location: string, cookies: string[] = [], status = 302): Response {
-  const response = new Response(null, { status, headers: { ...headers, Location: location } });
+function redirect(location: string, cookies: string[] = []): Response {
+  const response = new Response(null, { status: 302, headers: { ...headers, Location: location } });
   for (const cookie of cookies) response.headers.append("Set-Cookie", cookie);
   return response;
 }
 function cookie(name: string, value: string, seconds = 600): string {
-  return `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=${name === confirmCookie ? "Strict" : "Lax"}; Max-Age=${seconds}`;
+  return `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${seconds}`;
 }
 
 export async function handleDMPreview(
@@ -93,6 +92,16 @@ export async function handleDMPreview(
   // state の形が合わなければ、Durable Object を読まない (上限の中で流し続けられても、呼び出しを増やさない)。
   const state = url.searchParams.get("state") ?? "";
   const knownState = /^dmp_[A-Za-z0-9_-]{43}$/.test(state);
+  // ブラウザに本文のない応答を返すと空のページになり、閉じた利用者には「キャンセルした」と出る (#84)。
+  const startAgain = (status: number) => {
+    const ja = /^ja\b/i.test(request.headers.get("Accept-Language") ?? "");
+    return new Response(
+      ja
+        ? "この設定は、もう始まっているか、期限が切れています。Tweetbotでもう一度お試しください。"
+        : "This setup has already started or expired. Try again from Tweetbot.",
+      { status, headers: { ...headers, "Content-Type": "text/plain; charset=utf-8" } },
+    );
+  };
   const toAppLimited = (appState: string, cookies: string[] = []) =>
     redirect(
       `${callback}?${new URLSearchParams({ state: appState, error: "rate_limited" })}`,
@@ -268,10 +277,10 @@ export async function handleDMPreview(
   if (url.pathname === "/oauth/callback") {
     if (request.method !== "GET") return reply(405);
     const session = knownState ? await store.readDMPreview(state) : undefined;
-    if (session?.kind !== "authorizing") return limited ? tooMany() : reply(400);
+    if (session?.kind !== "authorizing") return limited ? tooMany() : startAgain(400);
     const browser = cookieValue(request, browserCookie);
     if (!browser || (await hex(browser)) !== session.browserHash)
-      return limited ? tooMany() : reply(400);
+      return limited ? tooMany() : startAgain(400);
     const code = url.searchParams.get("code");
     const error = url.searchParams.has("error") || !code || code.length > 512;
     // 上限の中でも、本人が断ったことは先に伝える (接続の流れと同じ)。上限の中では書き込まない。
@@ -297,48 +306,12 @@ export async function handleDMPreview(
       [cookie(browserCookie, "", 0)],
     );
   }
-  if (url.pathname !== "/dm-preview" || !["GET", "POST"].includes(request.method))
-    return reply(404);
+  // `GET /dm-preview` は、確かめのページを出さずに X へ送る (ADR-0008)。要求は、管理キーで認証した `/start` でしか作れない。
+  if (url.pathname !== "/dm-preview" || request.method !== "GET") return reply(404);
   const session = knownState ? await store.readDMPreview(state) : undefined;
   if (session?.kind !== "prepared" || !config.allowed.has(session.recipient))
-    return limited ? tooMany() : reply(410);
-  if (request.method === "GET") {
-    if (limited) return toAppLimited(session.appState);
-    const nonce = random();
-    const ja = /^ja\b/i.test(request.headers.get("Accept-Language") ?? "");
-    const title = ja ? "DM通知で本文を表示" : "Show Message Text in DM Notifications";
-    const message = ja
-      ? "Twitterで読み取りを許可し、この端末でDM通知の本文を表示します。PINはTweetbot内で入力します。"
-      : "Allow Twitter read access to show DM message text on this device. Enter your passcode only in Tweetbot.";
-    const response = new Response(
-      `<!doctype html><html lang="${ja ? "ja" : "en"}"><meta name="viewport" content="width=device-width"><title>${title}</title><h1>${title}</h1><p>${message}</p><form method="post"><input type="hidden" name="confirm" value="${nonce}"><button>${ja ? "続ける" : "Continue"}</button></form></html>`,
-      {
-        headers: {
-          ...headers,
-          "Referrer-Policy": "same-origin",
-          "Content-Type": "text/html; charset=utf-8",
-          "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
-          "X-Frame-Options": "DENY",
-        },
-      },
-    );
-    response.headers.append("Set-Cookie", cookie(confirmCookie, nonce));
-    return response;
-  }
-  // 確かめのページを開いたブラウザからの POST だと分かるまでは、アプリへ戻さない (接続の流れと同じ)。
-  const origin = request.headers.get("Origin");
-  if (
-    (origin !== null && origin !== "null" && origin !== url.origin) ||
-    !/^application\/x-www-form-urlencoded\b/i.test(request.headers.get("Content-Type") ?? "")
-  )
-    return limited ? tooMany() : reply(403);
-  const body = await readBody(request, 256);
-  if (!body) return limited ? tooMany() : reply(413);
-  const form = new URLSearchParams(new TextDecoder().decode(body));
-  const nonce = cookieValue(request, confirmCookie);
-  if (!nonce || form.getAll("confirm").length !== 1 || form.get("confirm") !== nonce)
-    return limited ? tooMany() : reply(403);
-  if (limited) return toAppLimited(session.appState, [cookie(confirmCookie, "", 0)]);
+    return limited ? tooMany() : startAgain(410);
+  if (limited) return toAppLimited(session.appState);
   const browser = random();
   const verifier = random();
   const redirectURI = `${url.origin}/oauth/callback`;
@@ -360,11 +333,7 @@ export async function handleDMPreview(
     code_challenge: base64URL(await sha256(verifier)),
     code_challenge_method: "S256",
   }).toString();
-  return redirect(
-    authorize.href,
-    [cookie(browserCookie, browser), cookie(confirmCookie, "", 0)],
-    303,
-  );
+  return redirect(authorize.href, [cookie(browserCookie, browser)]);
 }
 
 /** アプリが受け取る材料の上限 (128KiB から nonce と tag を引いた大きさ)。 */
