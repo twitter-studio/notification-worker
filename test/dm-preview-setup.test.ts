@@ -60,6 +60,7 @@ async function fixture() {
     public_key: "public-key",
     signing_public_key: "signing-key",
     identity_public_key_signature: "signature",
+    signing_public_key_signature: "signing-proof",
   };
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
@@ -569,6 +570,7 @@ describe("reading Twitter key material for DM message text", () => {
     public_key: "public-key",
     signing_public_key: "signing-key",
     identity_public_key_signature: "signature",
+    signing_public_key_signature: "signing-proof",
   };
   const recoverable = {
     ...record,
@@ -749,7 +751,10 @@ describe("reading Twitter key material for DM message text", () => {
     );
     expect(result.status).toBe(200);
     expect(result.material.identityKeyVersion).toBe("42");
-    expect(result.material.signingKeys).toHaveLength(2);
+    expect(result.material.signingKeys).toEqual([
+      expect.objectContaining({ signingPublicKeySignature: "signing-proof" }),
+      expect.objectContaining({ signingPublicKeySignature: "signing-proof" }),
+    ]);
     expect(result.log).toMatchObject({ skipped: { "own_keys:invalid_record": 1 } });
   });
 

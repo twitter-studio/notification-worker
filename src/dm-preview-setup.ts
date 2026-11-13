@@ -345,6 +345,7 @@ const SigningRecord = Version.extend({
   public_key: z.string().min(1).max(1024),
   signing_public_key: z.string().min(1).max(1024),
   identity_public_key_signature: z.string().min(1).max(1024),
+  signing_public_key_signature: z.string().min(1).max(1024),
 });
 type SigningRecord = z.infer<typeof SigningRecord>;
 const JuiceboxConfig = z
@@ -532,7 +533,8 @@ async function collectMaterial(
     if (!result.success) throw new SetupFailure(stage, { issues: issueNames(result.error) });
     return result.data;
   }
-  const fields = "public_key_version,public_key,signing_public_key,identity_public_key_signature";
+  const fields =
+    "public_key_version,public_key,signing_public_key,identity_public_key_signature,signing_public_key_signature";
   async function keys(stage: Stage, user: string, recovery = false) {
     const { data } = parse(
       stage,
@@ -599,6 +601,7 @@ async function collectMaterial(
     publicKey: row.signing_public_key,
     identityPublicKey: row.public_key,
     identityPublicKeySignature: row.identity_public_key_signature,
+    signingPublicKeySignature: row.signing_public_key_signature,
   });
   const bytesOf = (value: unknown) => encoder.encode(JSON.stringify(value)).length;
 
