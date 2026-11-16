@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { readBody } from "./body";
 import { NotificationTypes, RelayRouteID, RelayToken, relayEndpoint } from "./config";
+import { sourceKey } from "./connect";
 import { connectConfig } from "./connect-config";
 import { DmPreviewKey } from "./dm-preview";
 import type { X_NOTIFICATION_TYPES } from "./normalize";
@@ -79,6 +80,23 @@ export async function issuePairingCode(
   if (!(await store.issue({ recipient, hash: lookup, proofKey, expires, ...binding })))
     return undefined;
   return { code, expires };
+}
+
+export async function limitPairingRequest(
+  request: Request,
+  env: Env,
+): Promise<Response | undefined> {
+  if (!pairingStore(env)) return response(404);
+  const limiter = env.CONNECT_LIMITER;
+  if (limiter === undefined) return response(503);
+  const source = sourceKey(request.headers.get("CF-Connecting-IP") ?? "unknown");
+  if (!(await limiter.limit({ key: `pairing:${source}` })).success) {
+    return new Response(null, {
+      status: 429,
+      headers: { "Cache-Control": "no-store", "Retry-After": "60" },
+    });
+  }
+  return undefined;
 }
 
 export async function handlePairing(

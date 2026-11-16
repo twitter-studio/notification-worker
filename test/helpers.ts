@@ -3,7 +3,7 @@ import { handle } from "../src/app";
 
 /** テストの環境 (vitest.config.ts の値)。`overrides` で一部を変える。 */
 export function testEnv(overrides: Partial<Env> = {}): Env {
-  return { ...env, ...overrides };
+  return { ...env, CONNECT_LIMITER: { limit: async () => ({ success: true }) }, ...overrides };
 }
 
 /** 模擬の Webhook の署名のヘッダー。 */
