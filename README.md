@@ -67,6 +67,7 @@
 - ボタンの URL でブランチを指すときは、名前にスラッシュのないブランチにします (`tree/feat/x` の `feat/x` を、ブランチとフォルダに読み分けられないため)。
 - 写したリポジトリでも Dependabot が動きます。写したリポジトリの `main` に push や merge をすると、Worker は配置し直されます。
 - 配置の画面で「GitHub authorization has expired」と出たときは、GitHub の Cloudflare Workers and Pages のアプリを入れ直します ([手順](https://developers.cloudflare.com/workers/ci-cd/builds/git-integration/github-integration/))。
+- `/v1/pairing` 配下も `CONNECT_LIMITER` が必須です。未設定では 503、接続元の上限超過では 429 と `Retry-After: 60` を返します。接続用の API はまとめて 10 回/分に制限し、`/connect` などとは別のキーで数えます。IPv6 は /64 単位です。Cloudflare の場所ごとの近似制限であり、費用の厳密な上限ではありません。
 - `CONNECT_LIMITER` の `namespace_id` は、同じ Cloudflare のアカウントのほかの Worker と重なるなら変えます。
 
 ### 自分で配置する

@@ -4,7 +4,7 @@ import { handleConnect } from "./connect";
 import { dmPreviewKeyID, sealDmPreview } from "./dm-preview";
 import { handleDMPreview } from "./dm-preview-setup";
 import { MockWebhookSchema, normalizeMockEvents } from "./normalize";
-import { handlePairing } from "./pairing";
+import { handlePairing, limitPairingRequest } from "./pairing";
 import { deliveryTargets } from "./pairing-store";
 import { MAX_SUBREQUESTS, type RelayDeps, type RelayOutcome, sendToRelay } from "./relay";
 import { handleCallback, handleSetup } from "./setup";
@@ -294,6 +294,14 @@ async function handleXWebhook(request: Request, env: Env, deps: AppDeps): Promis
 
 export async function handle(request: Request, env: Env, deps: AppDeps): Promise<Response> {
   const { pathname } = new URL(request.url);
+  if (pathname === "/v1/pairing" || pathname.startsWith("/v1/pairing/")) {
+    try {
+      const limited = await limitPairingRequest(request, env);
+      if (limited) return limited;
+    } catch {
+      return problem(503, "Service Unavailable");
+    }
+  }
   if (
     pathname === "/dm-preview" ||
     pathname.startsWith("/v1/pairing/dm-preview/") ||

@@ -34,7 +34,7 @@
     "bindings": [{ "name": "PAIRING_ROUTES", "class_name": "PairingStore" }]
   },
   "migrations": [{ "tag": "pairing-v1", "new_sqlite_classes": ["PairingStore"] }],
-  // `/connect`、`/setup`、`/oauth/callback` の、接続元ごとの回数の上限。namespace_id は、同じ Cloudflare のアカウントの
+  // `/connect`、`/setup`、`/oauth/callback` と `/v1/pairing` 配下の、接続元ごとの回数の上限。namespace_id は、同じ Cloudflare のアカウントの
   // ほかの Worker と重ねない (同じ値の binding は回数を分け合う)。
   "ratelimits": [
     { "name": "CONNECT_LIMITER", "namespace_id": "4601", "simple": { "limit": 10, "period": 60 } }
