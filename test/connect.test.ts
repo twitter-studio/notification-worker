@@ -77,7 +77,9 @@ function fakeX(options: {
       return Response.json({
         access_token: "user-token",
         token_type: "bearer",
-        scope: "tweet.read users.read like.read dm.read",
+        scope: "tweet.read users.read like.read dm.read offline.access",
+        refresh_token: "test-refresh-token",
+        expires_in: 7200,
       });
     }
     if (url.pathname === "/2/users/me") return Response.json({ data: { id: options.me } });
@@ -335,6 +337,7 @@ describe("connecting with an X login", () => {
     );
     expect(login.authorize.searchParams.get("scope")?.split(" ").sort()).toEqual([
       "like.read",
+      "offline.access",
       "tweet.read",
       "users.read",
     ]);
@@ -1279,6 +1282,7 @@ describe("connecting with DM message previews in one login", () => {
     );
     expect(login.authorize.searchParams.get("scope")?.split(" ").sort()).toEqual([
       "dm.read",
+      "offline.access",
       "tweet.read",
       "users.read",
     ]);

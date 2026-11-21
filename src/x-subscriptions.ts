@@ -39,10 +39,10 @@ const callTimeout = 10_000;
 
 /**
  * 選んだ種類の購読に要る scope。`users.read` は本人の ID を確かめるために常に要る。
- * `offline.access` は求めない (refresh token を Worker に残さない。ADR-0008)。
+ * `offline.access` は Webhook の許可を期限前に更新するために必要。
  */
 export function scopesFor(types: readonly NotificationType[]): string[] {
-  const scopes = new Set(["tweet.read", "users.read"]);
+  const scopes = new Set(["tweet.read", "users.read", "offline.access"]);
   if (types.includes("like")) scopes.add("like.read");
   if (types.includes("dm")) scopes.add("dm.read");
   return [...scopes];

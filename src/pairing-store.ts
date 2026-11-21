@@ -8,6 +8,8 @@ import {
 } from "./config";
 import type { DMPreviewSession } from "./dm-preview-setup";
 import type { X_NOTIFICATION_TYPES } from "./normalize";
+import { type Authorization, refreshAuthorization } from "./x-oauth";
+import { scopesFor } from "./x-subscriptions";
 
 type NotificationType = (typeof X_NOTIFICATION_TYPES)[number];
 type PairingRoute = {
@@ -50,6 +52,7 @@ export type StoredRoute = PairingRoute & {
 };
 /** X のログインの途中の状態。verifier は PKCE のもので、Worker の外へ出さない。 */
 export type Login = {
+  oauthScopes?: string[];
   state: string;
   verifier: string;
   /** ログインを始めたブラウザに置いた Cookie のハッシュ。別のブラウザで終えたログイン (罠のリンク) を断る。 */
@@ -178,6 +181,84 @@ export type DMPreviewGrant = {
 export const dmPreviewGrantLifetime = 20_000;
 
 export class PairingStore extends DurableObject<Env> {
+  private authorizations(): Record<string, Authorization> {
+    return this.ctx.storage.kv.get<Record<string, Authorization>>("x_authorizations") ?? {};
+  }
+
+  authorizationScopes(recipient: string): string[] {
+    return [
+      ...new Set([
+        ...(this.authorizations()[recipient]?.scopes ?? []),
+        ...this.read()
+          .routes.filter((route) => route.recipient === recipient)
+          .flatMap((route) => scopesFor(route.eventTypes ?? defaultNotificationTypes)),
+      ]),
+    ];
+  }
+
+  saveAuthorization(
+    recipient: string,
+    grant: Pick<Authorization, "refreshToken" | "expiresAt" | "scopes">,
+  ): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      if (!this.authorizationScopes(recipient).every((scope) => grant.scopes.includes(scope)))
+        return false;
+      this.ctx.storage.kv.put("x_authorizations", {
+        ...this.authorizations(),
+        [recipient]: {
+          ...grant,
+          next: Date.now() + Math.min(90 * 60_000, (grant.expiresAt - Date.now()) * 0.75),
+          failures: 0,
+        },
+      });
+      return true;
+    });
+  }
+
+  async refreshAuthorizations(): Promise<void> {
+    const allowed = new Set(
+      (this.env.ALLOWED_X_USER_IDS ?? "").split(",").map((value) => value.trim()),
+    );
+    const manual = new Set(xRelayTargets(this.env, true).map((target) => target.recipient));
+    const grants = this.authorizations();
+    for (const recipient of Object.keys(grants)) {
+      if (!allowed.has(recipient) || (!manual.has(recipient) && !this.inUse(recipient, Date.now())))
+        delete grants[recipient];
+    }
+    this.ctx.storage.kv.put("x_authorizations", grants);
+    if (this.env.ENABLE_X_ACTIVITY !== "true") return;
+    const due = Object.entries(grants)
+      .filter(([, grant]) => grant.next <= Date.now())
+      .sort((a, b) => a[1].next - b[1].next)
+      .slice(0, 3);
+    for (const [recipient] of due) {
+      const before = this.authorizations();
+      const grant = before[recipient];
+      if (!grant || grant.next > Date.now()) continue;
+      const attempt = crypto.randomUUID();
+      before[recipient] = { ...grant, attempt, next: Date.now() + 5 * 60_000 };
+      this.ctx.storage.kv.put("x_authorizations", before);
+      const result = await refreshAuthorization(grant, this.env);
+      const current = this.authorizations();
+      // 待っている間に再接続が新しい許可を保存していたら、古い更新の結果で戻さない。
+      if (current[recipient]?.attempt !== attempt) continue;
+      if (result.kind === "refreshed") current[recipient] = result.grant;
+      else if (result.kind === "reauthorize") {
+        delete current[recipient];
+        console.error(JSON.stringify({ event: "x_oauth_reauthorization_required" }));
+      } else {
+        const failures = grant.failures + 1;
+        current[recipient] = {
+          ...grant,
+          failures,
+          next: Date.now() + Math.min(5 * 60_000 * 2 ** Math.min(failures - 1, 3), 30 * 60_000),
+        };
+        console.error(JSON.stringify({ event: "x_oauth_refresh_failed" }));
+      }
+      this.ctx.storage.kv.put("x_authorizations", current);
+    }
+  }
+
   /**
    * 接続のログインで得た読み取りトークン。接続した管理キーと本人で引き、本文の設定を始めたら、その要求に移す。
    * メモリだけに置き、ストレージに書かない (トークンを保存しない。ADR-0009)。Durable Object が入れ替わると失われ、

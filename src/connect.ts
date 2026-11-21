@@ -33,6 +33,8 @@ const TokenReply = z.object({
   access_token: z.string().min(1).max(4096),
   token_type: z.string().regex(/^bearer$/i),
   scope: z.string().max(1024),
+  refresh_token: z.string().min(1).max(4096).optional(),
+  expires_in: z.number().int().min(60).max(86400).optional(),
 });
 const Me = z.object({ data: z.object({ id: XUserID }) });
 
@@ -235,7 +237,11 @@ async function start(
   const verifier = random();
   const browser = random();
   const redirectURI = `${url.origin}/oauth/callback`;
+  const oauthScopes = [
+    ...new Set([...scopesFor(eventTypes), ...(await store.authorizationScopes(recipient))]),
+  ];
   await store.beginLogin({
+    oauthScopes,
     state,
     verifier,
     browserHash: await hex(browser),
@@ -252,7 +258,7 @@ async function start(
     response_type: "code",
     client_id: config.clientID,
     redirect_uri: redirectURI,
-    scope: scopesFor(eventTypes).join(" "),
+    scope: oauthScopes.join(" "),
     state,
     code_challenge: base64URL(await sha256(verifier)),
     code_challenge_method: "S256",
@@ -305,7 +311,7 @@ async function finish(
 
 /**
  * 認可コードをトークンに換え、ログインした本人の X ユーザー ID を読む。求めた scope がそろわなければ undefined。
- * 認可コードは 30 秒で切れるので、戻ってきたらすぐに換える。トークンは保存しない。
+ * 認可コードは 30 秒で切れるので、戻ってきたらすぐに換える。
  * 使った後にトークンを取り消さない: 取り消すと本人の認可で作った購読も消えるかを、確かめられていないため (トークンは 2 時間で切れる)。
  */
 export async function identify(
@@ -315,7 +321,16 @@ export async function identify(
   scopes: readonly string[],
   config: { clientID: string; clientSecret: string },
   deps: RelayDeps,
-): Promise<{ accessToken: string; userID: string } | undefined> {
+): Promise<
+  | {
+      accessToken: string;
+      userID: string;
+      refreshToken?: string;
+      expiresAt?: number;
+      scopes: string[];
+    }
+  | undefined
+> {
   const exchanged = await deps
     .fetch("https://api.x.com/2/oauth2/token", {
       method: "POST",
@@ -338,7 +353,11 @@ export async function identify(
   await discardBody(exchanged);
   const granted = new Set(token?.success ? token.data.scope.split(" ") : []);
   if (!token?.success || !scopes.every((scope) => granted.has(scope))) return undefined;
+  if (scopes.includes("offline.access") && (!token.data.refresh_token || !token.data.expires_in))
+    return undefined;
   const accessToken = token.data.access_token;
+  const expiresAt =
+    token.data.expires_in === undefined ? undefined : Date.now() + token.data.expires_in * 1000;
 
   const me = await deps
     .fetch("https://api.x.com/2/users/me", {
@@ -350,7 +369,13 @@ export async function identify(
   const user = me?.status === 200 ? Me.safeParse(await readJSON(me)) : undefined;
   await discardBody(me);
   if (!user?.success) return undefined;
-  return { accessToken, userID: user.data.data.id };
+  return {
+    accessToken,
+    userID: user.data.data.id,
+    scopes: [...granted],
+    ...(token.data.refresh_token === undefined ? {} : { refreshToken: token.data.refresh_token }),
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+  };
 }
 
 async function connect(
@@ -366,11 +391,12 @@ async function connect(
     code,
     login.redirectURI,
     login.verifier,
-    scopesFor(login.eventTypes),
+    login.oauthScopes ?? scopesFor(login.eventTypes),
     config,
     deps,
   );
-  if (!identified) return fail("unavailable");
+  if (!identified || identified.refreshToken === undefined || identified.expiresAt === undefined)
+    return fail("unavailable");
   const { accessToken, userID } = identified;
   // アプリで選んでいたアカウントと違う X アカウントでログインしたら、つながない (通知が別のアカウントに届く)。
   if (userID !== login.recipient || !config.allowed.has(userID)) return fail("wrong_account");
@@ -378,6 +404,14 @@ async function connect(
   // 片付けがこのアカウントの購読を消している間や、同じアカウントのほかの接続が処理中の間は、少し待ってからやり直してもらう。
   if (!(await store.startProcessing(state, Date.now() + processingLease))) return fail("busy");
 
+  if (
+    !(await store.saveAuthorization(login.recipient, {
+      refreshToken: identified.refreshToken,
+      expiresAt: identified.expiresAt,
+      scopes: identified.scopes,
+    }))
+  )
+    return fail("unavailable");
   if (
     !(await ensureSubscriptions({
       store,
