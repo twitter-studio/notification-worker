@@ -19,11 +19,15 @@ export default {
     await recordQueueState(env.X_EVENTS).catch(() => undefined);
     // ルートのないまま残った、Worker が作った購読を片付ける (X の課金を止める)。
     const store = pairingStore(env);
-    if (store)
+    if (store) {
+      await store.refreshAuthorizations().catch(() => {
+        console.error(JSON.stringify({ event: "x_oauth_refresh_run_failed" }));
+      });
       await cleanupWorkerSubscriptions(env, store, {
         fetch: (input, init) => fetch(input, init),
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       });
+    }
   },
   queue(batch, env) {
     return handleXQueue(batch.messages, env, {
