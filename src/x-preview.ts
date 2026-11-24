@@ -54,21 +54,9 @@ export type PreviewSource = Actor &
 
 export const PostPreviewFields = z.object({
   text: z.string().optional().catch(undefined),
-  possibly_sensitive: z.boolean().optional().catch(true),
-  scopes: z.unknown().optional(),
-  withheld: z.unknown().optional(),
 });
 const PostIdentity = z.object({ id: z.string() });
 const ExpandedPost = PostPreviewFields.extend({ id: z.string(), author_id: z.string() });
-const PublicPostScopes = z.strictObject({ followers: z.literal(false) });
-
-export function isRestrictedPost(post: z.infer<typeof PostPreviewFields>): boolean {
-  return (
-    post.possibly_sensitive === true ||
-    (post.scopes != null && !PublicPostScopes.safeParse(post.scopes).success) ||
-    post.withheld != null
-  );
-}
 
 function observeLookup(
   purpose: "dm_sender" | undefined,
@@ -284,16 +272,12 @@ async function lookupPostExcerpt(
   fetch: typeof globalThis.fetch,
 ) {
   const url = new URL(`https://api.x.com/2/tweets/${postID}`);
-  url.searchParams.set("post.fields", "possibly_sensitive,scopes,withheld");
+  url.searchParams.set("expansions", "author_id");
   const response = await lookup(
     url,
     bearer,
     z.object({ data: ExpandedPost }),
-    ({ data }) =>
-      data.id === postID &&
-      data.author_id === postAuthorID &&
-      data.possibly_sensitive === false &&
-      !isRestrictedPost(data),
+    ({ data }) => data.id === postID && data.author_id === postAuthorID,
     fetch,
   );
   return excerptOf(response?.data.text);
@@ -322,7 +306,6 @@ export function previewSourceFor(
   payload: z.infer<typeof PostPreviewFields> & { author_id: string },
   users: readonly unknown[],
 ): PreviewSource | undefined {
-  if (isRestrictedPost(payload)) return undefined;
   const excerpt = excerptOf(payload.text);
   const actor = previewActor(payload.author_id, users);
   return excerpt === undefined ? undefined : { ...actor, kind: "excerpt", excerpt };
@@ -346,11 +329,9 @@ export function previewSourceForReferencedPost({
   if (matches.length > 1) return undefined;
   if (matches.length === 1) {
     const post = ExpandedPost.safeParse(matches[0]).data;
-    if (post?.author_id !== postAuthorID || isRestrictedPost(post)) return undefined;
-    if (post.possibly_sensitive === false) {
-      const excerpt = excerptOf(post.text);
-      if (excerpt !== undefined) return { ...actor, kind: "excerpt", excerpt };
-    }
+    if (post?.author_id !== postAuthorID) return undefined;
+    const excerpt = excerptOf(post.text);
+    if (excerpt !== undefined) return { ...actor, kind: "excerpt", excerpt };
   }
   return { ...actor, kind: "post", postID, postAuthorID };
 }
