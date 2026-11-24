@@ -920,9 +920,17 @@ describe("通知種類の許可リスト", () => {
     expect(relay.sent).toHaveLength(0);
   });
 
-  it.each(["ExampleUser", undefined, "bad handle", 123])(
-    "フォローした人の有効なユーザー名だけを中継する (%s)",
-    async (username) => {
+  it.each([
+    ["ExampleUser", false],
+    [undefined, false],
+    ["bad handle", false],
+    [123, false],
+    ["ExampleUser", true],
+    ["ExampleUser", undefined],
+    ["ExampleUser", "false"],
+  ])(
+    "公開アカウントの有効なフォロー元ユーザー名だけを中継する (%s, %s)",
+    async (username, isProtected) => {
       const relay = fakeRelay();
       const environment = { ...env(), X_NOTIFICATION_TYPES: "follow" };
       const input = {
@@ -930,7 +938,7 @@ describe("通知種類の許可リスト", () => {
           ...event().data,
           event_type: "follow.follow",
           payload: {
-            source: { data: { id: actor, username } },
+            source: { data: { id: actor, username, protected: isProtected } },
             target: { data: { id: recipient, username: "Recipient" } },
           },
         },
@@ -945,7 +953,7 @@ describe("通知種類の許可リスト", () => {
       );
       expect(relay.sent).toHaveLength(1);
       expect(relay.sent[0]?.body).toMatchObject({ type: "follow" });
-      if (username === "ExampleUser") {
+      if (username === "ExampleUser" && isProtected === false) {
         expect(relay.sent[0]?.body).toHaveProperty("follower_username", username);
       } else {
         expect(relay.sent[0]?.body).not.toHaveProperty("follower_username");
@@ -964,7 +972,7 @@ describe("通知種類の許可リスト", () => {
         ...event().data,
         event_type: "follow.follow",
         payload: {
-          source: { data: { id: actor, username: "ExampleUser" } },
+          source: { data: { id: actor, username: "ExampleUser", protected: false } },
           target: { data: { id: recipient } },
         },
       },

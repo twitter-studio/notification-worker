@@ -46,7 +46,11 @@ const Common = {
 };
 const PostReference = z.object({ type: z.string(), id: PostID });
 const FollowUser = z.object({
-  data: z.object({ id: XUserID, username: PreviewHandle.optional().catch(undefined) }),
+  data: z.object({
+    id: XUserID,
+    username: PreviewHandle.optional().catch(undefined),
+    protected: z.boolean().optional().catch(undefined),
+  }),
 });
 const ActivityKind = z.enum([
   "post.mention.create",
@@ -356,8 +360,10 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
     };
   }
   if (data.event_type === "follow.follow") {
-    if (data.payload.target.data.id !== recipient || data.payload.source.data.id === recipient)
+    const follower = data.payload.source.data;
+    if (data.payload.target.data.id !== recipient || follower.id === recipient)
       return { kind: "dropped" };
+    const username = follower.protected === false ? follower.username : undefined;
     return {
       kind: "accepted",
       recipient,
@@ -366,9 +372,7 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
       event: {
         type: "follow",
         occurred_at,
-        ...(data.payload.source.data.username === undefined
-          ? {}
-          : { follower_username: data.payload.source.data.username }),
+        ...(username === undefined ? {} : { follower_username: username }),
       },
     };
   }
