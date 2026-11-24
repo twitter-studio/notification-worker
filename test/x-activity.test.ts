@@ -920,6 +920,89 @@ describe("通知種類の許可リスト", () => {
     expect(relay.sent).toHaveLength(0);
   });
 
+  it.each([
+    ["ExampleUser", false],
+    [undefined, false],
+    ["bad handle", false],
+    [123, false],
+    ["ExampleUser", true],
+    ["ExampleUser", undefined],
+    ["ExampleUser", "false"],
+  ])(
+    "公開状態にかかわらず有効なフォロー元ユーザー名を中継する (%s, %s)",
+    async (username, isProtected) => {
+      const relay = fakeRelay();
+      const environment = { ...env(), X_NOTIFICATION_TYPES: "follow" };
+      const input = {
+        data: {
+          ...event().data,
+          event_type: "follow.follow",
+          payload: {
+            source: { data: { id: actor, username, protected: isProtected } },
+            target: { data: { id: recipient, username: "Recipient" } },
+          },
+        },
+      };
+      expect(await (await post(input, { relay, environment })).json()).toEqual({
+        counts: { queued: 1 },
+      });
+      await handleXQueue(
+        [{ body: relay.queued[0], attempts: 1, ack: vi.fn(), retry: vi.fn() }],
+        environment,
+        relay.deps,
+      );
+      expect(relay.sent).toHaveLength(1);
+      expect(relay.sent[0]?.body).toMatchObject({ type: "follow" });
+      if (username === "ExampleUser") {
+        expect(relay.sent[0]?.body).toHaveProperty("follower_username", username);
+      } else {
+        expect(relay.sent[0]?.body).not.toHaveProperty("follower_username");
+      }
+    },
+  );
+
+  it.each([0, 2])(
+    "旧中継がユーザー名付きフォローを拒んだら同じイベント ID で送る (一時障害 %s 回)",
+    async (failures) => {
+      const relay = fakeRelay([
+        ...Array.from(
+          { length: failures },
+          () =>
+            new Response(null, {
+              status: 503,
+              headers: { "Retry-After": "1" },
+            }),
+        ),
+        new Response(null, { status: 422 }),
+        Response.json({}, { status: 202 }),
+      ]);
+      const environment = { ...env(), X_NOTIFICATION_TYPES: "follow" };
+      const input = {
+        data: {
+          ...event().data,
+          event_type: "follow.follow",
+          payload: {
+            source: { data: { id: actor, username: "ExampleUser", protected: false } },
+            target: { data: { id: recipient } },
+          },
+        },
+      };
+      expect((await post(input, { relay, environment })).status).toBe(200);
+      const message = { body: relay.queued[0], attempts: 6, ack: vi.fn(), retry: vi.fn() };
+      await handleXQueue([message], environment, relay.deps);
+      const event_id = XJobSchema.parse(relay.queued[0]).event.event_id;
+      expect(relay.sent).toHaveLength(failures + 2);
+      expect(relay.sent[failures]?.body).toMatchObject({
+        type: "follow",
+        event_id,
+        follower_username: "ExampleUser",
+      });
+      expect(relay.sent.at(-1)?.body).toMatchObject({ type: "follow", event_id });
+      expect(relay.sent.at(-1)?.body).not.toHaveProperty("follower_username");
+      expect(message.ack).toHaveBeenCalledOnce();
+    },
+  );
+
   it("DM は宛先を確認し、本文・X Chat の暗号文・トークンを転送しない", async () => {
     const relay = fakeRelay([
       Response.json({}, { status: 202 }),

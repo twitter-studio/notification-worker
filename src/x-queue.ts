@@ -3,10 +3,10 @@ import { isEnabled, type RelayConfig, RelayRouteID, type XRelayTarget } from "./
 import { dmPreviewKeyID, SealedDmPreview } from "./dm-preview";
 import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS, X_NOTIFICATION_TYPES } from "./normalize";
 import { deliveryTargets } from "./pairing-store";
-import { type RelayDeps, sendToRelay } from "./relay";
+import { MAX_ATTEMPTS, type RelayDeps, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
 
-import { XNotificationPreview } from "./x-preview";
+import { PreviewHandle, XNotificationPreview } from "./x-preview";
 
 const Encoded = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const XJobSchema = z
@@ -24,14 +24,16 @@ export const XJobSchema = z
         occurred_at: z.iso.datetime(),
         route_id: RelayRouteID.optional(),
         preview: XNotificationPreview.optional(),
+        follower_username: PreviewHandle.optional(),
         dm_preview: SealedDmPreview.optional(),
       })
       .refine(
-        ({ type, post_id, preview, route_id, dm_preview }) =>
+        ({ type, post_id, preview, route_id, dm_preview, follower_username }) =>
           (type === "follow" || type === "dm") === (post_id === undefined) &&
           (preview === undefined || (type !== "follow" && type !== "dm")) &&
           (type !== "dm" || route_id !== undefined) &&
-          (dm_preview === undefined || type === "dm"),
+          (dm_preview === undefined || type === "dm") &&
+          (follower_username === undefined || type === "follow"),
       ),
   })
   .refine((job) => (job.dm_preview_key_id === undefined) === (job.event.dm_preview === undefined));
@@ -127,7 +129,9 @@ export async function handleXQueue(
           : {}),
         ...(target.routeID === undefined ? {} : { route_id: target.routeID }),
       };
-      const outcome = await sendToRelay(target.config, event, deps, { remaining: 3 });
+      const outcome = await sendToRelay(target.config, event, deps, {
+        remaining: event.follower_username === undefined ? MAX_ATTEMPTS : MAX_ATTEMPTS + 1,
+      });
       recordObservation({ kind: "delivery", type: parsed.data.event.type, outcome: outcome.kind });
       // 中継が資格情報を断った (401) ときは、やり直しても通らないので捨てる (notification-service の ADR-0007)。やり直すと、
       // 認証の通らない要求を中継へ繰り返し送る。利用者は delivery の記録 (unauthorized) で気づき、中継の資格情報を入れ替える。

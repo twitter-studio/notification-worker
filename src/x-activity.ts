@@ -6,6 +6,7 @@ import {
   excerptOf,
   isRestrictedPost,
   PostPreviewFields,
+  PreviewHandle,
   type PreviewSource,
   previewSourceFor,
   previewSourceForReferencedPost,
@@ -44,7 +45,12 @@ const Common = {
   filter: z.object({ user_id: XUserID }),
 };
 const PostReference = z.object({ type: z.string(), id: PostID });
-const FollowUser = z.object({ data: z.object({ id: XUserID }) });
+const FollowUser = z.object({
+  data: z.object({
+    id: XUserID,
+    username: PreviewHandle.optional().catch(undefined),
+  }),
+});
 const ActivityKind = z.enum([
   "post.mention.create",
   "post.reply.create",
@@ -353,14 +359,20 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
     };
   }
   if (data.event_type === "follow.follow") {
-    if (data.payload.target.data.id !== recipient || data.payload.source.data.id === recipient)
+    const follower = data.payload.source.data;
+    if (data.payload.target.data.id !== recipient || follower.id === recipient)
       return { kind: "dropped" };
+    const { username } = follower;
     return {
       kind: "accepted",
       recipient,
       sourceID: data.event_uuid,
       previewSource: undefined,
-      event: { type: "follow", occurred_at },
+      event: {
+        type: "follow",
+        occurred_at,
+        ...(username === undefined ? {} : { follower_username: username }),
+      },
     };
   }
   if (data.payload.author_id === recipient) return { kind: "dropped" };

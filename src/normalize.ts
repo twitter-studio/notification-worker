@@ -12,6 +12,7 @@ export type RelayEvent = {
   type: (typeof X_NOTIFICATION_TYPES)[number];
   post_id?: string | undefined;
   route_id?: string | undefined;
+  follower_username?: string | undefined;
   occurred_at: string;
 };
 
