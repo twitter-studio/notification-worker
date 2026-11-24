@@ -6,7 +6,7 @@ import { deliveryTargets } from "./pairing-store";
 import { type RelayDeps, sendToRelay } from "./relay";
 import { recordObservation } from "./telemetry";
 
-import { XNotificationPreview } from "./x-preview";
+import { PreviewHandle, XNotificationPreview } from "./x-preview";
 
 const Encoded = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const XJobSchema = z
@@ -24,14 +24,16 @@ export const XJobSchema = z
         occurred_at: z.iso.datetime(),
         route_id: RelayRouteID.optional(),
         preview: XNotificationPreview.optional(),
+        follower_username: PreviewHandle.optional(),
         dm_preview: SealedDmPreview.optional(),
       })
       .refine(
-        ({ type, post_id, preview, route_id, dm_preview }) =>
+        ({ type, post_id, preview, route_id, dm_preview, follower_username }) =>
           (type === "follow" || type === "dm") === (post_id === undefined) &&
           (preview === undefined || (type !== "follow" && type !== "dm")) &&
           (type !== "dm" || route_id !== undefined) &&
-          (dm_preview === undefined || type === "dm"),
+          (dm_preview === undefined || type === "dm") &&
+          (follower_username === undefined || type === "follow"),
       ),
   })
   .refine((job) => (job.dm_preview_key_id === undefined) === (job.event.dm_preview === undefined));

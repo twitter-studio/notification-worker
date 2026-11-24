@@ -57,6 +57,8 @@ export async function sendToRelay(
   deps: RelayDeps,
   budget: SubrequestBudget,
 ): Promise<RelayOutcome> {
+  const { follower_username, ...eventWithoutFollower } = event;
+  let requestEvent = event;
   let retryAfterSeconds = 1;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (budget.remaining <= 0) break;
@@ -69,7 +71,7 @@ export async function sendToRelay(
           Authorization: `Bearer ${config.token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(event),
+        body: JSON.stringify(requestEvent),
         // リダイレクトに従わない (設定の誤りで、イベントをほかの先へ送らない。従った回数も、外へ送る回数に数えられる)。
         redirect: "manual",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -88,6 +90,10 @@ export async function sendToRelay(
     }
     // 本文は読まずに捨てる (中継の API のエラーの文を、ログに写さない)。
     await response.body?.cancel();
+    if (response.status === 422 && requestEvent === event && follower_username !== undefined) {
+      requestEvent = eventWithoutFollower;
+      continue;
+    }
     if (response.status === 401 || response.status === 403)
       return { kind: "unauthorized", status: response.status };
     if (
