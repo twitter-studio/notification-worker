@@ -4,7 +4,6 @@ import { CLOCK_SKEW_MS, MAX_EVENT_AGE_MS } from "./normalize";
 import {
   dmSenderFrom,
   excerptOf,
-  isRestrictedPost,
   PostPreviewFields,
   PreviewHandle,
   type PreviewSource,
@@ -388,15 +387,13 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
       sourceID: data.payload.id,
       previewSource: isQuote
         ? previewSourceFor(data.payload, users)
-        : isRestrictedPost(data.payload)
-          ? undefined
-          : previewSourceForReferencedPost({
-              actorID: data.payload.author_id,
-              postID: original.id,
-              postAuthorID: recipient,
-              users,
-              tweets,
-            }),
+        : previewSourceForReferencedPost({
+            actorID: data.payload.author_id,
+            postID: original.id,
+            postAuthorID: recipient,
+            users,
+            tweets,
+          }),
       event: {
         type: isQuote ? "quote" : "retweet",
         post_id: isQuote ? data.payload.id : original.id,

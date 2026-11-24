@@ -430,6 +430,11 @@ describe("通知のプレビュー", () => {
     async (type) => {
       const relay = fakeRelay();
       const payload = event(type);
+      Object.assign(payload.data.payload, {
+        possibly_sensitive: true,
+        scopes: { followers: true },
+        withheld: { country_codes: ["DE"] },
+      });
       payload.data.includes = Object.assign(payload.data.includes, {
         users: [{ ...author, protected: true }],
       });
@@ -782,14 +787,14 @@ describe("通知種類の許可リスト", () => {
       data: {
         ...event().data,
         event_type,
-        payload: { ...payloads[event_type], text: "引用の本文" },
+        payload: { ...payloads[event_type], text: "引用の本文", possibly_sensitive: true },
         includes: {
           users: [
             { id: recipient, username: "recipient", protected: true },
             { id: actorID, username: "example", protected: true },
           ],
           tweets: [
-            { id: original, author_id: recipient, text: "元のツイート", possibly_sensitive: false },
+            { id: original, author_id: recipient, text: "元のツイート", possibly_sensitive: true },
           ],
         },
       },
@@ -809,7 +814,7 @@ describe("通知種類の許可リスト", () => {
     expect(relay.sent[0]?.body).toMatchObject({ type, preview: { author: "example", excerpt } });
   });
 
-  it("閲覧者が制限されたツイートは公開アカウントのいいねでも照会・表示しない", async () => {
+  it("いいねの元ツイートに閲覧範囲と国別制限が付いていても受信した本文を使う", async () => {
     const relay = fakeRelay();
     const fetch = vi.fn<typeof globalThis.fetch>();
     const input = {
@@ -827,8 +832,8 @@ describe("通知種類の許可リスト", () => {
               id: original,
               author_id: recipient,
               text: canary,
-              possibly_sensitive: false,
               scopes: { followers: true },
+              withheld: { country_codes: ["DE"] },
             },
           ],
         },
@@ -846,10 +851,13 @@ describe("通知種類の許可リスト", () => {
         .status,
     ).toBe(200);
     expect(fetch).not.toHaveBeenCalled();
-    expect(XJobSchema.parse(relay.queued[0]).event.preview).toBeUndefined();
+    expect(XJobSchema.parse(relay.queued[0]).event.preview).toEqual({
+      author: "example",
+      excerpt: canary,
+    });
   });
 
-  it.each(["public", "sensitive", "restricted", "disabled"])(
+  it.each(["public", "sensitive", "restricted", "withheld", "wrongAuthor", "disabled"])(
     "いいねで元のツイートを照会できる場合にだけ本文を表示する (%s)",
     async (mode) => {
       const relay = fakeRelay();
@@ -875,9 +883,10 @@ describe("通知種類の許可リスト", () => {
         Response.json({
           data: {
             id: original,
-            author_id: recipient,
+            author_id: mode === "wrongAuthor" ? actor : recipient,
             possibly_sensitive: mode === "sensitive",
             ...(mode === "restricted" ? { scopes: { followers: true } } : {}),
+            ...(mode === "withheld" ? { withheld: { country_codes: ["DE"] } } : {}),
             text: "元のツイート",
           },
         }),
@@ -889,15 +898,15 @@ describe("通知種類の許可リスト", () => {
       if (mode === "disabled") expect(fetch).not.toHaveBeenCalled();
       else
         expect(fetch).toHaveBeenCalledExactlyOnceWith(
-          new URL(
-            `https://api.x.com/2/tweets/${original}?post.fields=possibly_sensitive%2Cscopes%2Cwithheld`,
-          ),
+          new URL(`https://api.x.com/2/tweets/${original}?expansions=author_id`),
           expect.objectContaining({
             redirect: "manual",
           }),
         );
       expect(XJobSchema.parse(relay.queued[0]).event.preview).toEqual(
-        mode === "public" ? { author: "example", excerpt: "元のツイート" } : undefined,
+        mode === "disabled" || mode === "wrongAuthor"
+          ? undefined
+          : { author: "example", excerpt: "元のツイート" },
       );
     },
   );
