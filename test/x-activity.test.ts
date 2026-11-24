@@ -929,7 +929,7 @@ describe("通知種類の許可リスト", () => {
     ["ExampleUser", undefined],
     ["ExampleUser", "false"],
   ])(
-    "公開アカウントの有効なフォロー元ユーザー名だけを中継する (%s, %s)",
+    "公開状態にかかわらず有効なフォロー元ユーザー名を中継する (%s, %s)",
     async (username, isProtected) => {
       const relay = fakeRelay();
       const environment = { ...env(), X_NOTIFICATION_TYPES: "follow" };
@@ -953,7 +953,7 @@ describe("通知種類の許可リスト", () => {
       );
       expect(relay.sent).toHaveLength(1);
       expect(relay.sent[0]?.body).toMatchObject({ type: "follow" });
-      if (username === "ExampleUser" && isProtected === false) {
+      if (username === "ExampleUser") {
         expect(relay.sent[0]?.body).toHaveProperty("follower_username", username);
       } else {
         expect(relay.sent[0]?.body).not.toHaveProperty("follower_username");

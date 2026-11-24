@@ -49,7 +49,6 @@ const FollowUser = z.object({
   data: z.object({
     id: XUserID,
     username: PreviewHandle.optional().catch(undefined),
-    protected: z.boolean().optional().catch(undefined),
   }),
 });
 const ActivityKind = z.enum([
@@ -363,7 +362,7 @@ export function normalizeXEvent(json: unknown, now: Date): NormalizedXEvent {
     const follower = data.payload.source.data;
     if (data.payload.target.data.id !== recipient || follower.id === recipient)
       return { kind: "dropped" };
-    const username = follower.protected === false ? follower.username : undefined;
+    const { username } = follower;
     return {
       kind: "accepted",
       recipient,
