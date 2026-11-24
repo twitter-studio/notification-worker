@@ -291,7 +291,7 @@ describe("XAAの署名と本文", () => {
 describe("通知のプレビュー", () => {
   const author = { id: "3333333333333333333", username: "example", protected: false };
   const lookup =
-    "https://api.x.com/2/users/3333333333333333333?user.fields=protected%2Cprofile_image_url%2Cwithheld";
+    "https://api.x.com/2/users/3333333333333333333?user.fields=profile_image_url%2Cwithheld";
   const bearer = "synthetic-preview-bearer";
 
   it.each([
@@ -425,22 +425,26 @@ describe("通知のプレビュー", () => {
     });
   });
 
-  it("鍵付きの記録が混ざれば、表示名とアイコンをどこにも出さない", async () => {
-    const relay = fakeRelay();
-    const payload = event();
-    payload.data.includes = Object.assign(payload.data.includes, {
-      users: [
-        { ...author, name: "Public Name" },
-        { ...author, protected: true, name: "Private Name" },
-      ],
-    });
-    await post(payload, {
-      relay,
-      environment: testEnv({ ENABLE_X_ACTIVITY: "true", ENABLE_X_NOTIFICATION_PREVIEW: "true" }),
-    });
-    const queued = JSON.stringify(relay.queued);
-    for (const value of ["Public Name", "Private Name"]) expect(queued).not.toContain(value);
-  });
+  it.each(["post.mention.create", "post.reply.create"])(
+    "%s に非公開投稿者のユーザー名と本文があれば送る",
+    async (type) => {
+      const relay = fakeRelay();
+      const payload = event(type);
+      payload.data.includes = Object.assign(payload.data.includes, {
+        users: [{ ...author, protected: true }],
+      });
+      const environment = { ...env(), ENABLE_X_NOTIFICATION_PREVIEW: "true" };
+      expect((await post(payload, { relay, environment })).status).toBe(200);
+      await handleXQueue(
+        [{ body: relay.queued[0], attempts: 1, ack: vi.fn(), retry: vi.fn() }],
+        environment,
+        relay.deps,
+      );
+      expect(relay.sent[0]?.body).toMatchObject({
+        preview: { author: "example", excerpt: canary },
+      });
+    },
+  );
 
   it("照会した投稿者の表示名とアイコンも、プレビューに入れる", async () => {
     const relay = fakeRelay();
@@ -553,7 +557,9 @@ describe("通知のプレビュー", () => {
       }
       const job = XJobSchema.parse(relay.queued[0]);
       expect(job.event.preview).toEqual(
-        result === "found" ? { author: "example", excerpt: canary } : undefined,
+        result === "found" || result === "protected"
+          ? { author: "example", excerpt: canary }
+          : undefined,
       );
       expect(JSON.stringify(job)).not.toContain(bearer);
       const observations = info.mock.calls
@@ -562,7 +568,7 @@ describe("通知のプレビュー", () => {
       const outcomes: Record<string, string> = {
         found: "found",
         mismatched: "invalid_response",
-        protected: "unavailable_profile",
+        protected: "found",
         unavailable: "http_error",
         redirect: "http_error",
       };
@@ -770,7 +776,7 @@ describe("通知種類の許可リスト", () => {
     ["post.quote.create", "quote", "引用の本文"],
     ["post.repost.create", "retweet", "元のツイート"],
     ["like.create", "like", "元のツイート"],
-  ] as const)("%s の公開本文を中継する", async (event_type, type, excerpt) => {
+  ] as const)("%s の本文を非公開アカウントでも中継する", async (event_type, type, excerpt) => {
     const actorID = event_type === "like.create" ? actor : event().data.payload.author_id;
     const input = {
       data: {
@@ -779,8 +785,8 @@ describe("通知種類の許可リスト", () => {
         payload: { ...payloads[event_type], text: "引用の本文" },
         includes: {
           users: [
-            { id: recipient, username: "recipient", protected: false },
-            { id: actorID, username: "example", protected: false },
+            { id: recipient, username: "recipient", protected: true },
+            { id: actorID, username: "example", protected: true },
           ],
           tweets: [
             { id: original, author_id: recipient, text: "元のツイート", possibly_sensitive: false },
@@ -867,7 +873,6 @@ describe("通知種類の許可リスト", () => {
       };
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
         Response.json({
-          includes: { users: [{ id: recipient, protected: false }] },
           data: {
             id: original,
             author_id: recipient,
@@ -885,7 +890,7 @@ describe("通知種類の許可リスト", () => {
       else
         expect(fetch).toHaveBeenCalledExactlyOnceWith(
           new URL(
-            `https://api.x.com/2/tweets/${original}?post.fields=possibly_sensitive%2Cscopes%2Cwithheld&expansions=author_id&user.fields=protected`,
+            `https://api.x.com/2/tweets/${original}?post.fields=possibly_sensitive%2Cscopes%2Cwithheld`,
           ),
           expect.objectContaining({
             redirect: "manual",

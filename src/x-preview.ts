@@ -5,7 +5,7 @@ export const PreviewHandle = z.string().regex(/^[A-Za-z0-9_]{1,15}$/);
 export const XNotificationPreview = z.strictObject({
   author: PreviewHandle,
   excerpt: z.string().min(1).max(280),
-  // 公開アカウントの表示名とアイコン。アプリの通知拡張が、送った人の Communication Notifications に使う
+  // 通知を起こしたアカウントの表示名とアイコン。アプリの通知拡張が、送った人の Communication Notifications に使う
   // (中継の ADR-0009)。形は displayNameOf と profileImageOf で確かめてから入れる。
   author_name: z
     .string()
@@ -20,7 +20,6 @@ export const XNotificationPreview = z.strictObject({
 const Profile = z.object({
   id: z.string(),
   username: PreviewHandle.optional().catch(undefined),
-  protected: z.boolean().optional(),
   name: z.string().optional().catch(undefined),
   profile_image_url: z.string().optional().catch(undefined),
   // 国ごとに表示を止めたアカウント。表示名とアイコンは出さない (@ユーザー名は今までどおり)。
@@ -206,7 +205,7 @@ export function dmSenderFrom(senderID: string, value: unknown): DmSender | undef
 
 /**
  * DM の送った人の名前、@ユーザー名、アイコンを引く。暗号化して受け手の端末にだけ届けるので、
- * 公開投稿のプレビューと違って、鍵付きのアカウントも除かない (受け手は DM で相手をもう知っている)。
+ * アカウントの公開設定にかかわらず、X から取得した送信者情報を使う。
  */
 export async function lookupDmSender(
   senderID: string,
@@ -260,12 +259,12 @@ async function lookupPreviewAuthor(
   fetch: typeof globalThis.fetch,
 ): Promise<{ author: string; name?: string | undefined; image?: string | undefined } | undefined> {
   const url = new URL(`https://api.x.com/2/users/${authorID}`);
-  url.searchParams.set("user.fields", "protected,profile_image_url,withheld");
+  url.searchParams.set("user.fields", "profile_image_url,withheld");
   const response = await lookup(
     url,
     bearer,
     z.object({ data: Profile }).refine(({ data }) => data.id === authorID),
-    ({ data }) => data.protected === false && data.username !== undefined,
+    ({ data }) => data.username !== undefined,
     fetch,
   );
   const username = response?.data.username;
@@ -286,38 +285,29 @@ async function lookupPostExcerpt(
 ) {
   const url = new URL(`https://api.x.com/2/tweets/${postID}`);
   url.searchParams.set("post.fields", "possibly_sensitive,scopes,withheld");
-  url.searchParams.set("expansions", "author_id");
-  url.searchParams.set("user.fields", "protected");
   const response = await lookup(
     url,
     bearer,
-    z.object({ data: ExpandedPost, includes: z.object({ users: z.array(Profile) }) }),
-    ({ data, includes }) =>
+    z.object({ data: ExpandedPost }),
+    ({ data }) =>
       data.id === postID &&
       data.author_id === postAuthorID &&
       data.possibly_sensitive === false &&
-      !isRestrictedPost(data) &&
-      includes.users.some(
-        ({ id, protected: isProtected }) => id === postAuthorID && isProtected === false,
-      ) &&
-      !includes.users.some(
-        ({ id, protected: isProtected }) => id === postAuthorID && isProtected === true,
-      ),
+      !isRestrictedPost(data),
     fetch,
   );
   return excerptOf(response?.data.text);
 }
 
-function previewActor(authorID: string, users: readonly unknown[]): Actor | undefined {
+function previewActor(authorID: string, users: readonly unknown[]): Actor {
   let actor: Actor = { authorID, author: undefined };
   let withheld = false;
   for (const user of users) {
     const profile = Profile.safeParse(user);
     if (!profile.success || profile.data.id !== authorID) continue;
-    if (profile.data.protected === true) return undefined;
     // 同じ人の記録が複数あれば、どれか 1 つでも表示を止めていれば、表示名とアイコンは出さない。
     if (profile.data.withheld != null) withheld = true;
-    if (profile.data.protected === false && actor.author === undefined && profile.data.username)
+    if (actor.author === undefined && profile.data.username)
       actor = {
         authorID,
         author: profile.data.username,
@@ -335,9 +325,7 @@ export function previewSourceFor(
   if (isRestrictedPost(payload)) return undefined;
   const excerpt = excerptOf(payload.text);
   const actor = previewActor(payload.author_id, users);
-  return excerpt === undefined || actor === undefined
-    ? undefined
-    : { ...actor, kind: "excerpt", excerpt };
+  return excerpt === undefined ? undefined : { ...actor, kind: "excerpt", excerpt };
 }
 
 export function previewSourceForReferencedPost({
@@ -354,14 +342,12 @@ export function previewSourceForReferencedPost({
   tweets: readonly unknown[];
 }): PreviewSource | undefined {
   const actor = previewActor(actorID, users);
-  const postAuthor = previewActor(postAuthorID, users);
-  if (actor === undefined || postAuthor === undefined) return undefined;
   const matches = tweets.filter((tweet) => PostIdentity.safeParse(tweet).data?.id === postID);
   if (matches.length > 1) return undefined;
   if (matches.length === 1) {
     const post = ExpandedPost.safeParse(matches[0]).data;
     if (post?.author_id !== postAuthorID || isRestrictedPost(post)) return undefined;
-    if (post.possibly_sensitive === false && postAuthor.author !== undefined) {
+    if (post.possibly_sensitive === false) {
       const excerpt = excerptOf(post.text);
       if (excerpt !== undefined) return { ...actor, kind: "excerpt", excerpt };
     }
