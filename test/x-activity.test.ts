@@ -961,34 +961,47 @@ describe("通知種類の許可リスト", () => {
     },
   );
 
-  it("旧中継がユーザー名付きフォローを拒んだら同じイベント ID で名前なしの通知を送る", async () => {
-    const relay = fakeRelay([
-      Response.json({}, { status: 422 }),
-      Response.json({}, { status: 202 }),
-    ]);
-    const environment = { ...env(), X_NOTIFICATION_TYPES: "follow" };
-    const input = {
-      data: {
-        ...event().data,
-        event_type: "follow.follow",
-        payload: {
-          source: { data: { id: actor, username: "ExampleUser", protected: false } },
-          target: { data: { id: recipient } },
+  it.each([0, 2])(
+    "旧中継がユーザー名付きフォローを拒んだら同じイベント ID で送る (一時障害 %s 回)",
+    async (failures) => {
+      const relay = fakeRelay([
+        ...Array.from(
+          { length: failures },
+          () =>
+            new Response(null, {
+              status: 503,
+              headers: { "Retry-After": "1" },
+            }),
+        ),
+        new Response(null, { status: 422 }),
+        Response.json({}, { status: 202 }),
+      ]);
+      const environment = { ...env(), X_NOTIFICATION_TYPES: "follow" };
+      const input = {
+        data: {
+          ...event().data,
+          event_type: "follow.follow",
+          payload: {
+            source: { data: { id: actor, username: "ExampleUser", protected: false } },
+            target: { data: { id: recipient } },
+          },
         },
-      },
-    };
-    expect((await post(input, { relay, environment })).status).toBe(200);
-    const message = { body: relay.queued[0], attempts: 1, ack: vi.fn(), retry: vi.fn() };
-    await handleXQueue([message], environment, relay.deps);
-    expect(relay.sent).toHaveLength(2);
-    expect(relay.sent[0]?.body).toMatchObject({ type: "follow", follower_username: "ExampleUser" });
-    expect(relay.sent[1]?.body).toMatchObject({
-      type: "follow",
-      event_id: XJobSchema.parse(relay.queued[0]).event.event_id,
-    });
-    expect(relay.sent[1]?.body).not.toHaveProperty("follower_username");
-    expect(message.ack).toHaveBeenCalledOnce();
-  });
+      };
+      expect((await post(input, { relay, environment })).status).toBe(200);
+      const message = { body: relay.queued[0], attempts: 6, ack: vi.fn(), retry: vi.fn() };
+      await handleXQueue([message], environment, relay.deps);
+      const event_id = XJobSchema.parse(relay.queued[0]).event.event_id;
+      expect(relay.sent).toHaveLength(failures + 2);
+      expect(relay.sent[failures]?.body).toMatchObject({
+        type: "follow",
+        event_id,
+        follower_username: "ExampleUser",
+      });
+      expect(relay.sent.at(-1)?.body).toMatchObject({ type: "follow", event_id });
+      expect(relay.sent.at(-1)?.body).not.toHaveProperty("follower_username");
+      expect(message.ack).toHaveBeenCalledOnce();
+    },
+  );
 
   it("DM は宛先を確認し、本文・X Chat の暗号文・トークンを転送しない", async () => {
     const relay = fakeRelay([

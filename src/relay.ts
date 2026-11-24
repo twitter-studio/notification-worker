@@ -34,7 +34,7 @@ export type SubrequestBudget = { remaining: number };
 /** Retry-After の上限 (1 日)。イベントの時刻から 1 日を過ぎたものは送らないので、それより長く待たせても意味がない。 */
 export const MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60;
 
-/** 1 つのイベントを送る回数の上限 (1 回の要求の中で)。 */
+/** 1 つのイベントを送る通常の回数の上限。旧中継向けのユーザー名なし再送を 1 回追加できる。 */
 export const MAX_ATTEMPTS = 3;
 /** 1 回の要求の中で待つのは、この秒数までの Retry-After だけ。長いものは、Webhook を送ってきた側のやり直しに任せる。 */
 export const MAX_INLINE_WAIT_SECONDS = 5;
@@ -60,7 +60,8 @@ export async function sendToRelay(
   const { follower_username, ...eventWithoutFollower } = event;
   let requestEvent = event;
   let retryAfterSeconds = 1;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  let maxAttempts = MAX_ATTEMPTS;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (budget.remaining <= 0) break;
     budget.remaining--;
     let response: Response;
@@ -79,7 +80,7 @@ export async function sendToRelay(
     } catch {
       // つながらない、時間切れ。少し待ってやり直す。
       retryAfterSeconds = 1;
-      if (attempt < MAX_ATTEMPTS) await deps.sleep(retryAfterSeconds * 1000);
+      if (attempt < maxAttempts) await deps.sleep(retryAfterSeconds * 1000);
       continue;
     }
     if (response.status === 202) {
@@ -92,6 +93,7 @@ export async function sendToRelay(
     await response.body?.cancel();
     if (response.status === 422 && requestEvent === event && follower_username !== undefined) {
       requestEvent = eventWithoutFollower;
+      if (attempt === maxAttempts) maxAttempts++;
       continue;
     }
     if (response.status === 401 || response.status === 403)
@@ -110,7 +112,7 @@ export async function sendToRelay(
     )
       return { kind: "rejected" };
     retryAfterSeconds = retryAfterOf(response, 60);
-    if (retryAfterSeconds > MAX_INLINE_WAIT_SECONDS || attempt === MAX_ATTEMPTS) break;
+    if (retryAfterSeconds > MAX_INLINE_WAIT_SECONDS || attempt === maxAttempts) break;
     await deps.sleep(retryAfterSeconds * 1000);
   }
   return { kind: "retry_later", retryAfterSeconds };
